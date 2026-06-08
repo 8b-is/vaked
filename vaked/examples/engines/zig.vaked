@@ -1,0 +1,8 @@
+engine zigDaemon(name: String, src: Path) -> Engine {
+  package = zig.build {
+    inherit src
+    optimize = "ReleaseSafe"
+  }
+
+  check smoke "${package}/bin/${name} --help"
+}

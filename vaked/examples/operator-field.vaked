@@ -1,0 +1,63 @@
+use "./engines/zig.vaked"
+
+runtime "operator-field" {
+  systems = ["x86_64-linux", "aarch64-linux"]
+
+  index zigCorpus {
+    source = [
+      github("Sobeston/zig.guide"),
+      github("C-BJ/awesome-zig"),
+      github("raylib-zig/raylib-zig"),
+      github("zigimg/zigimg")
+    ]
+
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite, nix.derivation]
+  }
+
+  index zigbeeFirmware {
+    source = raw.github("Koenkk/zigbee-OTA", "index.json")
+    schema = schema.zigbeeOta
+    trust = pinned {
+      commit = "<commit>"
+      sha256 = "<sha256>"
+    }
+  }
+
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = "24h"
+  }
+
+  stream screenrec {
+    source = agentpipe.screenrec
+    type = Media.Frame
+    fps = 10
+  }
+
+  fiber mediaCompress {
+    engine = zigimg
+    input = stream.screenrec
+    output = artifacts.compressedMedia
+
+    policy {
+      strip_metadata = true
+      max_pixels = "4K"
+      formats = ["png", "webp"]
+    }
+  }
+
+  surface operatorMap {
+    mode = raylib
+    fps = 60
+    input = [stream.ebpfEvents, graph.workflow, graph.agentfield]
+    views = ["network-flows", "workflow-dag", "filesystem-diff", "mesh-topology"]
+  }
+
+  parallel "operator-runtime" {
+    fibers = [mediaCompress, operatorMap]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}

@@ -1,0 +1,44 @@
+file        = { item } ;
+item        = decl | import ;
+import      = "use" string ;
+
+decl        = kind ident_or_string block ;
+
+kind        = "runtime"
+            | "input"
+            | "engine"
+            | "host"
+            | "network"
+            | "filesystem"
+            | "mcp"
+            | "ebpf"
+            | "budget"
+            | "observability"
+            | "runclass"
+            | "workflow"
+            | "index"
+            | "catalog"
+            | "stream"
+            | "fiber"
+            | "surface"
+            | "mesh"
+            | "device"
+            | "mediaPipeline"
+            | "parallel" ;
+
+block       = "{" { stmt } "}" ;
+stmt        = assignment | call_stmt | decl | block_stmt ;
+assignment  = ident assign_op expr ;
+assign_op   = "=" | "?=" ;
+block_stmt  = ident block ;
+call_stmt   = ident { arg } ;
+arg         = expr | ident ;
+
+expr        = string | number | bool | path | list | record | ref | duration | bytes | function_call ;
+function_call = ident "(" [ expr { "," expr } ] ")" ;
+list        = "[" [ expr { "," expr } ] "]" ;
+record      = "{" { assignment } "}" ;
+ref         = ident { "." ident } ;
+
+ident_or_string = ident | string ;
+ident       = letter { letter | digit | "_" | "-" } ;
