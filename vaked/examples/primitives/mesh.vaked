@@ -1,0 +1,19 @@
+# Minimal v0.2 example — mesh primitive
+# Demonstrates: node declarations (node_decl), -> edges (edge), ref-app values,
+#               list of ref-apps for capabilities.
+
+mesh agentfield {
+  node codex {
+    role = "worker"
+    capabilities = [fs.repo_rw, mcp.github_read]
+  }
+
+  node redteam {
+    role = "reviewer"
+    capabilities = [fs.repo_ro, network.none]
+  }
+
+  codex -> mcpBroker
+  redteam -> eventd
+  mcpBroker -> eventd : "audit"
+}

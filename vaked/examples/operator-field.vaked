@@ -27,7 +27,7 @@ runtime "operator-field" {
   stream ebpfEvents {
     source = agentGuardd.ringbuf
     type = Event.Ebpf
-    retention = "24h"
+    retention = 24h
   }
 
   stream screenrec {

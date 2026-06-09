@@ -1,0 +1,20 @@
+# Minimal v0.2 example — surface primitive
+# Demonstrates: mode ref-app, fps number, input list of ref-apps, views list of strings.
+
+surface operatorMap {
+  mode = raylib
+  fps = 60
+
+  input = [
+    stream.ebpfEvents,
+    graph.workflow,
+    graph.agentfield
+  ]
+
+  views = [
+    "network-flows",
+    "workflow-dag",
+    "filesystem-diff",
+    "mesh-topology"
+  ]
+}

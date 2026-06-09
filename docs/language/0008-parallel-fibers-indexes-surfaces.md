@@ -2,7 +2,8 @@
 
 ## Status
 
-Seed draft.
+Seed draft. The primitives introduced here are implemented in grammar v0.2 —
+see [`vaked/grammar/README.md`](../../vaked/grammar/README.md).
 
 ## Summary
 

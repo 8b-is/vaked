@@ -1,0 +1,15 @@
+# Minimal v0.2 example — fiber primitive
+# Demonstrates: engine ref-app, input/output ref-apps, policy app+record,
+#               bool and string literals in policy body.
+
+fiber mediaCompress {
+  engine = zigimg
+  input = stream.screenrec
+  output = artifacts.compressedMedia
+
+  policy {
+    strip_metadata = true
+    max_pixels = "4K"
+    formats = ["png", "webp"]
+  }
+}

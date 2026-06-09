@@ -1,0 +1,10 @@
+# Minimal v0.2 example — device primitive
+# Demonstrates: driver ref-app, mount string, permissions list of strings,
+#               observe bool.
+
+device zigbeeRadio {
+  driver = usb.cdc_acm
+  mount = "/dev/ttyUSB0"
+  permissions = ["read", "write"]
+  observe = true
+}

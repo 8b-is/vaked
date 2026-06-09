@@ -1,0 +1,20 @@
+# Minimal v0.2 example — mediaPipeline primitive
+# Demonstrates: source ref-app, stages list of app+record values,
+#               sink ref-app, codec string literal.
+
+mediaPipeline screenCapture {
+  source = device.framebuffer
+
+  stages = [
+    resize {
+      width = 1920
+      height = 1080
+    },
+    encode {
+      codec = "h264"
+      bitrate = 2000000
+    }
+  ]
+
+  sink = stream.screenrec
+}

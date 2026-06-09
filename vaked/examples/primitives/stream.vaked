@@ -1,0 +1,15 @@
+# Minimal v0.2 example — stream primitive
+# Demonstrates: source ref-app, type ref-app (dotted), retention duration literal,
+#               fps number literal.
+
+stream ebpfEvents {
+  source = agentGuardd.ringbuf
+  type = Event.Ebpf
+  retention = 24h
+}
+
+stream screenrec {
+  source = agentpipe.screenrec
+  type = Media.Frame
+  fps = 10
+}

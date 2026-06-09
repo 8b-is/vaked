@@ -1,0 +1,28 @@
+# Minimal v0.2 example — index primitive
+# Demonstrates: source list of app calls, normalize ref-app, chunk app+record,
+#               emit list, pinned trust record.
+
+index zigRefs {
+  source = [
+    github("Sobeston/zig.guide"),
+    github("C-BJ/awesome-zig"),
+    github("zigimg/zigimg")
+  ]
+
+  normalize = crabcc.markdown
+  chunk = crabcc.semantic {
+    max_tokens = 1200
+    overlap = 120
+  }
+
+  emit = [catalog.jsonl, catalog.sqlite, nix.derivation]
+}
+
+index zigbeeFirmware {
+  source = raw.github("Koenkk/zigbee-OTA", "index.json")
+  schema = schema.zigbeeOta
+  trust = pinned {
+    commit = "abc123def456"
+    sha256 = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  }
+}

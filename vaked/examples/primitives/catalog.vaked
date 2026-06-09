@@ -1,0 +1,8 @@
+# Minimal v0.2 example — catalog primitive
+# Demonstrates: from ref-app, key list of strings, emit app-with-path-arg.
+
+catalog firmware {
+  from = index.zigbeeFirmware
+  key = ["manufacturer", "image_type", "file_version"]
+  emit = sqlite("./var/firmware.db")
+}

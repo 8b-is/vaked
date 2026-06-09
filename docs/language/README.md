@@ -46,6 +46,11 @@ mediaPipeline
 parallel
 ```
 
+## Grammar
+
+The normative EBNF grammar and its design notes are in
+[`vaked/grammar/README.md`](../../vaked/grammar/README.md).
+
 ## Golden commands
 
 ```bash

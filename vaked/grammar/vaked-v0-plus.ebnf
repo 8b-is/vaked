@@ -1,44 +1,148 @@
+# vaked grammar — Vaked capability-graph language, v0.2
+#
+# Notation:
+#   "literal"      terminal (keyword or punctuation, matched verbatim)
+#   { x }          zero or more repetitions of x
+#   [ x ]          optional: zero or one occurrence of x
+#   x | y          alternation (ordered: first match wins in ambiguous positions)
+#   ( x )          grouping (does not affect semantics, only precedence)
+#   rule = ... ;   one production rule, semicolon-terminated
+#
+# Whitespace (space, tab, newline) separates tokens and is otherwise
+# insignificant. Comments (#) run to end of line and are discarded by the
+# lexer. Source files are UTF-8; all keywords and identifiers are ASCII.
+#
+# ---- Design decisions (v0.2) -----------------------------------------------
+#
+# 1. Uniform applicative syntax (app).  All call-like forms — function calls,
+#    named-block constructors, and bare references — share a single `app` rule:
+#
+#       ref [ "(" args ")" ] [ record ]
+#
+#    A bare dotted path is a ref-only app; a positional call adds parens; a
+#    config block appends a record; all three can combine.  This replaces the
+#    v0 split between `function_call`, `call_stmt`, and `block_stmt`.
+#
+# 2. Typed / parameterized declarations (parsed, not checked).  `decl` accepts
+#    an optional `signature` (typed parameter list + optional return type).
+#    The parser records the signature for future Goal-2 type checking; the v0.2
+#    evaluator treats it as documentation only (no type errors are raised).
+#
+# 3. First-class graph block (`node` / `->`).  A `block` may contain `node`
+#    declarations and `->` edges, making `mesh` (and any other graph-shaped
+#    kind) expressible without special-casing those kinds in the grammar.
+#
+# 4. Backpressure deferred.  The `backpressure { when ... reduce ... }` form
+#    from 0008-parallel-fibers-indexes-surfaces.md is intentionally absent.
+#    It requires a conditional sub-language that is not yet designed; it is
+#    tracked as a post-v0.2 extension.
+#
+# ---- Minor conventions ------------------------------------------------------
+#
+# Comments     `#` begins a line comment that runs to end of line (eol).
+#              Comments are stripped by the lexer; they do not appear in the
+#              AST or affect parsing.
+#
+# Interpolation  Inside a string, `${ref}` splices the value of `ref`.
+#              The interpolation site is the `interp` production; `ref` inside
+#              it obeys the same dotted-ident rule as everywhere else.
+#
+# Inherit      `inherit foo bar` copies the bindings named `foo` and `bar`
+#              from the enclosing scope into the current record / block.
+#              Mirrors Nix `inherit`.
+#
+# Annotations  `@name` or `@name(args)` decorates the immediately following
+#              `decl`.  Annotations are parsed and preserved in the AST;
+#              their semantics are defined per-annotation by the compiler.
+#
+# Raw Nix      `nix("…")` is a conventional `app` whose ref is the plain
+#              identifier `nix`; the string argument is an opaque Nix
+#              expression fragment passed through to the emitter unchanged.
+#              There is no special grammar production for it.
+#
+# ---- File structure ---------------------------------------------------------
+
 file        = { item } ;
 item        = decl | import ;
 import      = "use" string ;
 
-decl        = kind ident_or_string block ;
+# ---- Declarations -----------------------------------------------------------
 
-kind        = "runtime"
-            | "input"
-            | "engine"
-            | "host"
-            | "network"
-            | "filesystem"
-            | "mcp"
-            | "ebpf"
-            | "budget"
-            | "observability"
-            | "runclass"
-            | "workflow"
-            | "index"
-            | "catalog"
-            | "stream"
-            | "fiber"
-            | "surface"
-            | "mesh"
-            | "device"
-            | "mediaPipeline"
-            | "parallel" ;
+decl        = { annotation } kind name [ signature ] block ;
+name        = ident | string ;
+signature   = "(" [ param { "," param } ] ")" [ "->" type ] ;
+param       = ident ":" type [ "=" expr ] ;
+kind        = "runtime" | "input"   | "engine"        | "host"
+            | "network" | "filesystem" | "mcp"        | "ebpf"
+            | "budget"  | "observability" | "runclass" | "workflow"
+            | "index"   | "catalog" | "stream"         | "fiber"
+            | "surface" | "mesh"    | "device"         | "mediaPipeline"
+            | "parallel" | "schema" ;
+
+# ---- Block and statements ---------------------------------------------------
 
 block       = "{" { stmt } "}" ;
-stmt        = assignment | call_stmt | decl | block_stmt ;
+stmt        = assignment
+            | inherit_stmt
+            | edge
+            | node_decl
+            | decl
+            | app ;
 assignment  = ident assign_op expr ;
 assign_op   = "=" | "?=" ;
-block_stmt  = ident block ;
-call_stmt   = ident { arg } ;
-arg         = expr | ident ;
+inherit_stmt = "inherit" ident { ident } ;
 
-expr        = string | number | bool | path | list | record | ref | duration | bytes | function_call ;
-function_call = ident "(" [ expr { "," expr } ] ")" ;
-list        = "[" [ expr { "," expr } ] "]" ;
-record      = "{" { assignment } "}" ;
+# Graph constructs (used in mesh, device, mediaPipeline, etc.)
+node_decl   = "node" name block ;
+edge        = ref "->" ref { "->" ref } [ ":" string ] ;
+
+# ---- Expressions ------------------------------------------------------------
+
+expr        = literal | list | record | app ;
+app         = ref [ "(" [ arg { "," arg } ] ")" ] [ record ] ;
+arg         = expr ;
 ref         = ident { "." ident } ;
+record      = "{" { assignment | inherit_stmt } "}" ;
+list        = "[" [ expr { "," expr } ] "]" ;
+literal     = string | number | bool | path | duration | bytes | "null" ;
 
-ident_or_string = ident | string ;
+# ---- Types (parsed, not yet checked) ----------------------------------------
+#
+# Type syntax is accepted and stored in the AST but is not validated by the
+# v0.2 evaluator.  Type checking is Goal 2.
+
+type        = type_atom { "|" type_atom } ;
+type_atom   = qualname [ "<" type { "," type } ">" ]
+            | "(" [ type { "," type } ] ")" "->" type ;
+qualname    = ident { "." ident } ;
+
+# ---- Annotations ------------------------------------------------------------
+
+annotation  = "@" ident [ "(" [ arg { "," arg } ] ")" ] ;
+
+# ---- Lexical terminals ------------------------------------------------------
+#
+# Comments are stripped by the lexer before parsing; they do not appear in
+# any grammar production's RHS.  They are documented here for completeness.
+
+comment     = "#" { any } eol ;
+
+string      = '"' { char | interp } '"' ;
+interp      = "${" ref "}" ;
+
+# Numeric and unit literals
+number      = [ "-" ] digit { digit } [ "." digit { digit } ] ;
+bool        = "true" | "false" ;
+path        = "." ( "/" | letter ) { path_char } ;
+duration    = digit { digit } ( "ns" | "us" | "ms" | "s" | "m" | "h" | "d" ) ;
+bytes       = digit { digit } ( "B" | "KB" | "MB" | "GB" | "TB" ) ;
+
+# Character-level productions
 ident       = letter { letter | digit | "_" | "-" } ;
+letter      = ? ASCII letter: a-z or A-Z ? ;
+digit       = ? ASCII decimal digit: 0-9 ? ;
+char        = ? any Unicode scalar value except '"' and '\',
+                or a JSON-style escape sequence: \" \\ \/ \b \f \n \r \t \uXXXX ? ;
+path_char   = letter | digit | "/" | "_" | "-" | "." ;
+any         = ? any Unicode scalar value ? ;
+eol         = ? U+000A (line feed) or U+000D U+000A (CRLF) ? ;

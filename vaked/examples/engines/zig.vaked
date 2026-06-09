@@ -4,5 +4,5 @@ engine zigDaemon(name: String, src: Path) -> Engine {
     optimize = "ReleaseSafe"
   }
 
-  check smoke "${package}/bin/${name} --help"
+  check("smoke", "${package}/bin/${name} --help")
 }

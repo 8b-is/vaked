@@ -1,0 +1,15 @@
+# Minimal v0.2 example — parallel primitive
+# Demonstrates: fibers list of ref-apps, strategy string, supervisor ref-app.
+# NOTE: backpressure is intentionally absent — deferred post-v0.2.
+
+parallel "operator-runtime" {
+  fibers = [
+    ebpfIngest,
+    otaIndex,
+    mediaCompress,
+    operatorMap
+  ]
+
+  strategy = "supervised-dag"
+  supervisor = otp
+}
