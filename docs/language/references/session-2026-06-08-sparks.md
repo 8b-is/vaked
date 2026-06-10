@@ -5,7 +5,7 @@ New reference repos surfaced while scaffolding `vaked-base`. Captured here for t
 ## Runtime / Zig foundations
 
 - **[mitchellh/libxev](https://github.com/mitchellh/libxev)** — cross-platform, high-performance event loop: non-blocking IO, timers, events; Linux (io_uring or epoll), macOS (kqueue), Wasm+WASI; **Zig and C API**.
-  - *Vaked relevance:* the async foundation for the Zig enforcement daemons (`sandboxd`, `agent-guardd`, `eventd`, `mcp-brokerd`). The C API also lets the OTP control plane and any C-FFI surface share one loop model. Strong default for [`docs/runtime`](../runtime/README.md).
+  - *Vaked relevance:* the async foundation for the Zig enforcement daemons (`sandboxd`, `agent-guardd`, `eventd`, `mcp-brokerd`). The C API also lets the OTP control plane and any C-FFI surface share one loop model. Strong default for [`docs/runtime`](../../runtime/README.md).
 
 ## Index / code-intelligence (CrabCC lineage)
 

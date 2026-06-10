@@ -8,13 +8,16 @@
 #   ( x )          grouping (does not affect semantics, only precedence)
 #   rule = ... ;   one production rule, semicolon-terminated
 #
-# Whitespace separates tokens. A newline TERMINATES a statement (the statement
-# list inside a block is newline-delimited), EXCEPT inside an open grouping —
-# "(" ")", "[" "]", or "{" "}" — where newlines are insignificant, so lists,
-# records, and parenthesized calls may span lines. This bounds the `{ ident }`
-# repetitions in `inherit` / `grant` to the current line. Within a statement,
-# spaces and tabs are insignificant. Comments (#) run to end of line and are
-# discarded by the lexer. Source files are UTF-8; keywords/identifiers ASCII.
+# Whitespace separates tokens. A newline TERMINATES the current statement or
+# record entry — block and record bodies ("{" "}") are newline-delimited, one
+# statement/entry per line. Newlines are insignificant ONLY inside open "(" ")"
+# and "[" "]" groupings, so argument lists and list literals may span lines.
+# This bounds the `{ ident }` repetitions in `inherit` / `grant` and the
+# `order` chains to the current line; in an `order_decl`, ";" separates chains
+# and a chain list may continue across newlines after the ";". Within a
+# statement, spaces and tabs are insignificant. Comments (#) run to end of
+# line and are discarded by the lexer. Source files are UTF-8; keywords and
+# identifiers are ASCII. (These rules are enforced by tests/spec.)
 #
 # ---- Design decisions (v0.2) -----------------------------------------------
 #

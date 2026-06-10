@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""run_all.py — run every spec-test module, print a per-test summary table, and
+exit non-zero on any failure.
+
+Run from the repo root (or anywhere):
+
+    python3 tests/spec/run_all.py
+
+Each test module exposes ``run() -> (ok: bool, lines: list[str])``. This driver
+calls them in order, prints each module's detail lines, then a summary table, and
+sets the process exit code to 1 if any module failed (so CI fails the job).
+"""
+
+import os
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import test_grammar_selfcontained as t_grammar  # noqa: E402
+import test_examples_parse as t_examples  # noqa: E402
+import test_lowering_fixtures as t_lowering  # noqa: E402
+import test_doc_links as t_links  # noqa: E402
+
+MODULES = [
+    ("grammar_selfcontained", t_grammar),
+    ("examples_parse", t_examples),
+    ("lowering_fixtures", t_lowering),
+    ("doc_links", t_links),
+]
+
+
+def main():
+    print("=" * 72)
+    print("Vaked spec-test harness — tests/spec/run_all.py")
+    print("=" * 72)
+
+    results = []
+    for name, mod in MODULES:
+        t0 = time.time()
+        try:
+            ok, lines = mod.run()
+            err = None
+        except Exception as e:  # a test module crashing is itself a failure
+            ok, lines, err = False, [], f"{type(e).__name__}: {e}"
+        dt = time.time() - t0
+
+        print(f"\n## {name}")
+        for ln in lines:
+            print(ln)
+        if err is not None:
+            import traceback
+            print(f"  ERROR: {err}")
+            traceback.print_exc()
+        print(f"  ({'PASS' if ok else 'FAIL'} in {dt*1000:.0f} ms)")
+        results.append((name, ok, dt))
+
+    # summary table
+    print("\n" + "=" * 72)
+    print("SUMMARY")
+    print("-" * 72)
+    width = max(len(n) for n, _, _ in results)
+    n_pass = 0
+    for name, ok, dt in results:
+        status = "PASS" if ok else "FAIL"
+        if ok:
+            n_pass += 1
+        print(f"  {name.ljust(width)}   {status}   {dt*1000:7.0f} ms")
+    print("-" * 72)
+    all_ok = (n_pass == len(results))
+    print(f"  {n_pass}/{len(results)} test modules passed   "
+          f"=> {'ALL GREEN' if all_ok else 'FAILURES PRESENT'}")
+    print("=" * 72)
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
