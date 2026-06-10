@@ -1,0 +1,179 @@
+# builtins.vaked — the built-in Vaked schema & capability catalog, dogfooded.
+#
+# NORMATIVE SOURCE: vaked/schema/parallel-types.md.  This file is that catalog
+# re-expressed in the v0.3 `schema` / `capability` surface syntax so the checker
+# (docs/language/0011-type-system.md, stages 3-4 — vakedc/check.py) can read the
+# schema registry and capability taxonomy directly from the parsed LPG instead of
+# hard-coding it.  parallel-types.md remains the prose normative reference; a
+# spec test (tests/spec/test_vakedc_check.py) guards that every kind and every
+# capability domain named there exists here (catalog ↔ md coverage).
+#
+# Encoding notes (faithful to parallel-types.md):
+#   * A field with no presence refinement is REQUIRED (0011 §3.3).
+#   * `optional` / `default` mark optional fields.
+#   * A schema declares `open` exactly where parallel-types.md says open
+#     (device, mediaPipeline, fiberPolicy, meshNode); all others are closed.
+#   * The `_` anonymous type-parameter position used in the md prose
+#     (`Stream<_>`, `Catalog<_>`, `Fiber<_, _>`) is written here with a named
+#     parameter (`Stream<T>`, `Catalog<T>`, `Fiber<I, O>`): the v0.3 lexer does
+#     not admit a bare `_` identifier, and a never-further-constrained named
+#     parameter is the same schema ("a Stream of some item type").  This is a
+#     lossless transcription, recorded as a grammar-gap finding in the design
+#     report — it changes nothing the checker enforces.
+
+# --------------------------------------------------------------------------- #
+# Built-in kind schemas (one `schema <kind>` per built-in kind)
+# --------------------------------------------------------------------------- #
+
+# `runtime` — top-level system container.  Only `systems` is a field; nested
+# index/stream/fiber/surface/parallel decls are a structural property of the
+# block (handled by elaboration), not fields, so `runtime` stays closed.
+schema runtime {
+  field systems : List<String> { nonempty }
+}
+
+# `engine` — builds a native artifact.  `optimize` lives in the `zig.build`
+# record but is listed for documentation of the accepted optimize tags.
+schema engine {
+  field package  : Derivation
+  field optimize : String { optional
+                            oneof ["Debug", "ReleaseSafe", "ReleaseFast", "ReleaseSmall"] }
+}
+
+# `index` — Index<T>: a reproducible source of structured/semi-structured content.
+schema index {
+  field source    : Source | List<Source> { nonempty }
+  field schema    : Schema<T>   { optional }
+  field normalize : Normalizer  { optional }
+  field chunk     : Normalizer  { optional }
+  field trust     : TrustPolicy { optional }
+  field emit      : List<ArtifactTarget> { optional nonempty }
+}
+
+# `catalog` — Catalog<T>: a queryable materialization of an index.
+schema catalog {
+  field from : Index<T>
+  field key  : List<String> { optional nonempty }
+  field emit : ArtifactTarget | List<ArtifactTarget>
+}
+
+# `stream` — Stream<T>: a typed runtime event flow.
+schema stream {
+  field source    : Source
+  field type      : TypeRef
+  field retention : Duration { optional }
+  field fps       : Int      { optional > 0 }
+}
+
+# `fiber` — Fiber<I, O>: a policy-bound execution lane with typed input/output.
+schema fiber {
+  field engine  : Engine
+  field input   : I
+  field output  : O
+  field policy  : Policy  { optional }
+  field budget  : Budget  { optional }
+  field observe : Bool    { optional default = false }
+}
+
+# the shape of a fiber's `policy { … }` block (open — forward-compatible keys).
+schema fiberPolicy {
+  field strip_metadata : Bool         { optional }
+  field max_pixels     : String       { optional }
+  field formats        : List<String> { optional nonempty }
+  open
+}
+
+# `surface` — Surface: an operator-facing view or control shell.
+schema surface {
+  field mode   : SurfaceMode
+  field fps    : Int { optional > 0 }
+  field input  : List<Stream<T> | Graph | Catalog<T>> { nonempty }
+  field views  : List<View> { nonempty }
+  field budget : Budget { optional }
+}
+
+# `mesh` — Mesh<Node, Edge>: agent/process/tool/device topology.  A mesh block is
+# a graph block (node decls + `->` edges), not record fields; the node record
+# schema below is the body of each `node`.
+schema mesh {
+}
+
+# shape of a `node <name> { … }` body inside a mesh (open — descriptive keys).
+schema meshNode {
+  field role         : String { nonempty }
+  field capabilities : List<Capability> { optional nonempty }
+  open
+}
+
+# `device` — Device: a hardware/driver node.  Open (driver vocabularies vary).
+schema device {
+  field driver      : DriverRef
+  field mount       : Path
+  field permissions : List<String> { nonempty }
+  field observe     : Bool { optional default = false }
+  open
+}
+
+# `mediaPipeline` — MediaPipeline: a source → stages → sink media graph.  Open.
+schema mediaPipeline {
+  field source : Source
+  field stages : List<Stage> { nonempty }
+  field sink   : Stream<T> | Source
+  open
+}
+
+# stage record schemas (the `resize`/`encode` builders inside a mediaPipeline).
+schema stageResize {
+  field width  : Int { > 0 }
+  field height : Int { > 0 }
+}
+schema stageEncode {
+  field codec   : String { nonempty }
+  field bitrate : Int    { > 0 }
+}
+
+# `parallel` — ParallelGroup: a supervised group of fibers.  Closed (enforces the
+# backpressure deferral: a stray `backpressure { … }` is an unknown field).
+schema parallel {
+  field fibers     : List<Fiber<I, O>> { nonempty }
+  field strategy   : Strategy
+  field supervisor : Supervisor
+}
+
+# --------------------------------------------------------------------------- #
+# Built-in capability taxonomy (one `capability <domain>` per built-in domain)
+# `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
+# Each order is acyclic ⇒ a partial order (0011 §4.2).
+# --------------------------------------------------------------------------- #
+
+# `fs` — filesystem authority.  Two chains sharing none/repo_ro/host_rw;
+# repo_rw and host_ro are incomparable.
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+# `network` — network authority.  Total order.
+capability network {
+  grant none loopback lan egress
+  order none < loopback < lan < egress
+}
+
+# `mcp` — MCP broker authority.  Total order.
+capability mcp {
+  grant none github_read github_write broker_admin
+  order none < github_read < github_write < broker_admin
+}
+
+# `ebpf` — eBPF/observation authority.  Total order.
+capability ebpf {
+  grant none observe attach_ro attach_rw
+  order none < observe < attach_ro < attach_rw
+}
+
+# `process` — process/exec authority.  Total order.
+capability process {
+  grant none spawn_sandboxed spawn exec_host
+  order none < spawn_sandboxed < spawn < exec_host
+}

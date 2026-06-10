@@ -1,0 +1,46 @@
+{
+  "diagnostics": [
+    {
+      "code": "E-CAP-ATTENUATION",
+      "decl": "mesh reviewField",
+      "file": "vaked/examples/types/rejected.vaked",
+      "message": "delegation `author -> reviewer` escalates authority: receiver holds `fs.repo_rw` but sender holds fs.repo_ro (receiver's grant must be ≤ the sender's in domain `fs`)",
+      "related": [],
+      "severity": "error",
+      "span": {
+        "byteEnd": 1075,
+        "byteStart": 1057,
+        "col": 3,
+        "line": 30
+      }
+    },
+    {
+      "code": "E-CONSTRAINT-RANGE",
+      "decl": "stream telemetry",
+      "file": "vaked/examples/types/rejected.vaked",
+      "message": "field `fps`: value 0 violates `> 0`",
+      "related": [],
+      "severity": "error",
+      "span": {
+        "byteEnd": 1315,
+        "byteStart": 1314,
+        "col": 9,
+        "line": 39
+      }
+    },
+    {
+      "code": "E-CONFORM-UNKNOWN-FIELD",
+      "decl": "stream telemetry",
+      "file": "vaked/examples/types/rejected.vaked",
+      "message": "`colour` is not a declared field of closed schema `stream`",
+      "related": [],
+      "severity": "error",
+      "span": {
+        "byteEnd": 1471,
+        "byteStart": 1465,
+        "col": 3,
+        "line": 43
+      }
+    }
+  ]
+}

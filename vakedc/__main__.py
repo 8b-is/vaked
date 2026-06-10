@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""vakedc CLI — ``python3 -m vakedc parse <file> [--json P] [--sqlite P] [--print]``.
+"""vakedc CLI — ``parse`` and ``check`` subcommands.
 
-Parses a .vaked file into the LPG and emits canonical JSON + SQLite. Defaults write
-``.vaked/graph.json`` and ``.vaked/graph.db`` relative to the CWD. ``--print`` writes
-canonical JSON to stdout. Exits 1 on NFC/lex/parse error with the source-mapped
-message on stderr; the warning for a Unicode-version mismatch also goes to stderr,
-so stdout stays clean (``--print`` output is parseable JSON).
+  python3 -m vakedc parse <file> [--json P] [--sqlite P] [--print]
+  python3 -m vakedc check <file> [--json] [--builtins PATH]
+
+``parse`` parses a .vaked file into the LPG and emits canonical JSON + SQLite
+(defaults under ``.vaked/``; ``--print`` writes canonical JSON to stdout).
+
+``check`` runs the 0011 type-system checker (stages 3-4) over a .vaked file
+against the built-in catalog and prints diagnostics: human-readable to stderr by
+default, or canonical JSON to stdout with ``--json``.  ``--builtins PATH``
+overrides the catalog (default: the repo's ``vaked/schema/builtins.vaked``,
+resolved relative to the package, so it works from any CWD).  Exit codes:
+``0`` clean, ``1`` diagnostics present, ``2`` usage / read / parse error.
+
+Both commands exit ``1`` on an NFC/lex/parse error with the source-mapped message
+on stderr; the Unicode-version-mismatch warning also goes to stderr so stdout
+stays clean.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -19,6 +31,7 @@ from .parser import VakedSyntaxError
 from .resolve import build_graph
 from .parser import parse_source
 from .emit import to_canonical_json, to_sqlite
+from .check import check_source, load_builtins, default_builtins_path
 
 
 def _cmd_parse(args) -> int:
@@ -66,10 +79,64 @@ def _cmd_parse(args) -> int:
     return 0
 
 
+def _diagnostics_json(diags) -> str:
+    """Canonical JSON for a diagnostics list: stable key order, sorted records
+    (the checker already sorts by (file, byteStart, byteEnd, code)), 2-space
+    indent, trailing newline."""
+    doc = {"diagnostics": [d.as_dict() for d in diags]}
+    return json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _format_diag(d) -> str:
+    return (f"{d.file}:{d.line}:{d.col}: {d.severity}: {d.code}: {d.message} "
+            f"[{d.decl}]")
+
+
+def _cmd_check(args) -> int:
+    try:
+        with open(args.file, "r", encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError as e:
+        print(f"vakedc: cannot read {args.file}: {e}", file=sys.stderr)
+        return 2
+
+    builtins_path = args.builtins or default_builtins_path()
+    try:
+        builtins_cache = load_builtins(builtins_path)
+    except OSError as e:
+        print(f"vakedc: cannot read builtins {builtins_path}: {e}", file=sys.stderr)
+        return 2
+    except (VakedLexError, VakedSyntaxError) as e:
+        print(f"vakedc: builtins catalog failed to parse: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        diags = check_source(src, args.file, builtins_cache=builtins_cache)
+    except (VakedLexError, VakedSyntaxError) as e:
+        print(f"vakedc: {e}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        # canonical JSON to stdout (parseable; warnings go to stderr).
+        sys.stdout.write(_diagnostics_json(diags))
+    else:
+        for d in diags:
+            print(_format_diag(d), file=sys.stderr)
+        if diags:
+            n = len(diags)
+            print(f"vakedc: {n} diagnostic{'s' if n != 1 else ''} in {args.file}",
+                  file=sys.stderr)
+        else:
+            print(f"vakedc: {args.file} — no diagnostics", file=sys.stderr)
+
+    return 1 if diags else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="vakedc",
-        description="Vaked front-end: parse .vaked -> Labeled Property Graph.",
+        description="Vaked front-end: parse .vaked -> Labeled Property Graph; "
+                    "check .vaked against the 0011 type system.",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
     pp = sub.add_parser("parse", help="parse a .vaked file into the LPG")
@@ -80,10 +147,21 @@ def main(argv=None) -> int:
                     help="write the SQLite graph DB to PATH")
     pp.add_argument("--print", dest="print_", action="store_true",
                     help="write canonical JSON to stdout")
+
+    cp = sub.add_parser("check", help="type-check a .vaked file (0011 stages 3-4)")
+    cp.add_argument("file", help="path to a .vaked source file")
+    cp.add_argument("--json", action="store_true",
+                    help="emit diagnostics as canonical JSON to stdout")
+    cp.add_argument("--builtins", metavar="PATH", default=None,
+                    help="path to the built-in catalog (default: the repo's "
+                         "vaked/schema/builtins.vaked)")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "parse":
         return _cmd_parse(args)
+    if args.cmd == "check":
+        return _cmd_check(args)
     ap.print_help(sys.stderr)
     return 2
 
