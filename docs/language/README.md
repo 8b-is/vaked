@@ -49,7 +49,18 @@ parallel
 ## Grammar
 
 The normative EBNF grammar and its design notes are in
-[`vaked/grammar/README.md`](../../vaked/grammar/README.md).
+[`vaked/grammar/README.md`](../../vaked/grammar/README.md) (currently **v0.3**).
+
+## Type system (Goal 2)
+
+The Vaked type system — structural typing + per-kind schema contracts, a
+**closed** constraint set, a typed capability taxonomy with an attenuation
+partial order (POLA checked at type-time), bounded generics, and a total +
+deterministic checking pipeline (parse → resolve → elaborate → check, *validate
+before generating*) — is specified normatively in
+[`0011-type-system.md`](./0011-type-system.md). Its built-in schema and
+capability catalog is [`vaked/schema/parallel-types.md`](../../vaked/schema/parallel-types.md);
+worked type-layer examples are in [`vaked/examples/types/`](../../vaked/examples/types/).
 
 ## Golden commands
 

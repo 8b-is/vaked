@@ -1,4 +1,4 @@
-# vaked grammar — Vaked capability-graph language, v0.2
+# vaked grammar — Vaked capability-graph language, v0.3
 #
 # Notation:
 #   "literal"      terminal (keyword or punctuation, matched verbatim)
@@ -8,9 +8,13 @@
 #   ( x )          grouping (does not affect semantics, only precedence)
 #   rule = ... ;   one production rule, semicolon-terminated
 #
-# Whitespace (space, tab, newline) separates tokens and is otherwise
-# insignificant. Comments (#) run to end of line and are discarded by the
-# lexer. Source files are UTF-8; all keywords and identifiers are ASCII.
+# Whitespace separates tokens. A newline TERMINATES a statement (the statement
+# list inside a block is newline-delimited), EXCEPT inside an open grouping —
+# "(" ")", "[" "]", or "{" "}" — where newlines are insignificant, so lists,
+# records, and parenthesized calls may span lines. This bounds the `{ ident }`
+# repetitions in `inherit` / `grant` to the current line. Within a statement,
+# spaces and tabs are insignificant. Comments (#) run to end of line and are
+# discarded by the lexer. Source files are UTF-8; keywords/identifiers ASCII.
 #
 # ---- Design decisions (v0.2) -----------------------------------------------
 #
@@ -36,6 +40,51 @@
 #    from 0008-parallel-fibers-indexes-surfaces.md is intentionally absent.
 #    It requires a conditional sub-language that is not yet designed; it is
 #    tracked as a post-v0.2 extension.
+#
+# ---- Design decisions (v0.3 — the Goal-2 type layer) ------------------------
+#
+# v0.3 adds the *surface syntax* for the Vaked type system (Goal 2): the form
+# in which users WRITE schemas, field constraints, and capability taxonomies.
+# The accompanying checker (parse -> resolve -> elaborate -> check) is specified
+# normatively in `docs/language/0011-type-system.md`; the built-in schema and
+# capability catalog is `vaked/schema/parallel-types.md`.  The grammar here only
+# fixes what is syntactically writable.  v0.3 is a STRICT SUPERSET of v0.2:
+# every v0.2 file parses unchanged (the new statement forms are reached only by
+# new leading soft keywords — `field`, `open`, `grant`, `order` — that do not
+# begin any v0.2 statement; `capability` is added as a new `kind`).  There is no
+# new `domain` keyword: a capability domain is named by the decl's `name`.
+#
+# 5. Schema field declarations with constraint refinements.  Inside a `schema`
+#    block, a field is declared `field name : type { refinement }`.  The
+#    refinement set is CLOSED and total (no user predicates / no expression
+#    language): `required`, `optional`, `nonempty`, `default = expr`,
+#    `oneof [ ... ]`, the comparisons `>= number` / `<= number` / `> number` /
+#    `< number`, `in number .. number`, and `matches /regex/`.  A schema may be
+#    declared `open` (one bare `open` statement in its block) to admit unknown
+#    fields; the default is closed (unknown fields rejected by the checker).
+#
+# 6. Capability declarations.  A `capability` block declares one capability
+#    DOMAIN.  Its body lists the domain's `grant` names and exactly one `order`
+#    statement giving the attenuation partial order as a chain / set of chains
+#    (`order none < repo_ro < repo_rw`).  Grants named in the order must be
+#    declared; this is checked, not grammatical.  Capability VALUES elsewhere
+#    are written with the existing `ref` form `domain.grant` (e.g. `fs.repo_rw`,
+#    `network.none`) — no new value syntax is introduced.
+#
+# 7. regex terminal.  `matches` takes a `/.../ ` regex literal (`regex`).  The
+#    regex body is opaque to the parser and validated by the checker against a
+#    fixed, bounded dialect (see 0011); it is NOT a Vaked expression.
+#
+# 8. Soft keywords.  `field`, `open`, `grant`, `order` are SOFT keywords: they
+#    introduce a v0.3 statement only in that statement's full shape (`field`
+#    followed by `ident ":"`; `grant` followed by `ident`; `order` followed by
+#    an `order_chain`; bare `open`).  `field_decl`/`grant_decl`/`order_decl` are
+#    tried before `assignment` and self-disambiguate via their required second
+#    token (e.g. `order = 3` falls through to `assignment` because `=` is not the
+#    `<` an `order_chain` needs).  `open` is the one bare single-keyword form, so
+#    `open_decl` is ordered AFTER `assignment`: `open = expr` parses as the v0.2
+#    `assignment`, while a bare `open` (not followed by an assign-op) parses as
+#    `open_decl`.  Thus no previously-legal v0.2 program changes meaning.
 #
 # ---- Minor conventions ------------------------------------------------------
 #
@@ -77,12 +126,25 @@ kind        = "runtime" | "input"   | "engine"        | "host"
             | "budget"  | "observability" | "runclass" | "workflow"
             | "index"   | "catalog" | "stream"         | "fiber"
             | "surface" | "mesh"    | "device"         | "mediaPipeline"
-            | "parallel" | "schema" ;
+            | "parallel" | "schema" | "capability" ;
 
 # ---- Block and statements ---------------------------------------------------
+#
+# `stmt` alternatives are ORDERED (first match wins).  The v0.3 type-layer
+# statements (`field_decl`, `open_decl`, `grant_decl`, `order_decl`) are listed
+# first because each begins with a reserved leading keyword (`field`, `open`,
+# `grant`, `order`) that does not start any v0.2 statement, so adding them
+# cannot change how a v0.2 block parses.  They are syntactically legal in any
+# block, but are MEANINGFUL only inside `schema` / `capability` declarations;
+# the checker (0011) rejects them elsewhere.  The grammar stays uniform: no
+# per-kind block grammars.
 
 block       = "{" { stmt } "}" ;
-stmt        = assignment
+stmt        = field_decl
+            | grant_decl
+            | order_decl
+            | assignment
+            | open_decl
             | inherit_stmt
             | edge
             | node_decl
@@ -95,6 +157,46 @@ inherit_stmt = "inherit" ident { ident } ;
 # Graph constructs (used in mesh, device, mediaPipeline, etc.)
 node_decl   = "node" name block ;
 edge        = ref "->" ref { "->" ref } [ ":" string ] ;
+
+# ---- Schema field declarations (v0.3) ---------------------------------------
+#
+# A `schema` block declares the record type and constraints of one Vaked kind
+# (built-in or user-defined).  Each field gives a name, a type, and an optional
+# brace-delimited list of refinements drawn from the CLOSED constraint set.  An
+# empty refinement list `{}` may be omitted: `field name : type` is shorthand
+# for `field name : type {}` (a required field with no further constraint, per
+# the default in 0011).  `open_decl` marks the schema as accepting unknown
+# fields.
+
+field_decl  = "field" ident ":" type [ "{" { refinement } "}" ] ;
+open_decl   = "open" ;
+
+# CLOSED refinement set — total, side-effect-free, no user predicates.
+refinement  = "required"
+            | "optional"
+            | "nonempty"
+            | "default" "=" expr
+            | "oneof" list
+            | cmp_ref
+            | range_ref
+            | "matches" regex ;
+cmp_ref     = ( ">=" | "<=" | ">" | "<" ) number ;
+range_ref   = "in" number ".." number ;
+
+# ---- Capability declarations (v0.3) -----------------------------------------
+#
+# A `capability` block declares ONE capability domain: the `name` of the decl
+# is the domain (e.g. `capability fs { ... }`).  The body lists the domain's
+# grants and exactly one attenuation order.  An `order` is one or more chains
+# separated by ";"; within a chain, `a < b` means "a is the WEAKER (more
+# attenuated) grant" (i.e. a <= b in the order).  Consequently a holder of `b`
+# may delegate `a` (authority only decreases along delegation), but a holder of
+# `a` may NOT delegate `b`.  See 0011 §4.  Each grant named in an order must be
+# declared by a `grant` statement (checked, not grammatical).
+
+grant_decl  = "grant" ident { ident } ;
+order_decl  = "order" order_chain { ";" order_chain } ;
+order_chain = ident "<" ident { "<" ident } ;
 
 # ---- Expressions ------------------------------------------------------------
 
@@ -129,6 +231,13 @@ comment     = "#" { any } eol ;
 
 string      = '"' { char | interp } '"' ;
 interp      = "${" ref "}" ;
+
+# Regex literal — used only by the `matches` refinement (v0.3).  Delimited by
+# "/".  The body is opaque to the parser; the checker validates it against a
+# fixed bounded dialect (anchored, no backreferences) defined in 0011.
+regex       = "/" { regex_char } "/" ;
+regex_char  = ? any Unicode scalar value except '/' and a line terminator,
+                or the two-character escape "\/" denoting a literal '/' ? ;
 
 # Numeric and unit literals
 number      = [ "-" ] digit { digit } [ "." digit { digit } ] ;

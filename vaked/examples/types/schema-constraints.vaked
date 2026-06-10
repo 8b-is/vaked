@@ -1,0 +1,38 @@
+# v0.3 example — a user-defined `schema` exercising the CLOSED constraint set.
+#
+# Grammar:  field_decl, refinement (required/optional/nonempty/default/oneof/
+#           cmp_ref/range_ref/matches), open_decl  (vaked-v0-plus.ebnf, v0.3).
+# Rules:    docs/language/0011-type-system.md §3.
+# Catalog:  this is the kind of schema an `index` would reference via
+#           `schema = schema.zigbeeOta` (vaked/schema/parallel-types.md, index).
+#
+# Every refinement form appears at least once below.
+
+schema zigbeeOta {
+  # required + nonempty String
+  field manufacturer : String { required nonempty }
+
+  # required Int constrained to a closed range
+  field image_type   : Int { required in 0 .. 255 }
+
+  # required Int with a lower bound only
+  field file_version : Int { required >= 0 }
+
+  # Path validated by a bounded regex (anchored https:// prefix)
+  field url          : Path { required matches /https:\/\/.*/ }
+
+  # optional Float with an upper bound
+  field trust_score  : Float { optional <= 1.0 }
+
+  # optional, defaulted, enumerated String  (default must satisfy oneof — it does)
+  field channel      : String { default = "stable" oneof ["stable", "beta", "dev"] }
+
+  # optional non-empty list
+  field tags         : List<String> { optional nonempty }
+}
+
+# A second schema, declared `open`, that admits unknown fields (0011 §1.1 rule 5).
+schema firmwareMeta {
+  field sha256 : String { required matches /sha256-.*/ }
+  open
+}

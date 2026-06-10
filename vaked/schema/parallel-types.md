@@ -1,57 +1,508 @@
-# Parallel Types
+# Parallel Types — Built-in Schema & Capability Catalog
 
-## New domain types
+**Normative.** This file is the *data* the Vaked type system operates on: one
+**schema** per built-in kind, plus the built-in **capability taxonomy**. The
+*rules* (structural matching, conformance, the closed constraint set, capability
+attenuation, generics, the checking pipeline) are
+[`docs/language/0011-type-system.md`](../../docs/language/0011-type-system.md);
+the surface syntax is [`../grammar/vaked-v0-plus.ebnf`](../grammar/vaked-v0-plus.ebnf)
+(v0.3). The primitives are introduced in
+[`docs/language/0008-parallel-fibers-indexes-surfaces.md`](../../docs/language/0008-parallel-fibers-indexes-surfaces.md).
+
+Every schema below is written in the v0.3 `schema` surface syntax (or its
+prose-table equivalent) and is **calibrated against the worked examples** in
+[`../examples/`](../examples/): every block in `examples/primitives/*.vaked`,
+`examples/operator-field.vaked`, and `examples/engines/zig.vaked` conforms to the
+schema for its kind. Where an example revealed a field the earlier sketch
+omitted, the schema was widened to match real usage (never the reverse); those
+cases are flagged **[from examples]**.
+
+Conventions:
+
+- A field with no presence marker is **required** (per 0011 §3.3).
+- `optional` / `default` mark optional fields.
+- A schema is **closed** unless it declares `open`. Closed ⇒ unknown fields are
+  rejected. Two built-in kinds are `open` for forward-compatibility (`device`,
+  `mediaPipeline`), as noted; the rest are closed.
+- Type names (`Index<T>`, `Stream<T>`, `ArtifactTarget`, `Capability`, …) are the
+  domain/auxiliary types of 0011 §2.
+
+---
+
+## Domain types (type-level signatures)
 
 ```text
-Index<T>
-Catalog<T>
-Stream<T>
-Fiber<I, O>
-Surface
-Mesh<Node, Edge>
-Device
-MediaPipeline
-ParallelGroup
+Index<T>          Catalog<T>        Stream<T>
+Fiber<I, O>       Surface           Mesh<Node, Edge>
+Device            MediaPipeline     ParallelGroup
+Engine            Capability        Schema<T>
+Runtime
 ```
 
-## Fiber
+## Auxiliary (built-in) types referenced by the schemas
 
-A fiber is a policy-bound execution lane.
+| Type | Inhabitants (built-in values / shape) |
+|------|----------------------------------------|
+| `Source` | `github("owner/repo")`, `raw.github("owner/repo", "file")`, `<daemon>.<channel>` ref (e.g. `agentGuardd.ringbuf`, `agentpipe.screenrec`), `device.<name>` ref |
+| `ArtifactTarget` | `catalog.jsonl`, `catalog.sqlite`, `nix.derivation`, `sqlite("./path.db")` |
+| `Normalizer` | `crabcc.markdown`, `crabcc.semantic { … }`, other `crabcc.*` refs |
+| `TrustPolicy` | `pinned { commit : String, sha256 : String }` |
+| `SurfaceMode` | `raylib` (extensible enum of built-in surface backends) |
+| `Supervisor` | `otp` (extensible enum of built-in supervisors) |
+| `Strategy` | `String` — currently `"supervised-dag"` and other documented strategy tags |
+| `View` | `String` — a named surface view (`"network-flows"`, …) |
+| `DriverRef` | a `ref`/app to a driver (`usb.cdc_acm`, `device.framebuffer`) |
+| `Stage` | an app-with-record stage (`resize { … }`, `encode { … }`) |
+| `Schema<T>` | a `ref` to a `schema` declaration (`schema.zigbeeOta`) |
+| `Capability` | `domain.grant` ref (§ Capability taxonomy) |
+| `Budget` | a `ref` to a `budget` decl, or a budget record |
+| `Policy` | a structural record (per-kind, e.g. the `fiber` policy block) |
 
-```text
-Fiber<I, O> {
-  engine: Engine
-  input: I
-  output: O
-  policy: Policy
-  budget: Budget
-  observe: Bool
+These auxiliary types are *built-in vocabulary*; they are enumerated here so the
+checker can resolve the refs the examples use (0011 §2.3). Marked-extensible
+enums admit further built-in values without a schema change.
+
+---
+
+## Schema: `runtime`
+
+A `runtime` is the top-level system container. It carries system targets and may
+**nest** other declarations (indexes, streams, fibers, surfaces, parallels) in
+its block; nested decls are checked as their own kinds.
+
+```vaked
+schema runtime {
+  field systems : List<String> { nonempty }   # [from examples] e.g. ["x86_64-linux","aarch64-linux"]
+  # Nested declarations (index/stream/fiber/surface/parallel/…) are permitted in
+  # the block and checked under their own schemas; they are not "fields".
 }
 ```
 
-## Index
+- `systems` is the Nix-style system-double list. Conforms to
+  `operator-field.vaked` (`systems = ["x86_64-linux", "aarch64-linux"]`).
+- Nesting is a structural property of the block, handled by elaboration (0011
+  §6.1), not a record field — so `runtime` stays closed w.r.t. *fields* while
+  freely containing sub-declarations.
 
-An index is a reproducible content source.
+---
 
-```text
-Index<T> {
-  source: Source
-  schema: Schema<T>
-  trust: TrustPolicy
-  normalize: Normalizer
-  emit: List<ArtifactTarget>
+## Schema: `engine`
+
+An `engine` builds a native artifact. Engines are typically generic via a
+`signature` (0011 §5.2), e.g. `engine zigDaemon(name : String, src : Path) ->
+Engine`.
+
+```vaked
+schema engine {
+  field package  : Derivation                      # the built package, e.g. zig.build { … }
+  field optimize : String { optional               # [from examples] inside zig.build record
+                            oneof ["Debug", "ReleaseSafe", "ReleaseFast", "ReleaseSmall"] }
+  # check("name", "cmd") app-statements are permitted in the block (smoke checks).
 }
 ```
 
-## Surface
+- Conforms to `engines/zig.vaked`: `package = zig.build { inherit src; optimize
+  = "ReleaseSafe" }` and the `check("smoke", "…")` statement. `optimize` lives in
+  the `zig.build` record (a `Derivation`-producing builder); the schema lists it
+  for documentation of the accepted optimize tags.
+- `Derivation` is the Nix-derivation auxiliary type (a built-in builder result).
 
-A surface is an operator-facing visualization or control interface.
+---
 
-```text
-Surface {
-  mode: SurfaceMode
-  input: List<Stream | Graph | Catalog>
-  views: List<View>
-  budget: Budget
+## Schema: `index`
+
+`Index<T>` — a reproducible source of structured/semi-structured content.
+
+```vaked
+schema index {
+  field source    : Source | List<Source> { nonempty }
+  field schema    : Schema<T>   { optional }     # item schema; binds T
+  field normalize : Normalizer  { optional }
+  field chunk     : Normalizer  { optional }     # [from examples] crabcc.semantic { max_tokens, overlap }
+  field trust     : TrustPolicy { optional }     # pinned { commit, sha256 }
+  field emit      : List<ArtifactTarget> { optional nonempty }
 }
 ```
+
+- Conforms to both `index` blocks in `examples/primitives/index.vaked` and
+  `operator-field.vaked`:
+  - `zigRefs`: `source` (list of `github(...)`), `normalize = crabcc.markdown`,
+    `chunk = crabcc.semantic { max_tokens = 1200, overlap = 120 }`, `emit =
+    [catalog.jsonl, catalog.sqlite, nix.derivation]`.
+  - `zigbeeFirmware`: `source = raw.github(…)`, `schema = schema.zigbeeOta`,
+    `trust = pinned { commit, sha256 }`.
+- `source` is a union `Source | List<Source>` so both the single-source and
+  multi-source forms type-check. **[from examples]** `chunk` was not in the
+  original sketch; added to match `index.vaked`.
+- `chunk`'s record (`max_tokens : Int`, `overlap : Int`) is the
+  `crabcc.semantic` builder's argument schema, checked structurally.
+- `T` (the item type) is bound by `schema` when present (0011 §5.1) and flows to
+  any `catalog` built `from` this index.
+
+---
+
+## Schema: `catalog`
+
+`Catalog<T>` — a queryable materialization of an index.
+
+```vaked
+schema catalog {
+  field from : Index<T>             # binds T; must equal source index's T
+  field key  : List<String> { optional nonempty }
+  field emit : ArtifactTarget | List<ArtifactTarget>
+}
+```
+
+- Conforms to `examples/primitives/catalog.vaked`: `from = index.zigbeeFirmware`,
+  `key = ["manufacturer", "image_type", "file_version"]`, `emit =
+  sqlite("./var/firmware.db")`.
+- `emit` is `ArtifactTarget | List<ArtifactTarget>` to accept both the single
+  (`sqlite(...)`) and list forms.
+- Generic consistency: `from : Index<T>` ⇒ this catalog is `Catalog<T>` for the
+  **same** `T` (0011 §5.1).
+
+---
+
+## Schema: `stream`
+
+`Stream<T>` — a typed runtime event flow.
+
+```vaked
+schema stream {
+  field source    : Source              # daemon channel ref, e.g. agentGuardd.ringbuf
+  field type      : TypeRef             # event type; binds T (Event.Ebpf, Media.Frame)
+  field retention : Duration { optional }   # 24h  — accepts duration literal or "24h" string
+  field fps       : Int      { optional > 0 }   # [from examples] screenrec fps = 10
+}
+```
+
+- Conforms to both `stream` blocks: `ebpfEvents` (`source = agentGuardd.ringbuf`,
+  `type = Event.Ebpf`, `retention = 24h`) and `screenrec` (`source =
+  agentpipe.screenrec`, `type = Media.Frame`, `fps = 10`). Also matches
+  `operator-field.vaked`.
+- `type` is a `TypeRef` (a dotted ref naming the event type); it binds the
+  stream's `T`. `retention` accepts the `duration` literal `24h` (0008 sketch
+  used `"24h"` — both forms are accepted per 0011 §2.1).
+- **[from examples]** `fps` was not in the original Stream sketch; added because
+  `screenrec` carries it.
+
+---
+
+## Schema: `fiber`
+
+`Fiber<I, O>` — a policy-bound execution lane with typed input and output.
+
+```vaked
+schema fiber {
+  field engine  : Engine                  # ref to an engine
+  field input   : I                        # typically a Stream<I> ref
+  field output  : O                        # an artifact / target ref
+  field policy  : Policy  { optional }     # structural record (see below)
+  field budget  : Budget  { optional }
+  field observe : Bool    { optional default = false }
+}
+```
+
+The `policy` record schema (nested, **[from examples]** from `fiber.vaked`):
+
+```vaked
+schema fiberPolicy {           # the shape of a fiber's `policy { … }` block
+  field strip_metadata : Bool          { optional }
+  field max_pixels     : String        { optional }   # e.g. "4K"
+  field formats        : List<String>  { optional nonempty }
+  open                                                # forward-compatible policy keys
+}
+```
+
+- Conforms to `examples/primitives/fiber.vaked` and `operator-field.vaked`:
+  `engine = zigimg`, `input = stream.screenrec`, `output =
+  artifacts.compressedMedia`, `policy { strip_metadata = true; max_pixels =
+  "4K"; formats = ["png", "webp"] }`.
+- `budget` and `observe` come from the original `parallel-types` sketch; they are
+  optional and absent in the examples (so the examples still conform). `policy`
+  is `open` so additional policy keys do not break checking while the policy
+  vocabulary stabilizes.
+- Generic flow: `input` binds `I` (from the source stream's `T`), `output` binds
+  `O` (0011 §5.1).
+
+---
+
+## Schema: `surface`
+
+`Surface` — an operator-facing view or control shell.
+
+```vaked
+schema surface {
+  field mode   : SurfaceMode                              # raylib (extensible)
+  field fps    : Int { optional > 0 }
+  field input  : List<Stream<_> | Graph | Catalog<_>> { nonempty }
+  field views  : List<View> { nonempty }
+  field budget : Budget { optional }
+}
+```
+
+- Conforms to `examples/primitives/surface.vaked` and `operator-field.vaked`:
+  `mode = raylib`, `fps = 60`, `input = [stream.ebpfEvents, graph.workflow,
+  graph.agentfield]`, `views = ["network-flows", …]`.
+- `input` elements are a union of `Stream<_>`, `Graph` (a graph ref like
+  `graph.workflow`), and `Catalog<_>`. `_` is an anonymous parameter position
+  (any item type accepted; surfaces do not constrain it). `Graph` is the
+  auxiliary type for graph refs (`graph.workflow`, `graph.agentfield`).
+- `budget` is from the sketch; optional, absent in examples.
+
+---
+
+## Schema: `mesh`
+
+`Mesh<Node, Edge>` — agent/process/tool/device topology. A mesh's block is a
+**graph block** (0008): `node` declarations and `->` edges, not record fields.
+
+Node record schema (the body of each `node`):
+
+```vaked
+schema meshNode {                 # shape of a `node <name> { … }` body
+  field role         : String { nonempty }
+  field capabilities : List<Capability> { optional nonempty }
+  open                            # nodes may carry additional descriptive keys
+}
+```
+
+Edges:
+
+- `a -> b` and `a -> b -> c` chains, with an optional `: "label"` (grammar
+  `edge`). Edges marked as **delegations** carry authority and are subject to the
+  attenuation check (0011 §4.4); a labelled edge (`mcpBroker -> eventd :
+  "audit"`) records the label for source-mapping.
+
+- Conforms to `examples/primitives/mesh.vaked`: nodes `codex`
+  (`capabilities = [fs.repo_rw, mcp.github_read]`) and `redteam`
+  (`capabilities = [fs.repo_ro, network.none]`), and the edges `codex ->
+  mcpBroker`, `redteam -> eventd`, `mcpBroker -> eventd : "audit"`.
+- `Node`/`Edge` type parameters are `meshNode` and the edge record respectively.
+  `meshNode` is `open` so role-specific node keys are allowed.
+
+---
+
+## Schema: `device`
+
+`Device` — a hardware/driver node. **Open** schema (driver vocabularies vary).
+
+```vaked
+schema device {
+  field driver      : DriverRef                          # usb.cdc_acm
+  field mount       : Path                               # "/dev/ttyUSB0" (string-as-path, 0011 §2.5)
+  field permissions : List<String> { nonempty
+                        }                                  # subset of ["read","write","mmap",…]
+  field observe     : Bool { optional default = false }
+  open                                                    # deep driver schema TBD (0008 / grammar README)
+}
+```
+
+- Conforms to `examples/primitives/device.vaked`: `driver = usb.cdc_acm`,
+  `mount = "/dev/ttyUSB0"`, `permissions = ["read", "write"]`, `observe = true`.
+- `mount` is `Path`; the quoted form is accepted per 0011 §2.5. `device` is
+  `open` because its full driver-interface schema is deferred (consistent with
+  the grammar README's "deep device/mediaPipeline schemas" deferral).
+
+---
+
+## Schema: `mediaPipeline`
+
+`MediaPipeline` — a source → stages → sink media graph. **Open** (codec/stage
+vocabularies vary).
+
+```vaked
+schema mediaPipeline {
+  field source : Source                     # device.framebuffer
+  field stages : List<Stage> { nonempty }    # [ resize { … }, encode { … } ]
+  field sink   : Stream<_> | Source          # stream.screenrec
+  open                                       # deep stage/codec schema TBD
+}
+```
+
+Stage record schemas (nested, **[from examples]** from `mediaPipeline.vaked`):
+
+```vaked
+schema stageResize {
+  field width  : Int { > 0 }
+  field height : Int { > 0 }
+}
+schema stageEncode {
+  field codec   : String { nonempty }     # "h264"
+  field bitrate : Int    { > 0 }          # 2000000
+}
+```
+
+- Conforms to `examples/primitives/mediaPipeline.vaked`: `source =
+  device.framebuffer`, `stages = [resize { width=1920, height=1080 }, encode {
+  codec="h264", bitrate=2000000 }]`, `sink = stream.screenrec`.
+- `Stage` is an app-with-record; the `resize`/`encode` builders carry the stage
+  schemas above. `mediaPipeline` is `open` for the same deferral reason as
+  `device`.
+
+---
+
+## Schema: `parallel`
+
+`ParallelGroup` — a supervised group of fibers. (Per the grammar README, v0.2/0.3
+`parallel` accepts only `fibers`, `strategy`, `supervisor`; `backpressure` is a
+deferred post-v0.2 sub-language and is **not** a field here.)
+
+```vaked
+schema parallel {
+  field fibers     : List<Fiber<_, _>> { nonempty }   # refs to fibers
+  field strategy   : Strategy                          # "supervised-dag"
+  field supervisor : Supervisor                        # otp
+}
+```
+
+- Conforms to `examples/primitives/parallel.vaked` and the `parallel
+  "operator-runtime"` block in `operator-field.vaked`: `fibers = [ebpfIngest,
+  otaIndex, mediaCompress, operatorMap]`, `strategy = "supervised-dag"`,
+  `supervisor = otp`.
+- `fibers` elements are `Fiber<_, _>` refs (any in/out types). `parallel` is
+  **closed**, enforcing the deferral: a stray `backpressure { … }` would be
+  rejected as an unknown field until that sub-language lands.
+
+---
+
+## Schema: `schema` and `capability` (the meta-kinds)
+
+- **`schema <Name> { field … ; [open] }`** — declares a schema. Its body is a
+  set of `field_decl`s and an optional `open`. Well-formedness (legal refinement
+  on legal field type, valid default/oneof/range/regex) is checked at load (0011
+  §3.6, §6.4a). A `schema` may be generic via its `signature`.
+- **`capability <domain> { grant … ; order … }`** — declares one capability
+  domain (next section). Its body is `grant_decl`s and exactly one `order_decl`.
+
+These two kinds are how users *extend* the type system within its closed bounds:
+new schemas and new capability domains, never new constraint forms or new
+evaluation.
+
+---
+
+# Built-in capability taxonomy
+
+A capability is `domain.grant` (0011 §4). The five built-in domains below are
+**predeclared**; each lists its grants and its attenuation order (`a < b` ⇒ `a`
+is the weaker/more-attenuated grant; delegation may only go to `≤`). Each order
+is acyclic ⇒ a partial order (0011 §4.2). Users may declare further domains with
+the `capability` kind.
+
+### Domain `fs` — filesystem authority
+
+```vaked
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+```
+
+| Grant | Meaning |
+|-------|---------|
+| `none` | no filesystem access |
+| `repo_ro` | read-only within the repository |
+| `repo_rw` | read-write within the repository |
+| `host_ro` | read-only on the host beyond the repo |
+| `host_rw` | read-write on the host |
+
+Order (a partial order, two chains sharing `none`/`repo_ro`/`host_rw`): `none` is
+least; `host_rw` is greatest. `repo_rw` and `host_ro` are **incomparable**
+(neither dominates the other) — a node with `repo_rw` may not be delegated
+`host_ro` and vice-versa. **[from examples]** `fs.repo_ro` and `fs.repo_rw` are
+exercised by `mesh.vaked` / `operator-field`'s mesh nodes; `host_*` extend the
+lattice upward.
+
+### Domain `network` — network authority
+
+```vaked
+capability network {
+  grant none loopback lan egress
+  order none < loopback < lan < egress
+}
+```
+
+| Grant | Meaning |
+|-------|---------|
+| `none` | no network |
+| `loopback` | localhost only |
+| `lan` | local network |
+| `egress` | outbound to the internet |
+
+Total order (a chain) `none < loopback < lan < egress`. **[from examples]**
+`network.none` is used by `mesh.vaked`'s `redteam` node.
+
+### Domain `mcp` — MCP broker authority
+
+```vaked
+capability mcp {
+  grant none github_read github_write broker_admin
+  order none < github_read < github_write < broker_admin
+}
+```
+
+| Grant | Meaning |
+|-------|---------|
+| `none` | no MCP access |
+| `github_read` | read via the GitHub MCP tool |
+| `github_write` | read+write via the GitHub MCP tool |
+| `broker_admin` | administer the MCP broker |
+
+Total order. **[from examples]** `mcp.github_read` is used by `mesh.vaked`'s
+`codex` node.
+
+### Domain `ebpf` — eBPF/observation authority
+
+```vaked
+capability ebpf {
+  grant none observe attach_ro attach_rw
+  order none < observe < attach_ro < attach_rw
+}
+```
+
+| Grant | Meaning |
+|-------|---------|
+| `none` | no eBPF |
+| `observe` | read eBPF-produced events (e.g. a ringbuf stream) |
+| `attach_ro` | attach read-only (tracing) programs |
+| `attach_rw` | attach programs that may act (e.g. enforce) |
+
+Total order. Relates to `stream`s whose `source` is an eBPF ringbuf (e.g.
+`agentGuardd.ringbuf` in `operator-field`): consuming such a stream *uses*
+`ebpf.observe` (0011 §4.3 use-gathering).
+
+### Domain `process` — process/exec authority
+
+```vaked
+capability process {
+  grant none spawn_sandboxed spawn exec_host
+  order none < spawn_sandboxed < spawn < exec_host
+}
+```
+
+| Grant | Meaning |
+|-------|---------|
+| `none` | may not start processes |
+| `spawn_sandboxed` | spawn inside a sandbox/namespace |
+| `spawn` | spawn normal child processes |
+| `exec_host` | execute arbitrary host processes |
+
+Total order. An `engine` whose smoke `check(…)` runs a command *uses*
+`process.spawn` (or `spawn_sandboxed`), gathered per 0011 §4.3.
+
+---
+
+## Attenuation examples (cross-link to checking)
+
+- `mesh.vaked`: `codex` holds `[fs.repo_rw, mcp.github_read]`; `redteam` holds
+  `[fs.repo_ro, network.none]`. The edge `codex -> mcpBroker` must satisfy
+  attenuation against whatever `mcpBroker` holds; a delegation that handed
+  `mcpBroker` `fs.host_rw` would be rejected (`E-CAP-ATTENUATION`) since `codex`
+  holds no `fs` grant `≥ host_rw`.
+- A node delegating `fs.repo_ro` to a receiver that holds `fs.repo_rw` is
+  rejected: `repo_rw ≰ repo_ro`. The reverse (deliver `repo_ro` from a `repo_rw`
+  holder) is permitted.
+
+A runnable conformant-vs-rejected pair is in
+[`../examples/types/`](../examples/types/).

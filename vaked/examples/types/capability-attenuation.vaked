@@ -1,0 +1,44 @@
+# v0.3 example — a `capability` taxonomy + a mesh delegating an ATTENUATED cap.
+#
+# Grammar:  capability decl, grant_decl, order_decl, order_chain
+#           (vaked-v0-plus.ebnf, v0.3); mesh node_decl + edge (v0.2, unchanged).
+# Rules:    docs/language/0011-type-system.md §4 (attenuation, POLA).
+# Catalog:  mirrors the built-in `fs` domain in vaked/schema/parallel-types.md.
+
+# A user-declared capability domain. `a < b` means a is the WEAKER (more
+# attenuated) grant; delegation may only go to a grant <= what the sender holds.
+# The relation is acyclic => a partial order (0011 §4.2).
+capability storage {
+  grant none read append write admin
+  order none < read < append < write < admin
+}
+
+# A second domain with a NON-total (branching) order, to show partial-order
+# behaviour: `cache` and `queue` are incomparable (neither dominates the other).
+capability bus {
+  grant none cache queue admin
+  order none < cache < admin ;
+        none < queue < admin
+}
+
+mesh deliveryField {
+  node planner {
+    role = "planner"
+    capabilities = [storage.write, bus.admin]
+  }
+
+  node worker {
+    role = "worker"
+    # worker holds strictly LESS than planner in every shared domain:
+    #   storage.append < storage.write   (OK to receive)
+    #   bus.cache      < bus.admin        (OK to receive)
+    capabilities = [storage.append, bus.cache]
+  }
+
+  # Delegation edge: planner -> worker. The checker verifies
+  # granted(worker) <= granted(planner), per domain (0011 §4.4):
+  #   storage: append <= write  ✓
+  #   bus:     cache  <= admin   ✓
+  # => attenuation holds; this edge is ACCEPTED.
+  planner -> worker : "delegate"
+}

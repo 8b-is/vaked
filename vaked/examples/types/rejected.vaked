@@ -1,0 +1,44 @@
+# v0.3 example — a REJECTED runtime fragment (FAILS `vaked check` on purpose).
+#
+# This file PARSES under grammar v0.3 but is intentionally INVALID: the checker
+# (docs/language/0011-type-system.md) produces the diagnostics annotated below.
+# Pairs with `conformant.vaked`. See README.md for the side-by-side explanation.
+#
+# DO NOT "fix" this file — it is the negative half of the conformant/rejected
+# pair and must stay invalid.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh reviewField {
+  node author {
+    role = "author"
+    capabilities = [fs.repo_ro]          # author holds only repo_ro
+  }
+
+  node reviewer {
+    role = "reviewer"
+    capabilities = [fs.repo_rw]          # reviewer holds repo_rw (STRONGER)
+  }
+
+  # (1) ATTENUATION ERROR — E-CAP-ATTENUATION (0011 §4.4):
+  #     delegating author -> reviewer requires granted(reviewer) <= granted(author),
+  #     but repo_rw </= repo_ro (the receiver holds MORE than the sender).
+  author -> reviewer : "handoff"
+}
+
+stream telemetry {
+  source = agentGuardd.ringbuf
+  type = Event.Ebpf
+
+  # (2) CONSTRAINT ERROR — E-CONSTRAINT-RANGE (0011 §3.2):
+  #     schema `stream` declares  fps : Int { optional > 0 } ;  0 violates `> 0`.
+  fps = 0
+
+  # (3) CONFORMANCE ERROR — E-CONFORM-UNKNOWN-FIELD (0011 §1.1 rule 5):
+  #     `stream` is a CLOSED schema; `colour` is not a declared field.
+  colour = "red"
+}
