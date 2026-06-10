@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "source": "vaked/examples/operator-field.vaked",
+  "artifacts": {
+    "flake.nix": [
+      {
+        "region": "nixosModules.operator-field",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "runtime operator-field",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1334, "line": 3, "col": 1 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-runtime-operator-field-00000000000000000000000000000000000000="
+      },
+      {
+        "region": "inputs.zigbeeFirmware-src",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "index zigbeeFirmware",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 380, "byteEnd": 574, "line": 18, "col": 3 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-index-zigbeeFirmware-0000000000000000000000000000000000000000="
+      },
+      {
+        "region": "packages.zigCorpus-crabcc-index",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "index zigCorpus",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 103, "byteEnd": 376, "line": 6, "col": 3 },
+        "emitter": "crabcc.index",
+        "inputsHash": "sha256-index-zigCorpus-000000000000000000000000000000000000000000000="
+      },
+      {
+        "region": "packages.zigimg",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "fiber mediaCompress",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 992, "line": 39, "col": 3 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-engine-zigimg-000000000000000000000000000000000000000000000000="
+      },
+      {
+        "region": "apps.operatorMap",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "surface operatorMap",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 996, "byteEnd": 1200, "line": 51, "col": 3 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-surface-operatorMap-00000000000000000000000000000000000000000="
+      }
+    ],
+    "gen/RUNTIME.md": [
+      {
+        "region": "header",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "runtime operator-field",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1334, "line": 3, "col": 1 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-runtime-operator-field-00000000000000000000000000000000000000="
+      },
+      {
+        "region": "indexes/zigCorpus",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "index zigCorpus",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 103, "byteEnd": 376, "line": 6, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-index-zigCorpus-000000000000000000000000000000000000000000000="
+      },
+      {
+        "region": "indexes/zigbeeFirmware",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "index zigbeeFirmware",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 380, "byteEnd": 574, "line": 18, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-index-zigbeeFirmware-0000000000000000000000000000000000000000="
+      },
+      {
+        "region": "streams/ebpfEvents",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "stream ebpfEvents",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 578, "byteEnd": 676, "line": 27, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-stream-ebpfEvents-00000000000000000000000000000000000000000000="
+      },
+      {
+        "region": "streams/screenrec",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "stream screenrec",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 680, "byteEnd": 771, "line": 33, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-stream-screenrec-000000000000000000000000000000000000000000000="
+      },
+      {
+        "region": "fibers/mediaCompress",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "fiber mediaCompress",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 992, "line": 39, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-fiber-mediaCompress-0000000000000000000000000000000000000000000="
+      },
+      {
+        "region": "surfaces/operatorMap",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "surface operatorMap",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 996, "byteEnd": 1200, "line": 51, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-surface-operatorMap-00000000000000000000000000000000000000000="
+      },
+      {
+        "region": "parallel/operator-runtime",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "parallel operator-runtime",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 1204, "byteEnd": 1332, "line": 58, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-parallel-operator-runtime-000000000000000000000000000000000000="
+      }
+    ],
+    "gen/catalog/zigCorpus.jsonl": [
+      {
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "index zigCorpus",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 103, "byteEnd": 376, "line": 6, "col": 3 },
+        "emitter": "catalog.jsonl",
+        "inputsHash": "sha256-index-zigCorpus-000000000000000000000000000000000000000000000="
+      }
+    ],
+    "gen/zig/mediaCompress.json": [
+      {
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "fiber mediaCompress",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 992, "line": 39, "col": 3 },
+        "emitter": "zig.daemoncfg",
+        "inputsHash": "sha256-fiber-mediaCompress-0000000000000000000000000000000000000000000="
+      }
+    ]
+  }
+}

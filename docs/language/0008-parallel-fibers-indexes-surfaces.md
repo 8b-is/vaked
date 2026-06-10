@@ -197,6 +197,11 @@ policy manifests
 generated RUNTIME.md
 ```
 
+How each declaration *lowers* to these artifacts — the emitter interface, the
+Nix spine, the three concretely-specified exemplar mappings (generated docs, Zig
+daemon config, CrabCC index + catalog), the deferred targets, and provenance —
+is specified in [`0012-lowering.md`](./0012-lowering.md) (Goal 3).
+
 ## v0 boundary
 
 v0 should define the graph model and support at least:
