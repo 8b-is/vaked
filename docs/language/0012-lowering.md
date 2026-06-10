@@ -626,6 +626,12 @@ lowering run. It maps **artifact path → list of entries**, one entry per
 artifact or per *region* of an artifact (decl-level granularity: each region
 attributes to exactly one source decl).
 
+> **Erratum (vakedc lower, 2026-06-10).** The manifest lands at
+> `<out>/provenance.json` — the root of the lowering output tree (alongside
+> `flake.nix` and `gen/`), where `<out>` is the `--out` directory (default
+> `.vaked/lower/`); lowering a repo in-place uses `<out> = .vaked/`, which is the
+> `.vaked/provenance.json` this section names.
+
 Schema (normative; this is itself emitted deterministically — §2.1):
 
 ```text

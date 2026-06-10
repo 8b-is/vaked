@@ -24,6 +24,7 @@ import test_lowering_fixtures as t_lowering  # noqa: E402
 import test_doc_links as t_links  # noqa: E402
 import test_vakedc as t_vakedc  # noqa: E402
 import test_vakedc_check as t_vakedc_check  # noqa: E402
+import test_vakedc_lower as t_vakedc_lower  # noqa: E402
 
 MODULES = [
     ("grammar_selfcontained", t_grammar),
@@ -32,6 +33,7 @@ MODULES = [
     ("doc_links", t_links),
     ("vakedc", t_vakedc),
     ("vakedc_check", t_vakedc_check),
+    ("vakedc_lower", t_vakedc_lower),
 ]
 
 

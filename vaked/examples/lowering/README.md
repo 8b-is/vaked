@@ -1,10 +1,16 @@
 # Lowering fixtures — expected output for `operator-field.vaked`
 
-These are **hand-authored expected-output fixtures**, not compiler output.
-**No Vaked compiler exists yet** ([`docs/language/0012-lowering.md`](../../../docs/language/0012-lowering.md)
-is the *spec*; this directory is the *spec-by-example*). Each file is what a
-correct Goal-3 lowering pass *should* emit when given the validated typed
-semantic graph of [`../operator-field.vaked`](../operator-field.vaked).
+These are the **expected lowering output** for `operator-field.vaked`
+([`docs/language/0012-lowering.md`](../../../docs/language/0012-lowering.md) is the
+*spec*; this directory is the *spec-by-example*). They are now **reproduced
+byte-for-byte by `vakedc lower`** — `python3 -m vakedc lower
+vaked/examples/operator-field.vaked --out <dir>` emits exactly these files (the
+`inputsHash` values are real sha256 digests, see below), and
+[`tests/spec/test_vakedc_lower.py`](../../../tests/spec/test_vakedc_lower.py)
+asserts the equality on every run. They began as hand-authored fixtures (reviewed
+by hand against the EBNF and 0012); the executable lowering pass has since caught
+up to them. Each file is what a correct Goal-3 lowering pass emits given the
+validated typed semantic graph of [`../operator-field.vaked`](../operator-field.vaked).
 
 A reviewer can spot-derive each region from a source declaration: every fixture
 carries the §6.1 generated header (in the format's comment syntax) naming the
@@ -35,11 +41,16 @@ carries the §6.1 generated header (in the format's comment syntax) naming the
 >   for the toolchain's pinned baseline rev). No `flake.lock` fixture is
 >   committed: lowering does **not** emit `flake.lock` (0012 §2.3/§4.2) — the lock
 >   is produced at first `nix build` and records the full resolution.
-> - `inputsHash` values in `provenance.json` are disclosed zero-padded
->   placeholders (`sha256-<label>-000…=`); the label records *what the region was
->   projected from* per 0012 §6.2 (e.g. `packages.zigimg`'s region attributes to
->   `decl = "fiber mediaCompress"` but hashes the resolved `engine-zigimg`
->   inputs — same decl, different projection).
+> - `inputsHash` values in `provenance.json` are **real** content-addressed
+>   digests — `"sha256-" + sha256(canonical_projection_json)` — computed by
+>   `vakedc lower` and keyed **per projection** per 0012 §6.2, not the decl: e.g.
+>   `packages.zigimg`'s region attributes to `decl = "fiber mediaCompress"` but
+>   hashes the resolved *engine* identity + pin (the `engine-zigimg` projection),
+>   while the fiber-config region for the same fiber hashes the fiber node's own
+>   projection — so the two carry **different** hashes for the **same** decl.
+>   (These are the one part of the fixture set that is not a disclosed placeholder
+>   but a derived, reproducible value; re-lowering the unchanged graph reproduces
+>   them exactly.)
 > - `gen/catalog/zigCorpus.jsonl` rows are plausible placeholder chunk rows in
 >   CrabCC's default (unschematized) record shape (0012 §5.3b), one referencing
 >   each of two `zigCorpus` `github(…)` sources; the real rows are produced by
@@ -55,6 +66,10 @@ carries the §6.1 generated header (in the format's comment syntax) naming the
 > `engine_package` is the flake *attribute name* `packages.zigimg`, not a
 > computed store path — Nix resolves the path at build time (0012 §2.3/§2.4).
 
-These fixtures are reviewed by hand against the EBNF and 0012 until a parser +
-lowering pass exist (per the `vaked-language-author` convention: no compiler yet,
-so review by hand).
+These fixtures are now checked two ways: `vakedc lower` reproduces them
+byte-for-byte ([`tests/spec/test_vakedc_lower.py`](../../../tests/spec/test_vakedc_lower.py)),
+and [`tests/spec/test_vakedc_lower.py`](../../../tests/spec/test_vakedc_lower.py)'s
+sibling [`test_lowering_fixtures.py`](../../../tests/spec/test_lowering_fixtures.py)
+re-derives everything checkable (spans, key order, headers, registry membership)
+from first principles — the original by-hand review, made permanent. Both suites
+must agree.
