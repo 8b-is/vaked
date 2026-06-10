@@ -22,12 +22,14 @@ import test_grammar_selfcontained as t_grammar  # noqa: E402
 import test_examples_parse as t_examples  # noqa: E402
 import test_lowering_fixtures as t_lowering  # noqa: E402
 import test_doc_links as t_links  # noqa: E402
+import test_vakedc as t_vakedc  # noqa: E402
 
 MODULES = [
     ("grammar_selfcontained", t_grammar),
     ("examples_parse", t_examples),
     ("lowering_fixtures", t_lowering),
     ("doc_links", t_links),
+    ("vakedc", t_vakedc),
 ]
 
 

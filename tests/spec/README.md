@@ -124,3 +124,17 @@ If you believe a test is wrong because the **grammar** is wrong (not the recogni
 stop and report it — do not patch grammars or examples just to make the suite pass.
 The recognizers genuinely interpret the on-disk `.ebnf`; only the lexer-level prose
 terminals are hand-mapped (documented above).
+
+## Known oracle limitations (review findings, 2026-06-10)
+
+- **The from-EBNF recognizer is newline-over-permissive** vs the grammar header:
+  `ebnf.py`'s `_skip_ws` skips NEWLINE before every terminal outside the three
+  line-bound rules, so it accepts intra-statement newlines (`field\n x : Int`,
+  `a -> b\n -> c`) that the grammar — and `vakedc`, which is the stricter,
+  faithful implementation — reject. All observed divergences are one-sided
+  (recognizer accepts / vakedc rejects); the differential test therefore proves
+  agreement on its probe set, not full equivalence. Tightening the recognizer
+  is tracked as a future improvement.
+- **Non-NFC input is out of differential scope by design**: `vakedc` rejects
+  non-NFC source at the lexer gate (pinned Unicode 15.1.0); the recognizer has
+  no such gate. Differential probes are NFC-only.
