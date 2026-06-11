@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """vakedc.check — 0011 type-system pipeline stages 3 (elaborate) and 4 (check).
 
-This is the Goal-2 checker.  It is a **pure** function of (a parsed .vaked file +
-the built-in catalog ``vaked/schema/builtins.vaked``) → a deterministic, source-
-mapped list of :class:`Diagnostic` records.  The only IO it performs is reading
-the builtins catalog file once (``load_builtins``); :func:`check_source` /
-:func:`check_graph` take the source text directly and do no IO.
+This is the Goal-2 checker.  It is a deterministic, source-mapped function of (a
+parsed .vaked file + the built-in catalog ``vaked/schema/builtins.vaked``) → a
+list of :class:`Diagnostic` records.  Its IO is bounded and explicit: it reads
+the builtins catalog once (``load_builtins``) and, for closed-world ref
+resolution (§6.1 stage 2), reads each ``use``-imported file once to bind that
+file's top-level declarations into scope (``_collect_import_decls``).  Both are
+deterministic; no clocks, randomness, or network.
 
 What it implements (docs/language/0011-type-system.md):
 
@@ -1107,20 +1109,48 @@ def load_builtins(builtins_path=None):
     return items, src, path
 
 
+def _collect_import_decls(items, filename, base_dir):
+    """Resolve each ``use "<path>"`` import (one level, relative to ``base_dir``
+    or the file's own directory) and return the ``(kind, name)`` set its
+    top-level declarations bind into this file's scope (0011 §6.1 stage 2).
+
+    This is the checker's only IO beyond the builtins catalog.  Unreadable
+    imports are skipped (their names simply stay unbound); cycles are bounded by
+    the one-level depth — `use` brings only the imported file's own top-level
+    names into scope, not transitive ones."""
+    base = base_dir if base_dir is not None else os.path.dirname(filename)
+    out = set()
+    for it in items:
+        if isinstance(it, P.Import):
+            path = os.path.normpath(os.path.join(base, it.path))
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    isrc = fh.read()
+            except OSError:
+                continue
+            for sub in parse_source(isrc, path):
+                if isinstance(sub, P.Decl):
+                    out.add((sub.kind, sub.name))
+    return out
+
+
 def check_file(path, builtins_path=None, builtins_cache=None):
     """Read a ``.vaked`` file and return its sorted list of :class:`Diagnostic`."""
     with open(path, "r", encoding="utf-8") as fh:
         src = fh.read()
     return check_source(src, path, builtins_path=builtins_path,
-                        builtins_cache=builtins_cache)
+                        builtins_cache=builtins_cache,
+                        base_dir=os.path.dirname(os.path.abspath(path)))
 
 
-def check_source(src, filename, builtins_path=None, builtins_cache=None):
+def check_source(src, filename, builtins_path=None, builtins_cache=None,
+                 base_dir=None):
     """Check Vaked ``src`` and return a sorted list of :class:`Diagnostic`.
 
     ``builtins_cache`` may be a pre-parsed ``(items, src, filename)`` tuple from
     :func:`load_builtins` to avoid re-reading the catalog (keeps the function
-    pure when the caller supplies the catalog)."""
+    pure when the caller supplies the catalog).  ``base_dir`` is the directory
+    `use` imports are resolved against (defaults to the file's own directory)."""
     if builtins_cache is None:
         builtins_cache = load_builtins(builtins_path)
     b_items, b_src, b_file = builtins_cache
@@ -1131,6 +1161,9 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None):
 
     items = parse_source(src, filename)
     _load_decls_into(registry, items, filename)          # user decls override
+
+    # Stage 2 — bind `use` imports' top-level decls into this file's scope.
+    imported_decls = _collect_import_decls(items, filename, base_dir)
 
     # Source maps for span resolution (built-ins + the file under check).
     smaps = {b_file: _SourceMap(b_src, b_file), filename: _SourceMap(src, filename)}
@@ -1161,7 +1194,7 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None):
             _check_decl_tree(it, registry, by_name_kind, smap, filename, diags)
             # Stage 2 (closed-world ref resolution) for each top-level runtime.
             if it.kind == "runtime":
-                _check_ref_resolution(it, filename, diags)
+                _check_ref_resolution(it, filename, diags, imported_decls)
 
     diags.sort(key=lambda d: d.sort_key())
     return diags
@@ -1201,31 +1234,54 @@ def _collect_runtime_decls(runtime_decl):
     return found
 
 
+# Data-flow fields whose bare refs name another declaration, plus the
+# `parallel.fibers` member list — the ref-bearing positions closed-world
+# resolution enforces.  (`_DEPENDS_FIELDS` is the resolver's data-flow set:
+# engine/input/output/from/source.)
+def _ref_fields():
+    from .resolve import _DEPENDS_FIELDS
+    return _DEPENDS_FIELDS | {"fibers"}
+
+
 def _walk_depends_refs(decl, out):
     """Collect ``(ref, field_name, owner_decl)`` for every bare ref appearing in a
-    data-flow field (``_DEPENDS_FIELDS``) within ``decl``'s subtree."""
-    from .resolve import _DEPENDS_FIELDS, _refs_in_value
+    ref-bearing field within ``decl``'s subtree."""
+    from .resolve import _refs_in_value
+    fields = _ref_fields()
     for st in decl.body:
-        if isinstance(st, P.Assignment) and st.target in _DEPENDS_FIELDS:
+        if isinstance(st, P.Assignment) and st.target in fields:
             for r in _refs_in_value(st.value):
                 out.append((r, st.target, decl))
         if isinstance(st, P.Decl):
             _walk_depends_refs(st, out)
 
 
-def _check_ref_resolution(runtime_decl, file, diags):
-    declared = _collect_runtime_decls(runtime_decl)
+def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
+    """Closed-world resolution for one runtime.  ``imported`` is the set of
+    ``(kind, name)`` bound by the file's ``use`` imports."""
+    declared = _collect_runtime_decls(runtime_decl) | set(imported)
+    declared_names = {nm for (_k, nm) in declared}
     refs = []
     _walk_depends_refs(runtime_decl, refs)
     for ref, field, owner in refs:
         parts = ref.parts
+        span = (ref.byteStart, ref.byteEnd, ref.line, ref.col)
         if len(parts) == 2 and parts[0] in P._KIND_SET:
+            # `<kind>.<name>` — must name an in-runtime/imported decl of that kind.
             if (parts[0], parts[1]) not in declared:
-                span = (ref.byteStart, ref.byteEnd, ref.line, ref.col)
                 _emit(diags, "E-REF-UNRESOLVED", file, span, owner,
                       f"`{field}` references `{ref.dotted}` but no "
                       f"`{parts[0]} {parts[1]}` is declared in runtime "
                       f"`{runtime_decl.name}`")
+        elif len(parts) == 1:
+            # bare name — must name some in-runtime/imported decl.
+            if parts[0] not in declared_names:
+                _emit(diags, "E-REF-UNRESOLVED", file, span, owner,
+                      f"`{field}` references `{ref.dotted}` but no declaration "
+                      f"named `{parts[0]}` is in scope of runtime "
+                      f"`{runtime_decl.name}`")
+        # len(parts) >= 2 with a non-kind head (`pkgs.x`, `<daemon>.<channel>`,
+        # `artifacts.x`) is the deferred "branch B" — left unenforced (no roster).
 
 
 def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags):

@@ -47,8 +47,8 @@
       packages = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system};
         in {
-          # engine zigimg (fiber mediaCompress: engine = zigimg) — built Zig pkg.
-          zigimg = pkgs.callPackage ./pkgs/zigimg.nix { };
+          # engine zigDaemon (fiber mediaCompress: engine = zigDaemon) — built Zig pkg.
+          zigDaemon = pkgs.callPackage ./pkgs/zigDaemon.nix { };
 
           # index zigCorpus, emit ∋ nix.derivation (0012 §5.3a) — CrabCC index
           # derivation; runs crabcc at build time over the pinned sources with

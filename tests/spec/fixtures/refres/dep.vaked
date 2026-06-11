@@ -1,0 +1,5 @@
+# fixture (ref-resolution import-binding test): a top-level engine decl that
+# main.vaked imports via `use`.  Not inside a runtime, so not itself enforced.
+engine depEngine {
+  package = nix.derivation
+}

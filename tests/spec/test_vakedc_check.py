@@ -19,6 +19,11 @@ Tests):
    to tests/spec/golden/rejected.diagnostics.json.
 5. All examples. All 15 ``.vaked`` examples check clean (rejected.vaked is the
    sole intentional exception — see group 4).
+5b. Ref resolution (#7). Closed-world resolution: a kind-qualified or bare
+   data-flow / `fibers` ref inside a `runtime {}` must resolve to an in-runtime
+   (or imported) declaration; bare top-level fragments are not enforced.
+5c. Import binding. A bare ref to a `use`-imported declaration resolves
+   (fixtures under tests/spec/fixtures/refres/).
 6. Determinism. Two checks of the same file produce identical diagnostics JSON.
 
 vakedc is imported as a top-level package (the repo root is on sys.path).
@@ -218,8 +223,11 @@ def _test_all_examples(lines):
     files = _all_examples()
     for f in files:
         rel = os.path.relpath(f, REPO)
+        # base_dir = the file's real directory so `use` imports resolve
+        # independent of CWD (operator-field.vaked imports ./engines/zig.vaked).
         diags = vakedc.check_source(open(f, encoding="utf-8").read(), rel,
-                                    builtins_cache=cache)
+                                    builtins_cache=cache,
+                                    base_dir=os.path.dirname(f))
         if os.path.basename(f) == "rejected.vaked":
             continue   # intentionally invalid (covered by group 4)
         if diags:
@@ -246,11 +254,15 @@ def _test_all_examples(lines):
 _REF_UNRESOLVED = "E-REF-UNRESOLVED"
 
 # A complete runtime whose fiber inputs an UNDECLARED stream (kind-qualified).
+# The `engine`/`output` refs are deliberately resolvable (declared engine; a
+# non-kind `artifacts.*` output is branch-B, unenforced) so the ONLY unresolved
+# ref is the kind-qualified `stream.nope`.
 _RR_UNRESOLVED = '''runtime "t" {
   systems = ["x86_64-linux"]
+  engine e { package = nix.derivation }
   stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
   fiber f {
-    engine = someEngine
+    engine = e
     input  = stream.nope
     output = artifacts.x
   }
@@ -260,9 +272,10 @@ _RR_UNRESOLVED = '''runtime "t" {
 # Same runtime, but the fiber inputs the DECLARED stream `s`.
 _RR_RESOLVED = '''runtime "t" {
   systems = ["x86_64-linux"]
+  engine e { package = nix.derivation }
   stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
   fiber f {
-    engine = someEngine
+    engine = e
     input  = stream.s
     output = artifacts.x
   }
@@ -275,6 +288,37 @@ _RR_FRAGMENT = '''fiber f {
   engine = someEngine
   input  = stream.nope
   output = artifacts.x
+}
+'''
+
+# Bare-name refs inside a runtime are also enforced: a bare `engine` must name
+# an in-runtime (or imported) declaration.
+_RR_BARE_ENGINE = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+  fiber f {
+    engine = ghostEngine
+    input  = stream.s
+    output = artifacts.x
+  }
+}
+'''
+
+# A bare member of a `parallel`'s `fibers` list must also resolve in-runtime.
+_RR_BARE_FIBER = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  engine e { package = nix.derivation }
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+  fiber f {
+    engine = e
+    input  = stream.s
+    output = artifacts.x
+  }
+  parallel "p" {
+    fibers = [f, ghostFiber]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
 }
 '''
 
@@ -308,10 +352,51 @@ def _test_ref_resolution(lines):
         lines.append(f"  FAIL ref-res: bare top-level fragment (no runtime) must "
                      f"not be enforced, got {fragment}")
 
+    bare_engine = [c for c in codes(_RR_BARE_ENGINE, "rr-bare-engine.vaked")
+                   if c == _REF_UNRESOLVED]
+    if bare_engine != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ref-res: runtime with bare `engine = ghostEngine` "
+                     f"should yield exactly one {_REF_UNRESOLVED}, got {bare_engine}")
+
+    bare_fiber = [c for c in codes(_RR_BARE_FIBER, "rr-bare-fiber.vaked")
+                  if c == _REF_UNRESOLVED]
+    if bare_fiber != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ref-res: runtime with bare `fibers = [..., ghostFiber]` "
+                     f"should yield exactly one {_REF_UNRESOLVED}, got {bare_fiber}")
+
     if ok:
-        lines.append("  ref-resolution: kind-qualified refs enforced inside "
+        lines.append("  ref-resolution: kind-qualified + bare refs enforced inside "
                      "runtime; fragments illustrative")
     return ok
+
+
+# --------------------------------------------------------------------------- #
+# 5c. `use`-import binding (#7 fast-follow) — a bare ref to an imported decl
+# --------------------------------------------------------------------------- #
+# `use "./dep.vaked"` binds dep.vaked's top-level decls into this file's scope,
+# so a runtime may reference them by name.  Without binding, the bare
+# `engine = depEngine` in main.vaked would be E-REF-UNRESOLVED.
+
+_REFRES_FIXT = os.path.join(HERE, "fixtures", "refres")
+
+
+def _test_import_binding(lines):
+    cache = _builtins_cache()
+    main = os.path.join(_REFRES_FIXT, "main.vaked")
+    diags = vakedc.check_source(open(main, encoding="utf-8").read(),
+                                os.path.relpath(main, REPO),
+                                builtins_cache=cache,
+                                base_dir=_REFRES_FIXT)
+    unresolved = [d for d in diags if d.code == _REF_UNRESOLVED]
+    if unresolved:
+        lines.append(f"  FAIL import-binding: `engine = depEngine` (imported from "
+                     f"dep.vaked) should resolve, got "
+                     f"{[d.message for d in unresolved]}")
+        return False
+    lines.append("  import-binding: bare ref to a `use`-imported decl resolves")
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +428,8 @@ def run():
     lines = []
     ok = True
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
-               _test_all_examples, _test_ref_resolution, _test_determinism):
+               _test_all_examples, _test_ref_resolution, _test_import_binding,
+               _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:

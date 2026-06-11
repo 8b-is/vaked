@@ -37,7 +37,7 @@ runtime "operator-field" {
   }
 
   fiber mediaCompress {
-    engine = zigimg
+    engine = zigDaemon
     input = stream.screenrec
     output = artifacts.compressedMedia
 

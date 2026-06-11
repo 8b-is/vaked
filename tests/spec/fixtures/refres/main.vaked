@@ -1,0 +1,17 @@
+# fixture (ref-resolution import-binding test): a runtime whose fiber binds a
+# bare `engine` that is declared in the IMPORTED dep.vaked, not in-file.  Once
+# `use`-import binding works, `depEngine` resolves and there is no diagnostic.
+use "./dep.vaked"
+
+runtime "m" {
+  systems = ["x86_64-linux"]
+  stream s {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+  }
+  fiber f {
+    engine = depEngine
+    input  = stream.s
+    output = artifacts.x
+  }
+}

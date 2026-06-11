@@ -7,7 +7,7 @@
         "region": "nixosModules.operator-field",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "runtime operator-field",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1334, "line": 3, "col": 1 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1337, "line": 3, "col": 1 },
         "emitter": "nix.spine",
         "inputsHash": "sha256-fcf08006f8dcf4dca2c650d6f7fb38338ef3ec179366b4cc3576ab616abb4a81"
       },
@@ -28,18 +28,18 @@
         "inputsHash": "sha256-2c1bdb46e566f6256c6b64b17311530b1fa6428e8aecec206d1b76f8777e4361"
       },
       {
-        "region": "packages.zigimg",
+        "region": "packages.zigDaemon",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "fiber mediaCompress",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 992, "line": 39, "col": 3 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 995, "line": 39, "col": 3 },
         "emitter": "nix.spine",
-        "inputsHash": "sha256-6aa6a132cd5d6d097044af3dba8fc640b6bf2c1344aafe80c8a5a151ddb2295a"
+        "inputsHash": "sha256-ea3ddd381b6c461339734b874346552a11db75b660d34c1678f09e9b1ad9005b"
       },
       {
         "region": "apps.operatorMap",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "surface operatorMap",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 996, "byteEnd": 1200, "line": 51, "col": 3 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 999, "byteEnd": 1203, "line": 51, "col": 3 },
         "emitter": "nix.spine",
         "inputsHash": "sha256-d45067c376ee9cbba213726e3dfbdb9a75aad0e58e660623210595afc9f99d66"
       }
@@ -49,7 +49,7 @@
         "region": "header",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "runtime operator-field",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1334, "line": 3, "col": 1 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1337, "line": 3, "col": 1 },
         "emitter": "docs.runtime",
         "inputsHash": "sha256-fcf08006f8dcf4dca2c650d6f7fb38338ef3ec179366b4cc3576ab616abb4a81"
       },
@@ -89,15 +89,15 @@
         "region": "fibers/mediaCompress",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "fiber mediaCompress",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 992, "line": 39, "col": 3 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 995, "line": 39, "col": 3 },
         "emitter": "docs.runtime",
-        "inputsHash": "sha256-51b0e4bf66bb7007fbe727edf61e9fb4c2b2722cdc587299534d0b885f8886ef"
+        "inputsHash": "sha256-4440bf7f62dccdff068d65beebe340e62703e1bec8f552fbb978193f1f03ec77"
       },
       {
         "region": "surfaces/operatorMap",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "surface operatorMap",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 996, "byteEnd": 1200, "line": 51, "col": 3 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 999, "byteEnd": 1203, "line": 51, "col": 3 },
         "emitter": "docs.runtime",
         "inputsHash": "sha256-d45067c376ee9cbba213726e3dfbdb9a75aad0e58e660623210595afc9f99d66"
       },
@@ -105,7 +105,7 @@
         "region": "parallel/operator-runtime",
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "parallel operator-runtime",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 1204, "byteEnd": 1332, "line": 58, "col": 3 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 1207, "byteEnd": 1335, "line": 58, "col": 3 },
         "emitter": "docs.runtime",
         "inputsHash": "sha256-bf3cb2d209719b0f273b4a7737f37cfb57437392a57f24b6ee81d931a9df29af"
       }
@@ -123,9 +123,9 @@
       {
         "sourceFile": "vaked/examples/operator-field.vaked",
         "decl": "fiber mediaCompress",
-        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 992, "line": 39, "col": 3 },
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 775, "byteEnd": 995, "line": 39, "col": 3 },
         "emitter": "zig.daemoncfg",
-        "inputsHash": "sha256-51b0e4bf66bb7007fbe727edf61e9fb4c2b2722cdc587299534d0b885f8886ef"
+        "inputsHash": "sha256-4440bf7f62dccdff068d65beebe340e62703e1bec8f552fbb978193f1f03ec77"
       }
     ]
   }

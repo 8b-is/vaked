@@ -27,7 +27,7 @@ Generated from `operator-field.vaked`. This document is a rendering of the
 
 | Fiber | Engine | Input | Output | Policy |
 |-------|--------|-------|--------|--------|
-| `mediaCompress` | `zigimg` | `stream.screenrec` | `artifacts.compressedMedia` | `strip_metadata = true`, `max_pixels = "4K"`, `formats = ["png", "webp"]` |
+| `mediaCompress` | `zigDaemon` | `stream.screenrec` | `artifacts.compressedMedia` | `strip_metadata = true`, `max_pixels = "4K"`, `formats = ["png", "webp"]` |
 
 ## Surfaces
 
