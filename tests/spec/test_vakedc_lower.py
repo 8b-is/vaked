@@ -51,6 +51,9 @@ EMITTER_REGISTRY = {
     "nix.spine", "docs.runtime",
     "catalog.jsonl", "catalog.sqlite", "crabcc.index", "zig.daemoncfg",
     "ebpf.policy", "otel.config", "systemd.units", "surface.launcher",
+    # NixOS-deployment cohort (#1-#6).
+    "sops.secrets", "nixos.service", "host.resources", "caddy.ingress",
+    "oci.containers",
 }
 
 

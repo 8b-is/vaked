@@ -90,6 +90,7 @@ import posixpath
 from dataclasses import dataclass, field as dc_field
 
 from . import parser as P
+from .graph import Graph, GraphNode
 
 # --------------------------------------------------------------------------- #
 # Disclosed placeholders (values the BUILD, not lowering, would resolve).
@@ -280,6 +281,12 @@ class _RuntimeView:
     fibers: list = dc_field(default_factory=list)
     surfaces: list = dc_field(default_factory=list)
     parallels: list = dc_field(default_factory=list)
+    # NixOS-deployment cohort (#1-#6).
+    services: list = dc_field(default_factory=list)
+    secrets: list = dc_field(default_factory=list)
+    host_resources: list = dc_field(default_factory=list)
+    ingresses: list = dc_field(default_factory=list)
+    containers: list = dc_field(default_factory=list)
 
 
 def _runtime_view(graph) -> "_RuntimeView | None":
@@ -295,6 +302,11 @@ def _runtime_view(graph) -> "_RuntimeView | None":
         fibers=_by_kind(children, "fiber"),
         surfaces=_by_kind(children, "surface"),
         parallels=_by_kind(children, "parallel"),
+        services=_by_kind(children, "service"),
+        secrets=_by_kind(children, "secret"),
+        host_resources=_by_kind(children, "hostResource"),
+        ingresses=_by_kind(children, "ingress"),
+        containers=_by_kind(children, "container"),
     )
 
 
@@ -1104,6 +1116,387 @@ def emit_catalog_jsonl(graph, nodes):
 
 
 # --------------------------------------------------------------------------- #
+# NixOS-deployment cohort emitters (#1-#6).
+#
+# Each lowers a cohort kind to a NixOS-module fragment under gen/ (services.*,
+# sops.secrets, virtualisation.oci-containers, services.caddy.virtualHosts,
+# services.postgresql.ensure*) that the deferred (§4.3) nixosModules.<runtime>
+# body imports.  Shared value vocabulary: `Bind` (loopback()/bind()),
+# `secret.X.path`, `hostResource.X.dsn`.  All gate on presence, so a runtime
+# without them emits nothing (operator-field stays byte-identical).
+# --------------------------------------------------------------------------- #
+
+# A NixOS-module fragment header (the deferred nixosModules.<runtime> imports it).
+def _module_header(sf: str, decl: str, summary: str) -> list[str]:
+    L = ["# " + _header(sf, decl), "#"]
+    L.append("# " + summary)
+    L.append("# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).")
+    return L
+
+
+def _nix_literal(vprop: object) -> str | None:
+    """Render a value-prop literal as Nix: string→quoted, bool→true/false,
+    number→bare, other scalars→quoted.  None if ``vprop`` is not a literal."""
+    if not (isinstance(vprop, dict) and "lit" in vprop):
+        return None
+    kind = vprop.get("lit")
+    val = vprop.get("value")
+    if kind == "string":
+        return '"%s"' % val
+    if kind == "bool":
+        return "true" if str(val).lower() == "true" else "false"
+    if kind == "number":
+        return str(val)
+    return '"%s"' % val
+
+
+def _bind_parts(prop: object) -> tuple[str, str, str | None] | None:
+    """Decompose a Bind call value-prop (``loopback(...)`` / ``bind(...)``) into
+    ``(addr, host_port, container_port)``; container_port is None for non-OCI
+    forms.  Ports are the raw string literals.  None if not a Bind call."""
+    call = _app_call(prop)
+    if call is None:
+        return None
+    ref, args = call
+    if ref == "loopback":
+        if len(args) == 1:
+            return ("127.0.0.1", args[0], None)
+        if len(args) == 2:
+            return ("127.0.0.1", args[0], args[1])
+        return None
+    if ref == "bind" and len(args) == 2:
+        return (args[0], args[1], None)
+    return None
+
+
+def _render_bind(prop: object) -> str | None:
+    """A Bind rendered as the joined ``host:port`` (or OCI ``host:hp:cp``) string
+    (ingress upstream, container ports).  None if ``prop`` is not a Bind."""
+    parts = _bind_parts(prop)
+    if parts is None:
+        return None
+    addr, host_port, container_port = parts
+    if container_port is not None:
+        return "%s:%s:%s" % (addr, host_port, container_port)
+    return "%s:%s" % (addr, host_port)
+
+
+def _secret_sops_name(secret_node: GraphNode) -> str | None:
+    """The sops attribute key of a `secret` node: its `name` field literal."""
+    return _lit(secret_node.props.get("name"))
+
+
+def _host_resource_dsn(hr_node: GraphNode) -> str | None:
+    """The connection URL a ``hostResource.X.dsn`` lowers to (postgresql today;
+    a fixed per-kind template with `name` substituted — 0012 §2.4 projection)."""
+    kind = _lit(hr_node.props.get("kind"))
+    name = _lit(hr_node.props.get("name"))
+    if kind == "postgresql":
+        return "postgresql:///%s?host=/run/postgresql" % name
+    return None
+
+
+def _accessor_nix(rv: "_RuntimeView", ref_dotted: str) -> str | None:
+    """Render a 3-part accessor ref (``secret.X.path`` / ``hostResource.X.dsn``)
+    to its Nix expression, resolving X against the runtime's decls (the checker
+    has already proven X exists).  None if not such a ref."""
+    parts = ref_dotted.split(".")
+    if len(parts) != 3:
+        return None
+    head, name, field = parts
+    if head == "secret" and field == "path":
+        # secret.X.path → a Nix expression referencing config (unquoted).
+        for s in rv.secrets:
+            if s.name == name:
+                return 'config.sops.secrets."%s".path' % (_secret_sops_name(s) or name)
+    if head == "hostResource" and field == "dsn":
+        # hostResource.X.dsn → a string VALUE, so it must be a quoted Nix string.
+        for hr in rv.host_resources:
+            if hr.name == name:
+                dsn = _host_resource_dsn(hr)
+                return '"%s"' % dsn if dsn is not None else None
+    return None
+
+
+def _record_value_props(prop: object) -> list[tuple[str, object]]:
+    """``[(name, value-prop)]`` of a config-block record prop, source order,
+    preserving ref/app values (unlike ``_record_entries`` which keeps literals)."""
+    out = []
+    rec = prop.get("record") if isinstance(prop, dict) else None
+    if isinstance(rec, list):
+        for e in rec:
+            if isinstance(e, dict) and "assign" in e:
+                out.append((e["assign"], e.get("value")))
+    return out
+
+
+def _render_setting(rv: "_RuntimeView", vprop: object) -> str:
+    """Render a service-option / value-prop to Nix: an accessor ref
+    (secret.X.path / hostResource.X.dsn) or a literal; other refs pass through."""
+    ref = _ref(vprop)
+    if ref is not None:
+        acc = _accessor_nix(rv, ref)
+        return acc if acc is not None else ref
+    lit = _nix_literal(vprop)
+    return lit if lit is not None else "null"
+
+
+# ---- #2 secret -> gen/nixos/sops.nix ------------------------------------- #
+
+_SECRET_SOPS_OPTIONS = ("owner", "mode")   # fixed emission order
+
+
+def emit_sops_secrets(graph: Graph, nodes: list[GraphNode]) -> tuple[dict[str, str], list[ProvEntry]]:
+    """One ``gen/nixos/sops.nix`` declaring every ``secret`` node's
+    ``sops.secrets."<name>"`` entry (#2).  owner/mode emitted only when present."""
+    if not nodes:
+        return {}, []
+    sf = graph.source_file
+    L = _module_header(sf, "secret " + nodes[0].name,
+                       "sops-managed runtime secrets.")
+    L.append("{ config, ... }:")
+    L.append("{")
+    for sec in nodes:
+        name = _secret_sops_name(sec)
+        if name is None:
+            continue
+        L.append('  sops.secrets."%s" = {' % name)
+        for opt in _SECRET_SOPS_OPTIONS:
+            val = _lit(sec.props.get(opt))
+            if val is not None:
+                L.append('    %s = "%s";' % (opt, val))
+        L.append("  };")
+    L.append("}")
+    files = {"gen/nixos/sops.nix": "\n".join(L) + "\n"}
+    entries = [ProvEntry(
+        artifact="gen/nixos/sops.nix",
+        region='sops.secrets."%s"' % (_secret_sops_name(s) or s.name),
+        source_file=sf, decl="secret " + s.name, span=s.provenance.span,
+        emitter="sops.secrets", inputs_projection=_node_projection(s))
+        for s in nodes]
+    return files, entries
+
+
+# ---- #5 hostResource -> gen/nixos/host-resources.nix --------------------- #
+
+def emit_host_resources(graph: Graph, nodes: list[GraphNode]) -> tuple[dict[str, str], list[ProvEntry]]:
+    """One ``gen/nixos/host-resources.nix`` provisioning the box's shared DBs
+    (#5).  postgresql with create != false → services.postgresql.ensure*."""
+    pg = [hr for hr in nodes
+          if _lit(hr.props.get("kind")) == "postgresql"
+          and _lit(hr.props.get("create")) is not False]
+    if not pg:
+        return {}, []
+    sf = graph.source_file
+    L = _module_header(sf, "hostResource " + nodes[0].name,
+                       "host-managed resources (shared services.postgresql).")
+    L.append("{ ... }:")
+    L.append("{")
+    L.append("  services.postgresql.ensureDatabases = [ %s ];"
+             % " ".join('"%s"' % _lit(hr.props.get("name")) for hr in pg))
+    L.append("  services.postgresql.ensureUsers = [")
+    for hr in pg:
+        L.append('    { name = "%s"; ensureDBOwnership = true; }'
+                 % _lit(hr.props.get("name")))
+    L.append("  ];")
+    L.append("}")
+    files = {"gen/nixos/host-resources.nix": "\n".join(L) + "\n"}
+    entries = [ProvEntry(
+        artifact="gen/nixos/host-resources.nix",
+        region="services.postgresql/" + hr.name,
+        source_file=sf, decl="hostResource " + hr.name, span=hr.provenance.span,
+        emitter="host.resources", inputs_projection=_node_projection(hr))
+        for hr in pg]
+    return files, entries
+
+
+# ---- #1 service -> gen/nixos/services.nix -------------------------------- #
+
+def emit_nixos_service(graph: Graph, nodes: list[GraphNode]) -> tuple[dict[str, str], list[ProvEntry]]:
+    """One ``gen/nixos/services.nix`` declaring every ``service`` node as
+    ``services.<name> = { enable; package; [createPostgresqlDatabase;] settings
+    { [HOSTNAME/PORT;] <options> } }`` (#1)."""
+    if not nodes:
+        return {}, []
+    rv = _runtime_view(graph)
+    sf = graph.source_file
+    L = _module_header(sf, "service " + nodes[0].name,
+                       "nixpkgs-packaged systemd services.")
+    L.append("{ config, pkgs, ... }:")
+    L.append("{")
+    for svc in nodes:
+        L.append("  services.%s = {" % svc.name)
+        L.append("    enable = true;")
+        pkg = _ref(svc.props.get("package"))
+        if pkg is not None:
+            L.append("    package = %s;" % pkg)
+        # a hostResource database dependency → createPostgresqlDatabase shortcut.
+        db = _ref(svc.props.get("database"))
+        if db is not None:
+            L.append("    createPostgresqlDatabase = true;")
+        user = _lit(svc.props.get("user"))
+        if user is not None:
+            L.append('    user = "%s";' % user)
+        state_dir = _lit(svc.props.get("stateDir"))
+        if state_dir is not None:
+            L.append('    stateDir = "%s";' % state_dir)
+        # settings: bind (HOSTNAME/PORT) + forwarded options.
+        bind = _bind_parts(svc.props.get("bind"))
+        opt_entries = _record_value_props(svc.props.get("options"))
+        if bind is not None or opt_entries:
+            L.append("    settings = {")
+            if bind is not None:
+                addr, host_port, _cp = bind
+                L.append('      HOSTNAME = "%s";' % addr)
+                L.append("      PORT = %s;" % host_port)
+            for name, vprop in opt_entries:
+                L.append("      %s = %s;" % (name, _render_setting(rv, vprop)))
+            L.append("    };")
+        L.append("  };")
+    L.append("}")
+    files = {"gen/nixos/services.nix": "\n".join(L) + "\n"}
+    entries = [ProvEntry(
+        artifact="gen/nixos/services.nix", region="services." + svc.name,
+        source_file=sf, decl="service " + svc.name, span=svc.provenance.span,
+        emitter="nixos.service", inputs_projection=_node_projection(svc))
+        for svc in nodes]
+    return files, entries
+
+
+# ---- #4 ingress -> gen/caddy/ingress.nix --------------------------------- #
+
+def _render_upstream(prop: object) -> str | None:
+    """An ingress `upstream` (Bind | String): the string literal verbatim, or a
+    Bind rendered host:port."""
+    lit = _lit(prop)
+    if lit is not None:
+        return lit
+    return _render_bind(prop)
+
+
+def emit_caddy_ingress(graph: Graph, nodes: list[GraphNode]) -> tuple[dict[str, str], list[ProvEntry]]:
+    """One ``gen/caddy/ingress.nix`` — a Caddy virtualHost per ``ingress`` node
+    (#4): ``import <tls>`` (if any) + ``reverse_proxy <upstream>`` + raw
+    extraConfig."""
+    if not nodes:
+        return {}, []
+    sf = graph.source_file
+    L = _module_header(sf, "ingress " + nodes[0].name,
+                       "Caddy HTTP reverse-proxy virtual hosts.")
+    L.append("{ ... }:")
+    L.append("{")
+    for ing in nodes:
+        domain = _lit(ing.props.get("domain"))
+        upstream = _render_upstream(ing.props.get("upstream"))
+        tls = _lit(ing.props.get("tls"))
+        extra = _lit(ing.props.get("extraConfig"))
+        L.append('  services.caddy.virtualHosts."%s".extraConfig = \'\'' % domain)
+        if tls is not None:
+            L.append("    import %s" % tls)
+        L.append("    reverse_proxy %s" % upstream)
+        if extra is not None:
+            for raw_line in extra.splitlines():
+                L.append("    " + raw_line)
+        L.append("  '';")
+    L.append("}")
+    files = {"gen/caddy/ingress.nix": "\n".join(L) + "\n"}
+    entries = [ProvEntry(
+        artifact="gen/caddy/ingress.nix",
+        region='virtualHosts."%s"' % (_lit(ing.props.get("domain")) or ing.name),
+        source_file=sf, decl="ingress " + ing.name, span=ing.provenance.span,
+        emitter="caddy.ingress", inputs_projection=_node_projection(ing))
+        for ing in nodes]
+    return files, entries
+
+
+# ---- #6 container -> gen/nixos/oci-containers.nix ------------------------ #
+
+_BYTES_SUFFIX_TO_DOCKER = {"GB": "g", "MB": "m", "KB": "k", "B": ""}
+
+
+def _render_memory_flag(mem_prop: object) -> str | None:
+    """``memory = 2GB`` → ``--memory=2g`` (Bytes literal, suffix→Docker form)."""
+    val = _lit(mem_prop)
+    if val is None:
+        return None
+    s = str(val).strip()
+    for suffix, docker in _BYTES_SUFFIX_TO_DOCKER.items():
+        if suffix and s.endswith(suffix):
+            return "--memory=%s%s" % (s[: -len(suffix)].strip(), docker)
+    return "--memory=%s" % s
+
+
+def _container_extra_options(c: GraphNode) -> list[str]:
+    """extraOptions Docker flags in fixed order: --memory, --network,
+    --health-cmd, then the author's extraOptions verbatim."""
+    opts = []
+    mem = _render_memory_flag(c.props.get("memory"))
+    if mem is not None:
+        opts.append(mem)
+    network = _lit(c.props.get("network"))
+    if network is not None:
+        opts.append("--network=%s" % network)
+    health = _lit(c.props.get("healthCmd"))
+    if health is not None:
+        opts.append("--health-cmd=%s" % health)
+    opts.extend(_str_list(c.props.get("extraOptions")))
+    return opts
+
+
+def _nix_str_array(values: list[str]) -> str:
+    return "[ %s ]" % " ".join('"%s"' % v for v in values)
+
+
+def emit_oci_containers(graph: Graph, nodes: list[GraphNode]) -> tuple[dict[str, str], list[ProvEntry]]:
+    """One ``gen/nixos/oci-containers.nix`` collecting every ``container`` node
+    into ``virtualisation.oci-containers.containers`` (#6).
+    memory/network/healthCmd synthesize into extraOptions Docker flags."""
+    if not nodes:
+        return {}, []
+    rv = _runtime_view(graph)
+    sf = graph.source_file
+    L = _module_header(sf, "container " + nodes[0].name,
+                       "OCI/Docker containers (memory/network/healthCmd → extraOptions).")
+    L.append("{ config, ... }:")
+    L.append("{")
+    L.append("  virtualisation.oci-containers.containers = {")
+    for c in nodes:
+        L.append("    %s = {" % c.name)
+        L.append("      image = %s;" % _nix_literal(c.props.get("image")))
+        ports = c.props.get("ports")
+        if isinstance(ports, list) and ports:
+            L.append("      ports = %s;"
+                     % _nix_str_array([_render_bind(p) for p in ports]))
+        env = _record_value_props(c.props.get("environment"))
+        if env:
+            L.append("      environment = {")
+            for k, vprop in env:
+                L.append("        %s = %s;" % (k, _render_setting(rv, vprop)))
+            L.append("      };")
+        ef = c.props.get("environmentFiles")
+        if isinstance(ef, list) and ef:
+            paths = [_accessor_nix(rv, _ref(x)) or (_ref(x) or "") for x in ef]
+            L.append("      environmentFiles = [ %s ];" % " ".join(paths))
+        vols = _str_list(c.props.get("volumes"))
+        if vols:
+            L.append("      volumes = %s;" % _nix_str_array(vols))
+        extra = _container_extra_options(c)
+        if extra:
+            L.append("      extraOptions = %s;" % _nix_str_array(extra))
+        L.append("    };")
+    L.append("  };")
+    L.append("}")
+    files = {"gen/nixos/oci-containers.nix": "\n".join(L) + "\n"}
+    entries = [ProvEntry(
+        artifact="gen/nixos/oci-containers.nix",
+        region="oci-containers.containers." + c.name,
+        source_file=sf, decl="container " + c.name, span=c.provenance.span,
+        emitter="oci.containers", inputs_projection=_node_projection(c))
+        for c in nodes]
+    return files, entries
+
+
+# --------------------------------------------------------------------------- #
 # Deferred emitters (0012 §7) — inert registry slots that emit nothing.
 # --------------------------------------------------------------------------- #
 
@@ -1141,6 +1534,8 @@ def emit_deferred(graph, nodes):
 # kept explicit so enrichment never silently promotes an unexpected block.)
 _CONFIG_BLOCK_FIELDS = {
     "fiber": frozenset(("policy",)),
+    "service": frozenset(("options",)),       # service options { … } (#1)
+    "container": frozenset(("environment",)),  # container environment { … } (#6)
 }
 
 
@@ -1215,6 +1610,12 @@ REGISTRY = {
     "catalog.sqlite": _Registered("catalog.sqlite", emit_deferred, deferred=True),
     "crabcc.index":   _Registered("crabcc.index", emit_nix_spine),  # folded into spine
     "zig.daemoncfg":  _Registered("zig.daemoncfg", emit_zig_daemoncfg),
+    # NixOS-deployment cohort (#1-#6) — gen/nixos|caddy module fragments.
+    "sops.secrets":   _Registered("sops.secrets", emit_sops_secrets),
+    "nixos.service":  _Registered("nixos.service", emit_nixos_service),
+    "host.resources": _Registered("host.resources", emit_host_resources),
+    "caddy.ingress":  _Registered("caddy.ingress", emit_caddy_ingress),
+    "oci.containers": _Registered("oci.containers", emit_oci_containers),
     # DEFERRED (interface slots, §7) — inert no-ops
     "ebpf.policy":      _Registered("ebpf.policy", emit_deferred, deferred=True),
     "otel.config":      _Registered("otel.config", emit_deferred, deferred=True),
@@ -1285,6 +1686,18 @@ def lower(graph, items=None) -> LowerResult:
     # (crabcc.index provenance entries are produced inside emit_nix_spine, which
     #  is the spine emitter; we do not double-run it. catalog.sqlite is deferred
     #  in this fixture set — jsonl only.)
+
+    # Direct: NixOS-deployment cohort (#1-#6), each gated on presence.
+    if rv.secrets:
+        _run("sops.secrets", rv.secrets)
+    if rv.host_resources:
+        _run("host.resources", rv.host_resources)
+    if rv.services:
+        _run("nixos.service", rv.services)
+    if rv.ingresses:
+        _run("caddy.ingress", rv.ingresses)
+    if rv.containers:
+        _run("oci.containers", rv.containers)
 
     provenance = _build_provenance(graph, all_entries)
     return LowerResult(files=files, provenance=provenance, entries=all_entries)
