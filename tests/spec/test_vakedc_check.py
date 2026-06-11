@@ -323,6 +323,38 @@ _RR_BARE_FIBER = '''runtime "t" {
 '''
 
 
+# Cohort (#1-#6) accessor refs: secret.X.path / hostResource.X.dsn nested inside
+# a service's `options { … }` config block must resolve to in-runtime decls.
+_RR_ACCESSOR_OK = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  secret appSecret { provider = "sops" name = "umami_app_secret" }
+  hostResource db { kind = "postgresql" name = "umami" }
+  service umami {
+    package = pkgs.umami
+    bind = loopback(3003)
+    options {
+      APP_SECRET_FILE = secret.appSecret.path
+      DATABASE_URL    = hostResource.db.dsn
+    }
+  }
+}
+'''
+
+# Same, but the secret accessor names an UNDECLARED secret.
+_RR_ACCESSOR_BAD = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  hostResource db { kind = "postgresql" name = "umami" }
+  service umami {
+    package = pkgs.umami
+    options {
+      APP_SECRET_FILE = secret.ghost.path
+      DATABASE_URL    = hostResource.db.dsn
+    }
+  }
+}
+'''
+
+
 def _test_ref_resolution(lines):
     cache = _builtins_cache()
 
@@ -330,6 +362,20 @@ def _test_ref_resolution(lines):
         return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
 
     ok = True
+
+    acc_ok = [c for c in codes(_RR_ACCESSOR_OK, "rr-accessor-ok.vaked")
+              if c == _REF_UNRESOLVED]
+    if acc_ok:
+        ok = False
+        lines.append(f"  FAIL ref-res: declared secret.X.path / hostResource.X.dsn "
+                     f"(in a service `options` block) should resolve, got {acc_ok}")
+
+    acc_bad = [c for c in codes(_RR_ACCESSOR_BAD, "rr-accessor-bad.vaked")
+               if c == _REF_UNRESOLVED]
+    if acc_bad != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ref-res: undeclared `secret.ghost.path` should yield "
+                     f"exactly one {_REF_UNRESOLVED}, got {acc_bad}")
 
     unresolved = [c for c in codes(_RR_UNRESOLVED, "rr-unresolved.vaked")
                   if c == _REF_UNRESOLVED]

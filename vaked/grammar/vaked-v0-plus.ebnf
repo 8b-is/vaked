@@ -129,7 +129,9 @@ kind        = "runtime" | "input"   | "engine"        | "host"
             | "budget"  | "observability" | "runclass" | "workflow"
             | "index"   | "catalog" | "stream"         | "fiber"
             | "surface" | "mesh"    | "device"         | "mediaPipeline"
-            | "parallel" | "schema" | "capability" ;
+            | "parallel" | "schema" | "capability"
+            | "service" | "secret" | "hostResource"   | "ingress"
+            | "container" ;
 
 # ---- Block and statements ---------------------------------------------------
 #

@@ -1256,6 +1256,46 @@ def _walk_depends_refs(decl, out):
             _walk_depends_refs(st, out)
 
 
+# 3-part accessor refs (`<kind>.<name>.<field>`) that name a sibling decl and
+# read one of its exposed values.  These appear INSIDE config-block records
+# (`options { … = secret.X.path }`) and value lists (`environmentFiles =
+# [secret.X.path]`), which the data-flow walk deliberately does not descend into
+# — so they need their own collector.  (head, accessor-field) -> the kind the
+# middle segment must name.
+_ACCESSOR_REFS = {("secret", "path"): "secret", ("hostResource", "dsn"): "hostResource"}
+
+
+def _walk_accessor_refs(decl, out):
+    """Collect every 3-part accessor ref (``secret.X.path`` / ``hostResource.X.dsn``)
+    anywhere in ``decl``'s subtree — including inside config-block records and
+    value lists the data-flow walk does not reach."""
+    def scan(value):
+        if isinstance(value, P.App):
+            if value.args is None and value.record is None and len(value.ref.parts) == 3:
+                out.append(value.ref)
+            if value.record is not None:
+                for e in value.record:
+                    if isinstance(e, P.Assignment):
+                        scan(e.value)
+            if value.args is not None:
+                for a in value.args:
+                    scan(a)
+        elif isinstance(value, P.ListLit):
+            for x in value.items:
+                scan(x)
+        elif isinstance(value, P.RecordLit):
+            for e in value.entries:
+                if isinstance(e, P.Assignment):
+                    scan(e.value)
+    for st in decl.body:
+        if isinstance(st, P.Assignment):
+            scan(st.value)
+        elif isinstance(st, P.App):          # bare config block, e.g. options { … }
+            scan(st)
+        elif isinstance(st, P.Decl):
+            _walk_accessor_refs(st, out)
+
+
 def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
     """Closed-world resolution for one runtime.  ``imported`` is the set of
     ``(kind, name)`` bound by the file's ``use`` imports."""
@@ -1282,6 +1322,28 @@ def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
                       f"`{runtime_decl.name}`")
         # len(parts) >= 2 with a non-kind head (`pkgs.x`, `<daemon>.<channel>`,
         # `artifacts.x`) is the deferred "branch B" — left unenforced (no roster).
+
+    # 3-part accessor refs (`secret.X.path`, `hostResource.X.dsn`) — the middle
+    # segment must name an in-runtime/imported decl of the head kind.  These live
+    # inside config-block records / lists, so they get their own walk.  Dedup by
+    # span (a ref reachable from both walks is reported once).
+    accessor_refs = []
+    _walk_accessor_refs(runtime_decl, accessor_refs)
+    seen = set()
+    for ref in accessor_refs:
+        parts = ref.parts
+        kind = _ACCESSOR_REFS.get((parts[0], parts[2]))
+        if kind is None:
+            continue
+        key = (ref.byteStart, ref.byteEnd)
+        if key in seen:
+            continue
+        seen.add(key)
+        if (kind, parts[1]) not in declared:
+            span = (ref.byteStart, ref.byteEnd, ref.line, ref.col)
+            _emit(diags, "E-REF-UNRESOLVED", file, span, runtime_decl,
+                  f"`{ref.dotted}` references `{kind} {parts[1]}` but no such "
+                  f"declaration is in scope of runtime `{runtime_decl.name}`")
 
 
 def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags):

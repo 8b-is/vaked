@@ -141,6 +141,69 @@ schema parallel {
 }
 
 # --------------------------------------------------------------------------- #
+# NixOS-deployment cohort (#1-#6).  These kinds let Vaked express ordinary host
+# infrastructure (nixpkgs services, OCI containers, sops secrets, host DBs, Caddy
+# ingress) so it can dogfood real NixOS hosts.  Shared value vocabulary: `Bind`
+# (from loopback()/bind()), `secret.X.path`, `hostResource.X.dsn`.
+# --------------------------------------------------------------------------- #
+
+# `service` (#1) — a long-running nixpkgs-packaged NixOS systemd service.
+# Lowers to `services.<name> = { enable = true; package = …; … }`.
+schema service {
+  field package  : Derivation                  # pkgs.umami
+  field bind     : Bind          { optional }   # loopback(3003) → HOSTNAME/PORT
+  field options  : Record        { optional }   # NixOS option set, forwarded verbatim
+  field secrets  : List<Secret>  { optional nonempty }   # secret.X refs consumed
+  field database : HostResource  { optional }   # hostResource.X dependency
+  field user     : String        { optional }
+  field stateDir : Path          { optional }
+  field after    : List<String>  { optional nonempty }   # systemd After=
+}
+
+# `secret` (#2) — a sops-managed runtime secret.  Exposes `secret.X.path`
+# (→ config.sops.secrets."<name>".path) and lowers a `sops.secrets."<name>"` entry.
+schema secret {
+  field provider : String { oneof ["sops", "age", "vault"] default = "sops" }
+  field name     : String { nonempty }                  # sops.secrets key name
+  field owner    : String { optional }                  # owning systemd unit
+  field mode     : String { optional matches /0[0-7]{3}/ }   # octal file mode
+}
+
+# `hostResource` (#5) — a dependency on a host-managed resource (the box's shared
+# PostgreSQL etc.), distinct from `index` (a read-only corpus).  Exposes
+# `hostResource.X.dsn` (the NixOS-computed connection URL).
+schema hostResource {
+  field kind     : String { nonempty oneof ["postgresql", "mysql", "redis", "other"] }
+  field name     : String { nonempty }                  # database / user name
+  field create   : Bool   { optional default = true }   # provision DB + user
+  field password : String { optional }
+}
+
+# `ingress` (#4) — a Caddy HTTP reverse-proxy virtual host, distinct from
+# `surface` (raylib).  Lowers to `services.caddy.virtualHosts."<domain>"`.
+schema ingress {
+  field domain      : String { nonempty }               # "analytics.crabcc.app"
+  field upstream    : Bind | String                     # loopback(3003) | "127.0.0.1:3003"
+  field tls         : String { optional }               # named TLS policy snippet
+  field extraConfig : String { optional }               # raw Caddy config (escape hatch)
+}
+
+# `container` (#6) — an OCI/Docker container, distinct from `service` (no nixpkgs
+# package) and `fiber` (no Zig engine).  Lowers to
+# `virtualisation.oci-containers.containers.<name>`.
+schema container {
+  field image            : String { nonempty }          # "ghcr.io/browserless/chromium:latest"
+  field ports            : List<Bind>      { optional nonempty }   # loopback(3030, 3000)
+  field environment      : Record          { optional } # plain env key=value pairs
+  field environmentFiles : List<SecretRef> { optional nonempty }   # secret.X.path refs
+  field volumes          : List<String>    { optional nonempty }   # "host:container:ro"
+  field memory           : Bytes           { optional } # 2GB — Docker --memory cap
+  field network          : String          { optional oneof ["bridge", "host", "none"] }
+  field healthCmd        : String          { optional nonempty }
+  field extraOptions     : List<String>    { optional nonempty }   # raw Docker flags
+}
+
+# --------------------------------------------------------------------------- #
 # Built-in capability taxonomy (one `capability <domain>` per built-in domain)
 # `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
 # Each order is acyclic ⇒ a partial order (0011 §4.2).

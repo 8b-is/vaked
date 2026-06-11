@@ -44,6 +44,9 @@ Runtime
 | Type | Inhabitants (built-in values / shape) |
 |------|----------------------------------------|
 | `Source` | `github("owner/repo")`, `raw.github("owner/repo", "file")`, `<daemon>.<channel>` ref (e.g. `agentGuardd.ringbuf`, `agentpipe.screenrec`), `device.<name>` ref |
+| `Bind` | `loopback(port : Int)` (= `127.0.0.1:port`), `loopback(hostPort : Int, containerPort : Int)` (OCI host:container), `bind(addr : String, port : Int)` — a host:port binding (#3) |
+| `Secret` / `SecretRef` | a `secret.<name>.path` ref → `config.sops.secrets."<name>".path` (#2) |
+| `HostResource` | a `hostResource.<name>.dsn` ref → the NixOS-computed connection URL, e.g. `postgresql:///<name>?host=/run/postgresql` (#5) |
 | `ArtifactTarget` | `catalog.jsonl`, `catalog.sqlite`, `nix.derivation`, `sqlite("./path.db")` |
 | `Normalizer` | `crabcc.markdown`, `crabcc.semantic { … }`, other `crabcc.*` refs |
 | `TrustPolicy` | `pinned { commit : String, sha256 : String }` |
@@ -363,6 +366,125 @@ schema parallel {
 - `fibers` elements are `Fiber<_, _>` refs (any in/out types). `parallel` is
   **closed**, enforcing the deferral: a stray `backpressure { … }` would be
   rejected as an unknown field until that sub-language lands.
+
+---
+
+## Schema: `service`
+
+`Service` — a long-running nixpkgs-packaged NixOS systemd service (#1), e.g.
+umami/forgejo/mastodon. Distinct from `fiber` (a Zig execution lane needing an
+engine + input stream): a service wraps a nixpkgs `package` and an option set.
+Lowers to `services.<name> = { enable = true; package = …; … }`.
+
+```vaked
+schema service {
+  field package  : Derivation                  # pkgs.umami
+  field bind     : Bind          { optional }   # loopback(3003) → HOSTNAME/PORT
+  field options  : Record        { optional }   # NixOS option set, forwarded verbatim
+  field secrets  : List<Secret>  { optional nonempty }   # secret.X refs consumed
+  field database : HostResource  { optional }   # hostResource.X dependency
+  field user     : String        { optional }
+  field stateDir : Path          { optional }
+  field after    : List<String>  { optional nonempty }
+}
+```
+
+- `bind` is a `Bind` (#3); it lowers to the service's `HOSTNAME`/`PORT` options.
+- `secrets` are `secret.X` refs (#2); `database` is a `hostResource.X` ref (#5).
+  Their `.path`/`.dsn` accessors (used inside `options`) are resolved by the
+  closed-world checker (0011 §6.1).
+- `options` is an open verbatim record forwarded to `services.<name>`.
+
+---
+
+## Schema: `secret`
+
+`Secret` — a sops-managed runtime secret (#2). Decrypted at activation to
+`/run/secrets/<name>`. Exposes the auxiliary ref `secret.<decl>.path` (→
+`config.sops.secrets."<name>".path`) that `service`/`container` consume; lowers a
+`sops.secrets."<name>"` entry into the NixOS module.
+
+```vaked
+schema secret {
+  field provider : String { oneof ["sops", "age", "vault"] default = "sops" }
+  field name     : String { nonempty }                  # sops.secrets key name
+  field owner    : String { optional }                  # owning systemd unit
+  field mode     : String { optional matches /0[0-7]{3}/ }   # octal file mode, e.g. "0400"
+}
+```
+
+- The ref middle segment is the **decl name** (`secret umamiAppSecret` →
+  `secret.umamiAppSecret.path`); the Nix key is the **`name` field**
+  (`"umami_app_secret"`). Only `sops` lowers today.
+
+---
+
+## Schema: `hostResource`
+
+`HostResource` — a dependency on a host-managed resource (#5): the box's shared
+PostgreSQL/MySQL/Redis, reused by several services. Distinct from `index` (a
+read-only corpus). Exposes `hostResource.<decl>.dsn` (the NixOS-computed
+connection URL); provisions the database/user when a `service` consumes it.
+
+```vaked
+schema hostResource {
+  field kind     : String { nonempty oneof ["postgresql", "mysql", "redis", "other"] }
+  field name     : String { nonempty }                  # database / user name
+  field create   : Bool   { optional default = true }   # provision DB + user
+  field password : String { optional }
+}
+```
+
+- `hostResource.X.dsn` lowers (postgresql) to `postgresql:///<name>?host=/run/postgresql`.
+  `kind` selects the provisioning + DSN template; `create` (default `true`) gates it.
+
+---
+
+## Schema: `ingress`
+
+`Ingress` — a Caddy HTTP reverse-proxy virtual host (#4), **distinct from
+`surface`** (raylib operator visualization). An HTTP vhost has a domain, an
+upstream address, and an optional TLS policy. Lowers to
+`services.caddy.virtualHosts."<domain>".extraConfig`.
+
+```vaked
+schema ingress {
+  field domain      : String { nonempty }               # "analytics.crabcc.app"
+  field upstream    : Bind | String                     # loopback(3003) | "127.0.0.1:3003"
+  field tls         : String { optional }               # named TLS policy, e.g. "crabcc_sec"
+  field extraConfig : String { optional }               # raw Caddy config (escape hatch)
+}
+```
+
+- `upstream` is a `Bind` (#3) or a literal `"host:port"`. The snippet is
+  `import <tls>` (when present) + `reverse_proxy <upstream>` + raw `extraConfig`.
+- **Closed**: the escape hatch is the explicit `extraConfig`, not openness.
+
+---
+
+## Schema: `container`
+
+`Container` — an OCI/Docker container (#6), e.g. the browser-pool roster. Distinct
+from `service` (no nixpkgs package — an opaque image) and `fiber` (no Zig engine).
+Lowers to `virtualisation.oci-containers.containers.<name>`.
+
+```vaked
+schema container {
+  field image            : String { nonempty }          # "ghcr.io/browserless/chromium:latest"
+  field ports            : List<Bind>      { optional nonempty }   # loopback(3030, 3000)
+  field environment      : Record          { optional } # plain env key=value pairs
+  field environmentFiles : List<SecretRef> { optional nonempty }   # secret.X.path refs
+  field volumes          : List<String>    { optional nonempty }   # "host:container:ro"
+  field memory           : Bytes           { optional } # Docker --memory cap
+  field network          : String          { optional oneof ["bridge", "host", "none"] }
+  field healthCmd        : String          { optional nonempty }
+  field extraOptions     : List<String>    { optional nonempty }   # raw Docker flags
+}
+```
+
+- `ports` are `Bind` host:container mappings (#3); `environmentFiles` are
+  `secret.X.path` refs (#2). `memory`/`network`/`healthCmd` synthesize into
+  Docker `extraOptions` flags at lowering (no NixOS option maps to them).
 
 ---
 
