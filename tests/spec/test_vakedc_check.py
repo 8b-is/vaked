@@ -236,6 +236,85 @@ def _test_all_examples(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 5b. Closed-world reference resolution (#7 — 0011 §6.1 stage 2)
+# --------------------------------------------------------------------------- #
+# A `<kind>.<name>` data-flow ref (engine/input/output/from/source) inside a
+# `runtime {}` block must resolve to an in-runtime declaration of that kind;
+# otherwise it is E-REF-UNRESOLVED.  Bare top-level fragments (no enclosing
+# runtime) are illustrative and NOT enforced.
+
+_REF_UNRESOLVED = "E-REF-UNRESOLVED"
+
+# A complete runtime whose fiber inputs an UNDECLARED stream (kind-qualified).
+_RR_UNRESOLVED = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+  fiber f {
+    engine = someEngine
+    input  = stream.nope
+    output = artifacts.x
+  }
+}
+'''
+
+# Same runtime, but the fiber inputs the DECLARED stream `s`.
+_RR_RESOLVED = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+  fiber f {
+    engine = someEngine
+    input  = stream.s
+    output = artifacts.x
+  }
+}
+'''
+
+# The SAME undeclared kind-qualified ref, but as a bare top-level fragment
+# (no enclosing runtime) — must NOT be enforced.
+_RR_FRAGMENT = '''fiber f {
+  engine = someEngine
+  input  = stream.nope
+  output = artifacts.x
+}
+'''
+
+
+def _test_ref_resolution(lines):
+    cache = _builtins_cache()
+
+    def codes(src, name):
+        return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
+
+    ok = True
+
+    unresolved = [c for c in codes(_RR_UNRESOLVED, "rr-unresolved.vaked")
+                  if c == _REF_UNRESOLVED]
+    if unresolved != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ref-res: runtime with `input = stream.nope` should "
+                     f"yield exactly one {_REF_UNRESOLVED}, got {unresolved}")
+
+    resolved = [c for c in codes(_RR_RESOLVED, "rr-resolved.vaked")
+                if c == _REF_UNRESOLVED]
+    if resolved:
+        ok = False
+        lines.append(f"  FAIL ref-res: runtime with `input = stream.s` (declared) "
+                     f"should yield no {_REF_UNRESOLVED}, got {resolved}")
+
+    fragment = [c for c in codes(_RR_FRAGMENT, "rr-fragment.vaked")
+                if c == _REF_UNRESOLVED]
+    if fragment:
+        ok = False
+        lines.append(f"  FAIL ref-res: bare top-level fragment (no runtime) must "
+                     f"not be enforced, got {fragment}")
+
+    if ok:
+        lines.append("  ref-resolution: kind-qualified refs enforced inside "
+                     "runtime; fragments illustrative")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # 6. Determinism
 # --------------------------------------------------------------------------- #
 
@@ -264,7 +343,7 @@ def run():
     lines = []
     ok = True
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
-               _test_all_examples, _test_determinism):
+               _test_all_examples, _test_ref_resolution, _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:

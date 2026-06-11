@@ -33,7 +33,8 @@ What it implements (docs/language/0011-type-system.md):
 
 Diagnostics carry stable 0011 codes (``E-CONFORM-*``, ``E-CONSTRAINT-*``,
 ``E-CAP-*``, ``E-GENERIC-*``, plus the load-time ``E-SCHEMA-*`` / ``E-CAP-ORDER-
-CYCLE`` of §6.5), are source-mapped from the AST/token spans, and are sorted by
+CYCLE`` of §6.5, and ``E-REF-UNRESOLVED`` for the closed-world stage-2 resolution
+of §6.1), are source-mapped from the AST/token spans, and are sorted by
 ``(file, byteStart, code)`` for determinism.
 
 Spans: the LPG records provenance at the *declaration* granularity only, and the
@@ -1158,9 +1159,73 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None):
     for it in items:
         if isinstance(it, P.Decl):
             _check_decl_tree(it, registry, by_name_kind, smap, filename, diags)
+            # Stage 2 (closed-world ref resolution) for each top-level runtime.
+            if it.kind == "runtime":
+                _check_ref_resolution(it, filename, diags)
 
     diags.sort(key=lambda d: d.sort_key())
     return diags
+
+
+# --------------------------------------------------------------------------- #
+# Closed-world reference resolution (#7 — 0011 §6.1 stage 2)
+# --------------------------------------------------------------------------- #
+# 0011 §6.1 stage 2 mandates: every ref resolves to a declaration or a built-in;
+# an unresolved ref is an error.  The sound, roster-free slice we enforce today:
+# inside a `runtime {}` block (a closed world), a data-flow ref written in the
+# `<kind>.<name>` addressing form (e.g. `input = stream.foo`) MUST name an
+# in-runtime declaration of that kind.  There is no built-in `stream.X`/`index.X`
+# /`fiber.X` — those kinds exist only as in-file decls — so a kind-qualified ref
+# that resolves to nothing in the runtime is unambiguously dangling.
+#
+# Deliberately NOT enforced here (tracked as follow-ups on #7):
+#   * bare-name refs (`engine = zigimg`, `fibers = [f]`) — entangled with
+#     `use`-import binding, which the resolver does not yet implement;
+#   * `<namespace>.<member>` refs whose head is not a kind keyword
+#     (`pkgs.umami`, `web.analytics`, `artifacts.x`, `<daemon>.<channel>`) —
+#     need a built-in value-namespace + daemon roster that does not exist yet
+#     (the deferred "branch B").
+# Bare top-level fragment decls (no enclosing runtime) are illustrative and not
+# a closed world, so they are not enforced at all.
+
+def _collect_runtime_decls(runtime_decl):
+    """The set of ``(kind, name)`` declared anywhere within a runtime subtree."""
+    found = set()
+
+    def rec(decl):
+        for st in decl.body:
+            if isinstance(st, P.Decl):
+                found.add((st.kind, st.name))
+                rec(st)
+    rec(runtime_decl)
+    return found
+
+
+def _walk_depends_refs(decl, out):
+    """Collect ``(ref, field_name, owner_decl)`` for every bare ref appearing in a
+    data-flow field (``_DEPENDS_FIELDS``) within ``decl``'s subtree."""
+    from .resolve import _DEPENDS_FIELDS, _refs_in_value
+    for st in decl.body:
+        if isinstance(st, P.Assignment) and st.target in _DEPENDS_FIELDS:
+            for r in _refs_in_value(st.value):
+                out.append((r, st.target, decl))
+        if isinstance(st, P.Decl):
+            _walk_depends_refs(st, out)
+
+
+def _check_ref_resolution(runtime_decl, file, diags):
+    declared = _collect_runtime_decls(runtime_decl)
+    refs = []
+    _walk_depends_refs(runtime_decl, refs)
+    for ref, field, owner in refs:
+        parts = ref.parts
+        if len(parts) == 2 and parts[0] in P._KIND_SET:
+            if (parts[0], parts[1]) not in declared:
+                span = (ref.byteStart, ref.byteEnd, ref.line, ref.col)
+                _emit(diags, "E-REF-UNRESOLVED", file, span, owner,
+                      f"`{field}` references `{ref.dotted}` but no "
+                      f"`{parts[0]} {parts[1]}` is declared in runtime "
+                      f"`{runtime_decl.name}`")
 
 
 def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags):

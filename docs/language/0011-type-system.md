@@ -564,7 +564,8 @@ Diagnostic {
                                   #      E-CAP-ATTENUATION,
                                   #      E-GENERIC-INCONSISTENT,
                                   #      E-SCHEMA-BAD-DEFAULT,
-                                  #      E-CAP-ORDER-CYCLE
+                                  #      E-CAP-ORDER-CYCLE,
+                                  #      E-REF-UNRESOLVED   (§6.1 stage 2)
   span     : { file, byteStart, byteEnd, line, col }   # source map
   message  : human-readable, names the schema/field/grant involved
   expected : the rule that was violated (type, refinement, or order edge)
