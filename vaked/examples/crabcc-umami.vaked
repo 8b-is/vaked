@@ -1,0 +1,115 @@
+# crabcc-umami — dogfood: express the umami NixOS service as a Vaked capability graph.
+#
+# Reference implementation: nix-base/hosts/public-services-host/umami.nix
+#
+# What umami actually needs (NixOS perspective):
+#   1. services.umami.enable = true           → GAP: no `service` primitive
+#   2. createPostgresqlDatabase = true        → GAP: no host-resource reuse (shared Postgres)
+#   3. APP_SECRET_FILE = sops.secrets.path    → GAP: no secret-file capability
+#   4. HOSTNAME=127.0.0.1 PORT=3003           → GAP: no loopback host:port binding
+#   5. DISABLE_TELEMETRY = true               → no equivalent (config key on the service)
+#   6. Caddy virtualHost reverse_proxy        → GAP: no HTTP ingress / reverse-proxy surface
+#
+# APPROACH: use the nearest existing constructs as approximations; mark every
+# gap with a GAP comment. The checker is expected to reject some of this because
+# the `runtime` schema is closed and `stream.source` must be a daemon channel ref.
+# Where no construct exists, a stub `# GAP: ...` comment explains the intent.
+# Nothing in this file modifies the grammar, schema, or lowering.
+
+runtime "crabcc-umami" {
+  systems = ["x86_64-linux"]
+
+  # --- GAP #3: secret-file capability ---
+  # umami needs: APP_SECRET_FILE = config.sops.secrets.umami_app_secret.path
+  # Vaked has no `secret` capability kind. The closest is a capability grant from
+  # the `fs` domain, but there is no way to declare "a sops-managed runtime secret
+  # with a /run/secrets path" — the language has no `secret` or `credential` kind.
+  #
+  # Stub: declare a capability grant to signal intent, but Vaked cannot lower this
+  # to `config.sops.secrets.*` or to a systemd credential.
+  capability umamiSecrets {
+    grant app_secret
+    order app_secret < app_secret  # trivial single-element order — just satisfies the grammar
+  }
+
+  # --- GAP #1 + #4: NixOS systemd service with loopback bind ---
+  # umami needs: services.umami.enable + HOSTNAME=127.0.0.1 PORT=3003
+  # There is no `service` kind. The closest existing kind is `fiber` (a
+  # policy-bound execution lane), but `fiber` requires an `engine` (a Nix
+  # derivation builder) and an `input` (a `stream` ref). Umami has neither: it is
+  # a long-running HTTP server, not a stream-processing fiber.
+  #
+  # Stub: a stream that pretends to carry HTTP requests on the loopback port.
+  # This will fail check because `source` must be a daemon-channel ref, not a
+  # plain address literal. The stub documents intent.
+  stream umamiRequests {
+    # GAP #4: loopback host:port binding — no `hostPort` Source type exists.
+    # Actual need: bind to 127.0.0.1:3003; expose that as the stream source.
+    # The only valid `source` shapes are `github(...)`, `raw.github(...)`,
+    # `<daemon>.<channel>`, or `device.<name>`. None model a TCP socket.
+    source = umami.http_loopback  # STUB: not a valid Source; will fail check
+    type = Http.Request
+    retention = 0s
+  }
+
+  # --- GAP #2: shared host Postgres ---
+  # umami needs: createPostgresqlDatabase = true (reuses the box's postgresql service)
+  # There is no construct to reference or depend on an existing host-managed
+  # database instance. An `index` is the closest (`source = postgres-ref`?) but
+  # an `index` is a read-only data corpus, not a writable service dependency.
+  # Stub: no approximation possible without fabricating an invalid Source.
+
+  # --- GAP #1 (continued): no `service` primitive ---
+  # The nearest representation is a `fiber`, but it is semantically wrong:
+  # fibers are stream-processing execution lanes, not HTTP servers.
+  #
+  # Best approximation: a fiber with a stub engine and the umamiRequests stream
+  # as input. This will fail check because:
+  #   (a) `engine` must be an `engine` decl ref, not a string — we have no
+  #       umami engine declared;
+  #   (b) the `input` stream (umamiRequests) itself fails check (bad `source`).
+  fiber umamiService {
+    # GAP: no engine — umami is a nixpkgs-packaged service, not a Zig engine.
+    # The `engine` field requires an `engine` decl; no `pkgs.umami` analog exists.
+    engine = pkgs.umami         # STUB: `pkgs` is not a declared engine
+    input = stream.umamiRequests  # STUB: umamiRequests has an invalid source
+    output = web.analytics       # STUB: no `web` output target; artifacts.* is the only known form
+
+    policy {
+      # DISABLE_TELEMETRY: policy block is open, so this key won't be rejected by
+      # the checker — but it also lowers to nothing (the zig.daemoncfg emitter
+      # only projects it; no NixOS service emitter exists to consume it).
+      disable_telemetry = true
+    }
+  }
+
+  # --- GAP #6: HTTP ingress / reverse-proxy surface ---
+  # umami needs: services.caddy.virtualHosts."analytics.crabcc.app".extraConfig
+  #   import crabcc_sec
+  #   reverse_proxy 127.0.0.1:3003
+  #
+  # The existing `surface` kind is for raylib operator visualizations, NOT for
+  # HTTP virtual hosts. Re-using `surface` for HTTP ingress would collide with the
+  # existing `SurfaceMode` enum (only `raylib` is defined). A dedicated `ingress`
+  # or `vhost` kind is needed.
+  #
+  # Stub: a surface with mode=raylib is syntactically valid but semantically
+  # wrong — documenting the shape of what we WANT, not what works.
+  surface "analytics.crabcc.app" {
+    # GAP: mode should be something like `caddy` or `http`, not `raylib`.
+    # No HTTP/proxy SurfaceMode exists.
+    mode = raylib             # WRONG: placeholder to satisfy the closed schema
+    fps = 1                   # GAP: no FPS concept for an HTTP server; 1 satisfies > 0 constraint
+    # GAP: `upstream` or `proxy_target` field needed — no such field on `surface`.
+    # Actual need: reverse_proxy 127.0.0.1:3003
+    input = [stream.umamiRequests]  # STUB: closest to "receives requests"
+    views = ["analytics"]           # no real view concept for HTTP
+  }
+
+  # --- Summary: parallel group is the only fully valid structure ---
+  parallel "umami-runtime" {
+    fibers = [umamiService]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}
