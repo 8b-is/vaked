@@ -482,7 +482,9 @@ schema runclass {
 `Host` — a deployment target the runtime's `nixosModules` bind to (#28, third
 slice). Thin on purpose: richer host modeling (hardware, membranes) arrives
 with the daemon designs; binding `nixosModules.<runtime>` to a host decl is
-the lowering follow-up. **Closed.**
+the `colmena.hive` emitter (#51): each host lowers to a colmena node
+(`deployment.targetHost` from `deploy`, `nixpkgs.system` from `system`).
+**Closed.**
 
 ```vaked
 schema host {

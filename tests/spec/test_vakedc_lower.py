@@ -58,6 +58,8 @@ EMITTER_REGISTRY = {
     "eventd.config", "memory.store", "workflow.spec",
     # Track C (#19).
     "otp.supervision",
+    # Deployment (#51).
+    "colmena.hive",
 }
 
 

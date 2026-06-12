@@ -325,6 +325,7 @@ runtime plane (#18/#24/#27 — presence-gated, like zig.daemoncfg):
   eventd.config    runtime w/ any memory|workflow          → gen/eventd.json           (#18: per-runtime log path + boot contract)
   otp.supervision  parallel with supervisor = otp          → gen/otp/<slug>_sup.erl + vaked_fiber_worker.erl
                                                              (Track C #19; v0 one_for_one — design 2026-06-12)
+  colmena.hive     host (presence)                         → gen/colmena/hive.nix       (#51: one node per host; `colmena apply` = the deploy loop)
 
 DEFERRED (interface slot defined; mapping deferred — §7):
   ebpf.policy      mesh/capability grants    → (no-op today)
