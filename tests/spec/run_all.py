@@ -27,6 +27,7 @@ import test_vakedc_check as t_vakedc_check  # noqa: E402
 import test_vakedc_lower as t_vakedc_lower  # noqa: E402
 import test_agentfield_load as t_af_load  # noqa: E402
 import test_eventd as t_eventd  # noqa: E402
+import test_otp_lowering as t_otp  # noqa: E402
 
 MODULES = [
     ("grammar_selfcontained", t_grammar),
@@ -38,6 +39,7 @@ MODULES = [
     ("vakedc_lower", t_vakedc_lower),
     ("agentfield_load", t_af_load),
     ("eventd", t_eventd),
+    ("otp_lowering", t_otp),
 ]
 
 
