@@ -2012,6 +2012,9 @@ def emit_colmena_hive(graph, nodes):
         lines.append("  %s = { ... }: {" % _nix_str(h.name))
         if deploy is None or deploy == "local":
             lines.append("    deployment.allowLocalDeployment = true;")
+            # targetHost defaults to the node NAME in colmena; null disables
+            # SSH so plain `colmena apply` treats this node as local.
+            lines.append("    deployment.targetHost = null;")
         else:
             target = deploy[6:] if deploy.startswith("ssh://") else deploy
             lines.append("    deployment.targetHost = %s;" % _nix_str(target))
