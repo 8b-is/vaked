@@ -506,6 +506,18 @@ workflow w {
 }
 '''
 
+# A sibling decl of a NON-mesh kind shadows external namespaces: its members
+# can never be agents (Codex round 2). Truly external heads still pass.
+_WF_AGENT_NONMESH = '''stream field {
+  source = agentGuardd.ringbuf
+  type = Event.Ebpf
+}
+workflow w {
+  node a { agent = field.worker }
+  node b { agent = external.thing }
+}
+'''
+
 
 def _test_workflow(lines):
     cache = _builtins_cache()
@@ -521,6 +533,7 @@ def _test_workflow(lines):
         (_WF_OK, "wf-ok.vaked", []),
         (_WF_FLOAT_DEPTH, "wf-float.vaked", ["E-CONFORM-TYPE"]),
         (_WF_AGENT_TYPO, "wf-agent-typo.vaked", ["E-REF-UNRESOLVED"]),
+        (_WF_AGENT_NONMESH, "wf-agent-nonmesh.vaked", ["E-REF-UNRESOLVED"]),
     ]
     for src, name, want in cases:
         got = codes(src, name)
