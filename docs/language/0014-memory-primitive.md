@@ -88,9 +88,11 @@ Worked example: [`vaked/examples/primitives/memory.vaked`](../../vaked/examples/
 | **CrabCC recall index** | `emit` materializes the recall side as ordinary index/catalog artifacts (`catalog.jsonl`, `catalog.sqlite`) — CrabCC indexes |
 | **docs** | the generated memory map per runtime |
 
-The lowering emitter is **deferred** (grammar-before-code: grammar + schema +
-example land first; the emitter is follow-up work under #24). Until it lands,
-`vakedc lower` on a file containing a `memory` decl emits nothing for it.
+The emitter is **landed** (`memory.store` in the 0012 §3.4 registry):
+`vakedc lower` emits `gen/memory/<name>.json` per memory decl — source, mine,
+scope, retention, recall `emit` targets, and the per-runtime eventd log path —
+plus `gen/eventd.json` (the log contract) whenever a runtime declares any
+memory/workflow.
 
 ## Runtime contract
 

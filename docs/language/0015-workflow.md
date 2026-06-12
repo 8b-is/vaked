@@ -79,13 +79,13 @@ propagation-latency cascade and DAG property, enforced at check time over the
 existing LPG — no MLIR dependency. These codes live here until folded into a
 0011 revision (tracked on #27).
 
-## Lowering (output-first; emitter deferred under #27)
+## Lowering (output-first; `workflow.spec` emitter landed — 0012 §3.4)
 
 | Artifact | Target |
 |----------|--------|
-| **supervisor workflow spec** | `gen/workflow/<name>.json` — steps, agent refs, edges, budgets, trigger — consumed by `agent-supervisord` (Track C, #19); a natural input to the AOT routing index (0013 Pass 3) |
-| **eventd wiring** | step start/finish/retry events on the per-runtime log (#18) — a workflow run is a fold, so replay/rewind (#20) applies to runs for free |
-| **docs** | the generated workflow DAG per runtime |
+| **supervisor workflow spec** | `gen/workflow/<name>.json` — trigger, budget, step roster (agent/input/output/retries), DAG edges, **precomputed critical-path depth** (the 0013 Pass-1 AOT output), and the per-runtime eventd log path — consumed by `agent-supervisord` (Track C, #19) |
+| **eventd wiring** | `gen/eventd.json` (log path + boot contract, #18); step start/finish/retry events ride that log at runtime — a workflow run is a fold, so replay/rewind (#20) applies to runs for free |
+| **docs** | the generated workflow DAG per runtime (deferred) |
 
 ## Open
 

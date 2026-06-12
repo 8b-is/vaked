@@ -319,6 +319,11 @@ emit-SELECTED (direct artifacts in gen/, run when an emit target names them):
   crabcc.index     index        (emit ∋ nix.derivation)   → crabcc index drv (in spine) §5.3
   zig.daemoncfg    fiber/engine                            → gen/zig/<name>.json        §5.2
 
+runtime plane (#18/#24/#27 — presence-gated, like zig.daemoncfg):
+  workflow.spec    workflow (presence)                     → gen/workflow/<name>.json  (0015: steps/edges/depth, AOT supervisor spec)
+  memory.store     memory (presence)                       → gen/memory/<name>.json    (0014: source/mine/scope/retention/emit + log)
+  eventd.config    runtime w/ any memory|workflow          → gen/eventd.json           (#18: per-runtime log path + boot contract)
+
 DEFERRED (interface slot defined; mapping deferred — §7):
   ebpf.policy      mesh/capability grants    → (no-op today)
   otel.config      stream/observe            → (no-op today)

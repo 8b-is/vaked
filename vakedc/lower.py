@@ -287,6 +287,9 @@ class _RuntimeView:
     host_resources: list = dc_field(default_factory=list)
     ingresses: list = dc_field(default_factory=list)
     containers: list = dc_field(default_factory=list)
+    # Runtime plane (#18/#24/#27).
+    memories: list = dc_field(default_factory=list)
+    workflows: list = dc_field(default_factory=list)
 
 
 def _runtime_view(graph) -> "_RuntimeView | None":
@@ -307,6 +310,8 @@ def _runtime_view(graph) -> "_RuntimeView | None":
         host_resources=_by_kind(children, "hostResource"),
         ingresses=_by_kind(children, "ingress"),
         containers=_by_kind(children, "container"),
+        memories=_by_kind(children, "memory"),
+        workflows=_by_kind(children, "workflow"),
     )
 
 
@@ -1588,6 +1593,214 @@ def _node_for_chain(graph, chain):
 
 
 # --------------------------------------------------------------------------- #
+# Emitters: the runtime plane (#18/#24/#27) — eventd.config / memory.store /
+# workflow.spec. All presence-gated (like zig.daemoncfg): a runtime that
+# declares no memory/workflow emits none of these, keeping earlier fixture
+# sets byte-identical. JSON layout via _emit_zig_json (deterministic order).
+# --------------------------------------------------------------------------- #
+
+def _eventd_log_path(rv) -> str:
+    """The per-runtime hash-chained log path (eventd design §"Daemon shape")."""
+    return "var/lib/%s/eventd/log.jsonl" % rv.runtime.name
+
+
+def emit_eventd_config(graph, nodes):
+    """Emit ``gen/eventd.json`` — the per-runtime log location + boot contract
+    (#18: "per-runtime log path as a 0012 lowering output"). Selected when the
+    runtime declares any memory/workflow (the log's in-language consumers)."""
+    rv = _runtime_view(graph)
+    if rv is None:
+        return {}, []
+    sf = graph.source_file
+    rt = rv.runtime
+    cfg = _Ordered([
+        ("_generated", _header(sf, "runtime " + rt.name)),
+        ("log", _eventd_log_path(rv)),
+        ("format", "jsonl-hashchain-v1"),
+        ("verify_on_boot", True),
+        ("writer", "agent-supervisord"),
+    ])
+    path = "gen/eventd.json"
+    files = {path: _emit_zig_json(cfg)}
+    entries = [ProvEntry(
+        artifact=path, region=None, source_file=sf,
+        decl="runtime " + rt.name, span=rt.provenance.span,
+        emitter="eventd.config", inputs_projection=_node_projection(rt))]
+    return files, entries
+
+
+def emit_memory_store(graph, nodes):
+    """Emit one ``gen/memory/<name>.json`` per memory decl (#24, 0014): the
+    store config memoryd / agent-supervisord loads — mined source, distiller,
+    fold partition (scope), retention, recall artifacts, and the eventd log
+    the entries ride on."""
+    rv = _runtime_view(graph)
+    if rv is None:
+        return {}, []
+    sf = graph.source_file
+    files = {}
+    entries = []
+    for mem in nodes:
+        pairs = [("_generated", _header(sf, "memory " + mem.name))]
+        # source : Stream<T> | List<Stream<T>> — both forms are schema-legal;
+        # the list form must survive into the store config (memoryd mines
+        # every named stream).
+        src_prop = mem.props.get("source")
+        if isinstance(src_prop, list):
+            srcs = [_ref(x) for x in src_prop if _ref(x) is not None]
+            if srcs:
+                pairs.append(("source", srcs))
+        else:
+            src = _ref(src_prop)
+            if src is not None:
+                pairs.append(("source", src))
+        schema_ref = _ref(mem.props.get("schema"))
+        if schema_ref is not None:
+            pairs.append(("schema", schema_ref))   # binds entry type T (0014)
+        mine = _ref(mem.props.get("mine"))
+        if mine is not None:
+            pairs.append(("mine", mine))
+        scope = _lit(mem.props.get("scope"))
+        pairs.append(("scope", scope if scope is not None else "agent"))
+        retention = _lit(mem.props.get("retention"))
+        if retention is not None:
+            pairs.append(("retention", retention))
+        emit_targets = []
+        emit_prop = mem.props.get("emit")
+        if isinstance(emit_prop, list):
+            emit_targets = [_ref(x) for x in emit_prop if _ref(x) is not None]
+        if emit_targets:
+            pairs.append(("emit", emit_targets))
+        pairs.append(("log", _eventd_log_path(rv)))
+        path = "gen/memory/%s.json" % mem.name
+        files[path] = _emit_zig_json(_Ordered(pairs))
+        entries.append(ProvEntry(
+            artifact=path, region=None, source_file=sf,
+            decl="memory " + mem.name, span=mem.provenance.span,
+            emitter="memory.store", inputs_projection=_node_projection(mem)))
+    return files, entries
+
+
+def _budget_prop(prop):
+    """The Budget auxiliary type admits BOTH forms — a ref to a `budget` decl
+    (``budget = budget.swe`` → emitted as the ref string) and an inline budget
+    record (``budget = { tokens = 10 … }`` → emitted as an ordered object).
+    Dropping either form would boot the supervisor without declared limits."""
+    r = _ref(prop)
+    if r is not None:
+        return r
+    rec = prop.get("record") if isinstance(prop, dict) else None
+    if isinstance(rec, list):
+        pairs = []
+        for e in rec:
+            if isinstance(e, dict) and "assign" in e:
+                v = e.get("value")
+                lit = _lit(v)
+                if lit is None:
+                    continue
+                if isinstance(v, dict) and v.get("lit") == "number":
+                    lit = _coerce_number(lit)
+                pairs.append((e["assign"], lit))
+        if pairs:
+            return _Ordered(pairs)
+    return None
+
+
+def _workflow_projection(wf, steps, edges) -> dict:
+    """The provenance inputs projection for a workflow artifact: the artifact
+    depends on the workflow record AND its step nodes AND the routes_to edges
+    (they produce `steps`/`edges`/`depth`), so all of them key the inputsHash —
+    editing a step's agent or rewiring the DAG must change the hash."""
+    proj = _node_projection(wf)
+    proj["steps"] = [_node_projection(s) for s in steps]
+    proj["edges"] = [{"from": a, "to": b} for a, b in edges]
+    return proj
+
+
+def _workflow_steps_edges(graph, wf):
+    """(steps, edges) of a workflow node: its `node` children in declaration
+    order and the routes_to edges among them as (from_name, to_name) pairs."""
+    steps = [n for n in _children_of(graph, wf.id) if n.kind == "node"]
+    ids = {n.id: n.name for n in steps}
+    edges = [(ids[e.source], ids[e.target])
+             for e in graph.edges
+             if e.label == "routes_to" and e.source in ids and e.target in ids]
+    return steps, edges
+
+
+def _workflow_depth(steps, edges) -> int:
+    """Critical path counted in steps (same semantics as the 0015 checker;
+    lower runs only on a checked graph, so the edge set is a DAG)."""
+    succ = {s.name: [] for s in steps}
+    for a, b in edges:
+        succ[a].append(b)
+    memo = {}
+
+    def depth(name):
+        if name not in memo:
+            memo[name] = 1 + max((depth(n) for n in succ[name]), default=0)
+        return memo[name]
+
+    return max((depth(s.name) for s in steps), default=0)
+
+
+def emit_workflow_spec(graph, nodes):
+    """Emit one ``gen/workflow/<name>.json`` per workflow decl (#27, 0015):
+    the AOT spec agent-supervisord loads at boot — trigger, budget, the step
+    roster (agent / input / output / retries), the DAG edges, the precomputed
+    critical-path depth (0013 Pass 1 output), and the eventd log the run's
+    step events append to (RFC 0004)."""
+    rv = _runtime_view(graph)
+    if rv is None:
+        return {}, []
+    sf = graph.source_file
+    files = {}
+    entries = []
+    for wf in nodes:
+        steps, edges = _workflow_steps_edges(graph, wf)
+        pairs = [("_generated", _header(sf, "workflow " + wf.name))]
+        on = _lit(wf.props.get("on"))
+        if on is not None:
+            pairs.append(("on", on))
+        budget = _budget_prop(wf.props.get("budget"))
+        if budget is not None:
+            pairs.append(("budget", budget))
+        max_depth = _lit(wf.props.get("maxDepth"))
+        if max_depth is not None:
+            pairs.append(("maxDepth", _coerce_number(max_depth)))
+        step_objs = []
+        for st in steps:
+            sp = [("name", st.name)]
+            agent = _ref(st.props.get("agent"))
+            if agent is not None:
+                sp.append(("agent", agent))
+            for fld in ("input", "output"):
+                r = _ref(st.props.get(fld))
+                if r is not None:
+                    sp.append((fld, r))
+            retries = _lit(st.props.get("retries"))
+            if retries is not None:
+                sp.append(("retries", _coerce_number(retries)))
+            sbudget = _budget_prop(st.props.get("budget"))
+            if sbudget is not None:
+                sp.append(("budget", sbudget))
+            step_objs.append(_Ordered(sp))
+        pairs.append(("steps", step_objs))
+        pairs.append(("edges", [_Ordered([("from", a), ("to", b)])
+                                for a, b in edges]))
+        pairs.append(("depth", _workflow_depth(steps, edges)))
+        pairs.append(("log", _eventd_log_path(rv)))
+        path = "gen/workflow/%s.json" % wf.name
+        files[path] = _emit_zig_json(_Ordered(pairs))
+        entries.append(ProvEntry(
+            artifact=path, region=None, source_file=sf,
+            decl="workflow " + wf.name, span=wf.provenance.span,
+            emitter="workflow.spec",
+            inputs_projection=_workflow_projection(wf, steps, edges)))
+    return files, entries
+
+
+# --------------------------------------------------------------------------- #
 # Registry + selection + the lowering driver.
 # --------------------------------------------------------------------------- #
 
@@ -1616,6 +1829,10 @@ REGISTRY = {
     "host.resources": _Registered("host.resources", emit_host_resources),
     "caddy.ingress":  _Registered("caddy.ingress", emit_caddy_ingress),
     "oci.containers": _Registered("oci.containers", emit_oci_containers),
+    # Runtime plane (#18/#24/#27) — presence-gated gen/ artifacts.
+    "eventd.config":  _Registered("eventd.config", emit_eventd_config),
+    "memory.store":   _Registered("memory.store", emit_memory_store),
+    "workflow.spec":  _Registered("workflow.spec", emit_workflow_spec),
     # DEFERRED (interface slots, §7) — inert no-ops
     "ebpf.policy":      _Registered("ebpf.policy", emit_deferred, deferred=True),
     "otel.config":      _Registered("otel.config", emit_deferred, deferred=True),
@@ -1698,6 +1915,15 @@ def lower(graph, items=None) -> LowerResult:
         _run("caddy.ingress", rv.ingresses)
     if rv.containers:
         _run("oci.containers", rv.containers)
+
+    # Runtime plane (#18/#24/#27): workflow specs + memory stores, plus the
+    # per-runtime eventd log contract when either consumer is present.
+    if rv.workflows:
+        _run("workflow.spec", rv.workflows)
+    if rv.memories:
+        _run("memory.store", rv.memories)
+    if rv.memories or rv.workflows:
+        _run("eventd.config", [rv.runtime])
 
     provenance = _build_provenance(graph, all_entries)
     return LowerResult(files=files, provenance=provenance, entries=all_entries)
