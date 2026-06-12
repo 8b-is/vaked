@@ -290,6 +290,8 @@ class _RuntimeView:
     # Runtime plane (#18/#24/#27).
     memories: list = dc_field(default_factory=list)
     workflows: list = dc_field(default_factory=list)
+    # Deployment targets (#28 slice 3 / #51).
+    hosts: list = dc_field(default_factory=list)
 
 
 def _runtime_view(graph) -> "_RuntimeView | None":
@@ -312,6 +314,7 @@ def _runtime_view(graph) -> "_RuntimeView | None":
         containers=_by_kind(children, "container"),
         memories=_by_kind(children, "memory"),
         workflows=_by_kind(children, "workflow"),
+        hosts=_by_kind(children, "host"),
     )
 
 
@@ -1952,6 +1955,83 @@ def emit_workflow_spec(graph, nodes):
     return files, entries
 
 
+
+def _nix_str(s: str) -> str:
+    """A safe Nix double-quoted string literal: neutralizes the three
+    sequences that are active inside `"..."` — backslash (first), `"`, and
+    `${` antiquotation — so host-controlled values can never inject Nix
+    (the issue #7 splice class). Backslash MUST be escaped before the others."""
+    return '"' + (s.replace("\\", "\\\\")
+                   .replace('"', '\\"')
+                   .replace("${", "\\${")) + '"'
+
+
+def emit_colmena_hive(graph, nodes):
+    """Emit ``gen/colmena/hive.nix`` (#51): one colmena node per `host` decl,
+    so `colmena apply` deploys the runtime's nixosModules to its declared
+    boxes — the declare -> check -> lower -> deploy loop. Presence-gated.
+
+    Mapping per host decl: `deploy = "ssh://user@addr"` -> deployment.
+    targetHost "user@addr"; `deploy = "local"` (or absent) -> local
+    deployment. The node imports the runtime's NixOS module by the same
+    interface-only path the spine declares (0012 §4.3); `meta.nixpkgs` uses
+    `<nixpkgs>` in this standalone form — the flake remains the pinned entry
+    point (documented in the header)."""
+    rv = _runtime_view(graph)
+    if rv is None:
+        return {}, []
+    sf = graph.source_file
+    rt = rv.runtime
+
+    lines = []
+    lines.append("# %s" % _header(sf, "runtime " + rt.name))
+    lines.append("#")
+    lines.append("# colmena hive (#51): `colmena apply` deploys nixosModules.%s"
+                 % rt.name)
+    lines.append("# to the declared hosts. Standalone form pins nothing itself —")
+    lines.append("# the flake (the spine) is the pinned entry point; <nixpkgs>")
+    lines.append("# here is the documented interface-only escape (0012 §4.3).")
+    lines.append("{")
+    lines.append("  meta = {")
+    # PATH form (not `import <nixpkgs> {}`): colmena imports nixpkgs per node,
+    # honoring each node's `nixpkgs.system`. An already-evaluated set would be
+    # used as-is and the per-node system silently ignored (multi-arch bug).
+    lines.append("    nixpkgs = <nixpkgs>;")
+    lines.append("  };")
+    lines.append("")
+    entries = []
+    for i, h in enumerate(nodes):
+        if i:
+            lines.append("")   # blank line BETWEEN nodes only
+        system = _lit(h.props.get("system")) or ""
+        deploy = _lit(h.props.get("deploy"))
+        # All host-controlled strings go through _nix_str — host name, deploy
+        # target, and system are free-form (deploy is only `nonempty String`),
+        # so raw interpolation would allow `${…}` antiquotation injection
+        # (the issue #7 attrpath-splice class). _nix_str neutralizes it.
+        lines.append("  %s = { ... }: {" % _nix_str(h.name))
+        if deploy is None or deploy == "local":
+            lines.append("    deployment.allowLocalDeployment = true;")
+            # targetHost defaults to the node NAME in colmena; null disables
+            # SSH so plain `colmena apply` treats this node as local.
+            lines.append("    deployment.targetHost = null;")
+        else:
+            target = deploy[6:] if deploy.startswith("ssh://") else deploy
+            lines.append("    deployment.targetHost = %s;" % _nix_str(target))
+        lines.append("    nixpkgs.system = %s;" % _nix_str(system))
+        lines.append("    # interface-only module path, exactly as the spine")
+        lines.append("    # declares nixosModules.%s (0012 §4.3)." % rt.name)
+        lines.append("    imports = [ ../../nixos/%s.nix ];" % rt.name)
+        lines.append("  };")
+        entries.append(ProvEntry(
+            artifact="gen/colmena/hive.nix", region="host/" + h.name,
+            source_file=sf, decl="host " + h.name, span=h.provenance.span,
+            emitter="colmena.hive", inputs_projection=_node_projection(h)))
+    lines.append("}")
+    files = {"gen/colmena/hive.nix": "\n".join(lines) + "\n"}
+    return files, entries
+
+
 # --------------------------------------------------------------------------- #
 # Registry + selection + the lowering driver.
 # --------------------------------------------------------------------------- #
@@ -1987,6 +2067,8 @@ REGISTRY = {
     "workflow.spec":  _Registered("workflow.spec", emit_workflow_spec),
     # Track C (#19) — the OTP supervision tree (design 2026-06-12).
     "otp.supervision": _Registered("otp.supervision", emit_otp_supervision),
+    # Deployment (#51) — colmena hive over host decls.
+    "colmena.hive":   _Registered("colmena.hive", emit_colmena_hive),
     # DEFERRED (interface slots, §7) — inert no-ops
     "ebpf.policy":      _Registered("ebpf.policy", emit_deferred, deferred=True),
     "otel.config":      _Registered("otel.config", emit_deferred, deferred=True),
@@ -2084,6 +2166,10 @@ def lower(graph, items=None) -> LowerResult:
         _run("memory.store", rv.memories)
     if rv.memories or rv.workflows:
         _run("eventd.config", [rv.runtime])
+
+    # Deployment (#51): one colmena node per declared host.
+    if rv.hosts:
+        _run("colmena.hive", rv.hosts)
 
     provenance = _build_provenance(graph, all_entries)
     return LowerResult(files=files, provenance=provenance, entries=all_entries)
