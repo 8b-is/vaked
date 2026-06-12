@@ -1654,6 +1654,9 @@ def emit_memory_store(graph, nodes):
             src = _ref(src_prop)
             if src is not None:
                 pairs.append(("source", src))
+        schema_ref = _ref(mem.props.get("schema"))
+        if schema_ref is not None:
+            pairs.append(("schema", schema_ref))   # binds entry type T (0014)
         mine = _ref(mem.props.get("mine"))
         if mine is not None:
             pairs.append(("mine", mine))
