@@ -103,6 +103,13 @@ authority; workflow edges order steps. Designed in
 example is
 [`vaked/examples/agentfield-swe.vaked`](../../vaked/examples/agentfield-swe.vaked).
 
+## Substrate candidates (0016)
+
+The Wasmtime / Colmena / SPIFFE / NATS / TVM / ZKP technology batch is triaged
+— design slots opened (#50/#51/#52), references recorded, and
+already-have-its named — in
+[`0016-substrate-candidates.md`](./0016-substrate-candidates.md).
+
 ## Topology compilation (0013)
 
 The MLIR-based multi-agent topology compilation strategy — the `vaked` (agent
