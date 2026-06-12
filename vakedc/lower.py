@@ -1669,6 +1669,17 @@ def emit_memory_store(graph, nodes):
     return files, entries
 
 
+def _workflow_projection(wf, steps, edges) -> dict:
+    """The provenance inputs projection for a workflow artifact: the artifact
+    depends on the workflow record AND its step nodes AND the routes_to edges
+    (they produce `steps`/`edges`/`depth`), so all of them key the inputsHash —
+    editing a step's agent or rewiring the DAG must change the hash."""
+    proj = _node_projection(wf)
+    proj["steps"] = [_node_projection(s) for s in steps]
+    proj["edges"] = [{"from": a, "to": b} for a, b in edges]
+    return proj
+
+
 def _workflow_steps_edges(graph, wf):
     """(steps, edges) of a workflow node: its `node` children in declaration
     order and the routes_to edges among them as (from_name, to_name) pairs."""
@@ -1747,7 +1758,8 @@ def emit_workflow_spec(graph, nodes):
         entries.append(ProvEntry(
             artifact=path, region=None, source_file=sf,
             decl="workflow " + wf.name, span=wf.provenance.span,
-            emitter="workflow.spec", inputs_projection=_node_projection(wf)))
+            emitter="workflow.spec",
+            inputs_projection=_workflow_projection(wf, steps, edges)))
     return files, entries
 
 
