@@ -1188,13 +1188,14 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None,
 
     smap = smaps[filename]
 
-    # Stage 4b/4c/4d — walk every in-file declaration.  Top-level meshes are
+    # Stage 4b/4c/4d — walk every in-file declaration.  Top-level decls are
     # sibling-scope for top-level workflows (agent-target validation, #27).
     top_meshes = _mesh_node_index(items)
+    top_kinds = _decl_kind_index(items)
     for it in items:
         if isinstance(it, P.Decl):
             _check_decl_tree(it, registry, by_name_kind, smap, filename, diags,
-                             top_meshes)
+                             top_meshes, top_kinds)
             # Stage 2 (closed-world ref resolution) for each top-level runtime.
             if it.kind == "runtime":
                 _check_ref_resolution(it, filename, diags, imported_decls)
@@ -1358,12 +1359,19 @@ def _mesh_node_index(stmts):
     }
 
 
+def _decl_kind_index(stmts):
+    """{decl name -> kind} for every declaration in ``stmts``."""
+    return {st.name: st.kind for st in stmts if isinstance(st, P.Decl)}
+
+
 def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
-                     sibling_meshes=None):
+                     sibling_meshes=None, sibling_kinds=None):
     """Check ``decl`` and recurse into nested declarations / mesh nodes.
 
-    ``sibling_meshes`` is the {mesh -> node names} index of the block the decl
-    sits in — the in-scope agent roster for workflow agent-target validation."""
+    ``sibling_meshes`` ({mesh -> node names}) and ``sibling_kinds``
+    ({decl name -> kind}) index the block the decl sits in — the in-scope
+    agent roster (and its shadowing decl names) for workflow agent-target
+    validation."""
     kind = decl.kind
 
     # Conformance for kinds that have a schema (skip the meta-kinds themselves).
@@ -1382,15 +1390,17 @@ def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
     # step `->` edges form a DAG, enforce a declared `maxDepth` bound, and
     # validate `agent` targets against sibling meshes.
     if kind == "workflow":
-        _check_workflow(decl, registry, smap, file, diags, sibling_meshes)
+        _check_workflow(decl, registry, smap, file, diags, sibling_meshes,
+                        sibling_kinds)
 
     # Recurse into nested declarations (e.g. a runtime's index/stream/fiber/…).
     # Meshes declared in THIS body are sibling-scope for nested workflows.
     child_meshes = _mesh_node_index(decl.body)
+    child_kinds = _decl_kind_index(decl.body)
     for st in decl.body:
         if isinstance(st, P.Decl):
             _check_decl_tree(st, registry, by_name_kind, smap, file, diags,
-                             child_meshes)
+                             child_meshes, child_kinds)
 
 
 def _check_mesh(mesh_decl, registry, smap, file, diags):
@@ -1437,7 +1447,8 @@ def _check_mesh(mesh_decl, registry, smap, file, diags):
                     a_ref, b_ref, registry, file, mesh_decl, diags)
 
 
-def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None):
+def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None,
+                    sibling_kinds=None):
     """#27 / 0015: a `workflow` is a typed agent-step DAG.
 
     Mesh edges are capability *delegations* (attenuation, §4.4); workflow edges
@@ -1447,12 +1458,15 @@ def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None):
     the longest step chain, counted in steps (E-WORKFLOW-DEPTH). Edges with an
     endpoint that is not a declared step are external and skipped, exactly like
     mesh edge handling. A step's `agent = <mesh>.<node>` ref whose head names a
-    *sibling* mesh must name one of that mesh's nodes (E-REF-UNRESOLVED);
-    unknown heads stay unvalidated until the value-namespace roster (#8).
-    Deterministic: steps in declaration order; at most one cycle diagnostic
-    (the first cycle reached in that order)."""
+    *sibling* mesh must name one of that mesh's nodes, and a head naming a
+    sibling decl of any OTHER kind (which shadows external namespaces) cannot
+    be an agent at all (both E-REF-UNRESOLVED); truly unknown heads stay
+    unvalidated until the value-namespace roster (#8). Deterministic: steps in
+    declaration order; at most one cycle diagnostic (the first cycle reached
+    in that order)."""
     step_schema = registry.schemas.get("workflowStep")
     sibling_meshes = sibling_meshes or {}
+    sibling_kinds = sibling_kinds or {}
     dspan = (wf_decl.byteStart, wf_decl.byteEnd, wf_decl.line, wf_decl.col)
 
     steps = []                      # declaration order
@@ -1464,13 +1478,23 @@ def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None):
                 _conform_node(st, step_schema, registry, smap, file, diags, nspan)
             bindings, _order = _node_bindings(st)
             ag = _grant_ref_parts(bindings.get("agent"))
-            if ag is not None and ag[0] in sibling_meshes \
-                    and ag[1] not in sibling_meshes[ag[0]]:
-                span = (smap.field_value_span(st.byteStart, st.byteEnd, "agent")
-                        if smap else None) or nspan
-                _emit(diags, "E-REF-UNRESOLVED", file, span, wf_decl,
-                      f"step `{st.name}`: `agent = {ag[0]}.{ag[1]}` references "
-                      f"mesh `{ag[0]}` but it declares no node `{ag[1]}`")
+            if ag is not None:
+                head, member = ag
+                bad = None
+                if head in sibling_meshes:
+                    if member not in sibling_meshes[head]:
+                        bad = (f"step `{st.name}`: `agent = {head}.{member}` "
+                               f"references mesh `{head}` but it declares no "
+                               f"node `{member}`")
+                elif head in sibling_kinds:
+                    bad = (f"step `{st.name}`: `agent = {head}.{member}` "
+                           f"references `{sibling_kinds[head]} {head}`, which "
+                           f"is not a mesh — an agent must be a mesh node")
+                if bad is not None:
+                    span = (smap.field_value_span(st.byteStart, st.byteEnd,
+                                                  "agent")
+                            if smap else None) or nspan
+                    _emit(diags, "E-REF-UNRESOLVED", file, span, wf_decl, bad)
     step_set = set(steps)
 
     succ = {s: [] for s in steps}
