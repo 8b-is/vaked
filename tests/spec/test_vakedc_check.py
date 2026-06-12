@@ -485,6 +485,27 @@ _WF_OK = '''workflow ok {
 }
 '''
 
+# Codex review fixes (PR #26): a non-integer maxDepth must not crash the
+# checker — the Int constraint owns the diagnostic, the depth bound is simply
+# not enforced; an `agent` ref whose head names a SIBLING mesh must name one
+# of that mesh's nodes, while unknown heads stay unvalidated (branch B, #8).
+_WF_FLOAT_DEPTH = '''workflow w {
+  maxDepth = 2.5
+  node a { agent = m.x }
+}
+'''
+
+_WF_AGENT_TYPO = '''mesh field {
+  node planner { role = "plan" }
+}
+workflow w {
+  node a { agent = field.planner }
+  node b { agent = field.ghost }
+  node c { agent = missingMesh.missingNode }
+  a -> b -> c
+}
+'''
+
 
 def _test_workflow(lines):
     cache = _builtins_cache()
@@ -498,6 +519,8 @@ def _test_workflow(lines):
         (_WF_DEEP, "wf-deep.vaked", ["E-WORKFLOW-DEPTH"]),
         (_WF_NO_AGENT, "wf-noagent.vaked", ["E-CONFORM-MISSING-FIELD"]),
         (_WF_OK, "wf-ok.vaked", []),
+        (_WF_FLOAT_DEPTH, "wf-float.vaked", ["E-CONFORM-TYPE"]),
+        (_WF_AGENT_TYPO, "wf-agent-typo.vaked", ["E-REF-UNRESOLVED"]),
     ]
     for src, name, want in cases:
         got = codes(src, name)

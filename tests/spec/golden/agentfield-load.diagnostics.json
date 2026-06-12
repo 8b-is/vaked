@@ -1,0 +1,46 @@
+{
+  "diagnostics": [
+    {
+      "code": "E-CAP-ATTENUATION",
+      "decl": "mesh field",
+      "file": "tests/spec/gen/agentfield-load-faults.vaked",
+      "message": "delegation `operator -> rogue` escalates authority: receiver holds `fs.host_rw` but sender holds fs.repo_rw (receiver's grant must be ≤ the sender's in domain `fs`)",
+      "related": [],
+      "severity": "error",
+      "span": {
+        "byteEnd": 1829,
+        "byteStart": 1812,
+        "col": 5,
+        "line": 83
+      }
+    },
+    {
+      "code": "E-WORKFLOW-DEPTH",
+      "decl": "workflow swe_af",
+      "file": "tests/spec/gen/agentfield-load-faults.vaked",
+      "message": "workflow `swe_af` has critical-path depth 6, exceeding the declared maxDepth = 4",
+      "related": [],
+      "severity": "error",
+      "span": {
+        "byteEnd": 1933,
+        "byteStart": 1932,
+        "col": 16,
+        "line": 89
+      }
+    },
+    {
+      "code": "E-REF-UNRESOLVED",
+      "decl": "workflow swe_af",
+      "file": "tests/spec/gen/agentfield-load-faults.vaked",
+      "message": "step `work0003`: `agent = field.wrkr0003` references mesh `field` but it declares no node `wrkr0003`",
+      "related": [],
+      "severity": "error",
+      "span": {
+        "byteEnd": 2471,
+        "byteStart": 2466,
+        "col": 15,
+        "line": 113
+      }
+    }
+  ]
+}
