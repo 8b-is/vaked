@@ -1678,6 +1678,31 @@ def emit_memory_store(graph, nodes):
     return files, entries
 
 
+def _budget_prop(prop):
+    """The Budget auxiliary type admits BOTH forms — a ref to a `budget` decl
+    (``budget = budget.swe`` → emitted as the ref string) and an inline budget
+    record (``budget = { tokens = 10 … }`` → emitted as an ordered object).
+    Dropping either form would boot the supervisor without declared limits."""
+    r = _ref(prop)
+    if r is not None:
+        return r
+    rec = prop.get("record") if isinstance(prop, dict) else None
+    if isinstance(rec, list):
+        pairs = []
+        for e in rec:
+            if isinstance(e, dict) and "assign" in e:
+                v = e.get("value")
+                lit = _lit(v)
+                if lit is None:
+                    continue
+                if isinstance(v, dict) and v.get("lit") == "number":
+                    lit = _coerce_number(lit)
+                pairs.append((e["assign"], lit))
+        if pairs:
+            return _Ordered(pairs)
+    return None
+
+
 def _workflow_projection(wf, steps, edges) -> dict:
     """The provenance inputs projection for a workflow artifact: the artifact
     depends on the workflow record AND its step nodes AND the routes_to edges
@@ -1734,7 +1759,7 @@ def emit_workflow_spec(graph, nodes):
         on = _lit(wf.props.get("on"))
         if on is not None:
             pairs.append(("on", on))
-        budget = _ref(wf.props.get("budget"))
+        budget = _budget_prop(wf.props.get("budget"))
         if budget is not None:
             pairs.append(("budget", budget))
         max_depth = _lit(wf.props.get("maxDepth"))
@@ -1753,7 +1778,7 @@ def emit_workflow_spec(graph, nodes):
             retries = _lit(st.props.get("retries"))
             if retries is not None:
                 sp.append(("retries", _coerce_number(retries)))
-            sbudget = _ref(st.props.get("budget"))
+            sbudget = _budget_prop(st.props.get("budget"))
             if sbudget is not None:
                 sp.append(("budget", sbudget))
             step_objs.append(_Ordered(sp))
