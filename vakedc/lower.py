@@ -1764,8 +1764,12 @@ def emit_otp_supervision(graph, nodes):
     child_blocks = []
     entries = []
     sup_path = "gen/otp/%s_sup.erl" % slug
+    seen = set()   # OTP rejects duplicate child ids at boot; first wins
     for par in nodes:
         for name, kind, config in _otp_members(rv, par):
+            if name in seen:
+                continue
+            seen.add(name)
             cfg = '"%s"' % config if config is not None else "none"
             child_blocks.append(
                 "        #{id => '%s',\n"
