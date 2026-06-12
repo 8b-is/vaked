@@ -1,0 +1,19 @@
+# Minimal example — memory primitive (#24, 0014)
+# Demonstrates: source stream ref, entry schema binding T, mine normalizer,
+#               scope oneof, duration retention, emit list.
+# Memory<T>: runtime-accumulated, mined, replayable, capability-bound recall.
+
+schema memoryEpisode {
+  field topic   : String { nonempty }
+  field insight : String { nonempty }
+  field weight  : Int    { optional in 0 .. 100 }
+}
+
+memory sessionPalace {
+  source = stream.agentTranscripts
+  schema = schema.memoryEpisode
+  mine = mempalace.convos
+  scope = "agent"
+  retention = 90d
+  emit = [catalog.jsonl, catalog.sqlite]
+}

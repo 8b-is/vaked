@@ -213,7 +213,7 @@ def _test_rejected(lines):
 
 
 # --------------------------------------------------------------------------- #
-# 5. All 15 examples check clean (rejected is the sole exception)
+# 5. All 16 examples check clean (rejected is the sole exception)
 # --------------------------------------------------------------------------- #
 
 def _test_all_examples(lines):
