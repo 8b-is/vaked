@@ -50,6 +50,7 @@ and with no extra IO beyond the already-read source text.
 from __future__ import annotations
 
 import os
+from bisect import bisect_left
 from dataclasses import dataclass, field as dc_field
 
 from . import parser as P
@@ -123,15 +124,21 @@ class _SourceMap:
     """Token-indexed view of one source file, used to land diagnostics on the
     exact offending token (the AST/LPG only span declarations and refs)."""
 
-    __slots__ = ("file", "tokens")
+    __slots__ = ("file", "tokens", "_starts")
 
     def __init__(self, src: str, filename: str):
         self.file = filename
         # tokenize is deterministic and pure; comments are already stripped.
         self.tokens = [t for t in tokenize(src, filename) if t.kind not in ("NEWLINE", "EOF")]
+        # Tokens are emitted in source order, so byteStart is sorted: span
+        # lookups bisect instead of scanning every token of the file (#29 —
+        # the scan made checking quadratic in declaration size).
+        self._starts = [t.byteStart for t in self.tokens]
 
     def _toks_in(self, byteStart: int, byteEnd: int):
-        return [t for t in self.tokens if byteStart <= t.byteStart < byteEnd]
+        lo = bisect_left(self._starts, byteStart)
+        hi = bisect_left(self._starts, byteEnd)
+        return self.tokens[lo:hi]
 
     def field_name_span(self, decl_start, decl_end, name):
         """Span of the FIRST top-level assignment / field-name identifier ``name``
