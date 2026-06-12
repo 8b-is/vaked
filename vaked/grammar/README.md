@@ -47,8 +47,8 @@ discarded by the lexer.
 decl = { annotation } kind name [ signature ] block ;
 ```
 
-`kind` is one of the 23 keywords (`runtime`, `engine`, `index`, `mesh`,
-`schema`, `capability`, …).  `name` is a plain identifier or a quoted string.
+`kind` is one of the 29 keywords (`runtime`, `engine`, `index`, `mesh`,
+`schema`, `capability`, `memory`, …).  `name` is a plain identifier or a quoted string.
 The optional `signature` is a typed parameter list with an optional return
 type.  In v0.3 the signature is still **parsed and stored in the AST**; the
 Goal-2 checker (0011) uses it for arity/return checking of user-defined
@@ -212,6 +212,7 @@ Minimal per-primitive examples live in
 | `device.vaked` | `device` |
 | `mediaPipeline.vaked` | `mediaPipeline` |
 | `parallel.vaked` | `parallel` |
+| `memory.vaked` | `memory` (#24, [0014](../../docs/language/0014-memory-primitive.md)) |
 
 A complete, real-world example is
 [`../examples/operator-field.vaked`](../examples/operator-field.vaked).

@@ -131,7 +131,7 @@ kind        = "runtime" | "input"   | "engine"        | "host"
             | "surface" | "mesh"    | "device"         | "mediaPipeline"
             | "parallel" | "schema" | "capability"
             | "service" | "secret" | "hostResource"   | "ingress"
-            | "container" ;
+            | "container" | "memory" ;
 
 # ---- Block and statements ---------------------------------------------------
 #

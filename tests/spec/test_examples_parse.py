@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_examples_parse.py — every example derives from its grammar.
 
-(a) All 15 `.vaked` example files parse against vaked/grammar/vaked-v0-plus.ebnf.
+(a) All 16 `.vaked` example files parse against vaked/grammar/vaked-v0-plus.ebnf.
 (b) protocol/hcplang/examples/hcp-core.hcplang parses against the hcplang grammar.
 (c) v0.2-compat regression probes (inline snippets) verify the v0.3 soft-keyword
     disambiguation did not change how any previously-legal v0.2 program parses:
@@ -23,14 +23,14 @@ import parse_support as ps  # noqa: E402
 
 REPO = ps.REPO
 
-# The 15 expected example files (explicit count, per spec).
+# The 16 expected example files (explicit count, per spec).
 VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/primitives/*.vaked",   # 9
     "vaked/examples/types/*.vaked",        # 4
     "vaked/examples/operator-field.vaked",  # 1
     "vaked/examples/engines/zig.vaked",     # 1
 ]
-EXPECTED_VAKED_COUNT = 15
+EXPECTED_VAKED_COUNT = 16
 
 HCP_EXAMPLE = "protocol/hcplang/examples/hcp-core.hcplang"
 

@@ -44,6 +44,12 @@ mesh
 device
 mediaPipeline
 parallel
+service
+secret
+hostResource
+ingress
+container
+memory
 ```
 
 ## Grammar
@@ -76,6 +82,25 @@ targets; provenance is preserved per-artifact (generated header) and in
 [`0012-lowering.md`](./0012-lowering.md); hand-authored expected-output fixtures
 for `operator-field.vaked` are in
 [`vaked/examples/lowering/`](../../vaked/examples/lowering/).
+
+## Memory (0014)
+
+The `memory` primitive — `Memory<T>`, the MemPalace-shaped runtime-accumulated,
+mined, replayable, capability-bound store (distinct from `index`/`catalog`/
+`stream`) — is designed in [`0014-memory-primitive.md`](./0014-memory-primitive.md)
+(#24), with its schema and the `memory` capability domain in
+[`vaked/schema/parallel-types.md`](../../vaked/schema/parallel-types.md) and a
+worked example in
+[`vaked/examples/primitives/memory.vaked`](../../vaked/examples/primitives/memory.vaked).
+
+## Topology compilation (0013)
+
+The MLIR-based multi-agent topology compilation strategy — the `vaked` (agent
+dataflow) and `hcp` (orchestration frames) dialects, the static depth/cycle
+pass, automatic write-ahead dependency-registration insertion, and AOT
+`agent-supervisord` index generation, staged over the existing typed graph —
+is designed in
+[`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md) (#23).
 
 ## Golden commands
 

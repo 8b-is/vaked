@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from .lexer import Token, tokenize, VakedLexError
 
-# The 28 declaration kinds (grammar `kind`).
+# The 29 declaration kinds (grammar `kind`).
 KINDS = (
     "runtime", "input", "engine", "host",
     "network", "filesystem", "mcp", "ebpf",
@@ -40,6 +40,8 @@ KINDS = (
     "parallel", "schema", "capability",
     # NixOS-deployment cohort (#1-#6): service/secret/hostResource/ingress/container.
     "service", "secret", "hostResource", "ingress", "container",
+    # MemPalace-shaped runtime memory (#24, 0014).
+    "memory",
 )
 _KIND_SET = frozenset(KINDS)
 

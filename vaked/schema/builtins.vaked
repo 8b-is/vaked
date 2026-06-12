@@ -203,6 +203,20 @@ schema container {
   field extraOptions     : List<String>    { optional nonempty }   # raw Docker flags
 }
 
+# `memory` (#24) — Memory<T>: a MemPalace-shaped runtime-accumulated, mined,
+# replayable store of typed entries (docs/language/0014-memory-primitive.md).
+# Distinct from `index` (build-time corpus), `catalog` (derived view), `stream`
+# (ephemeral flow): entries are appended at runtime by mining and recalled
+# under the `memory` capability domain.  Closed.
+schema memory {
+  field source    : Stream<T> | List<Stream<T>> { nonempty }
+  field schema    : Schema<T>    { optional }
+  field mine      : Normalizer   { optional }
+  field scope     : String       { optional oneof ["session", "agent", "runtime"] default = "agent" }
+  field retention : Duration     { optional }
+  field emit      : List<ArtifactTarget> { optional nonempty }
+}
+
 # --------------------------------------------------------------------------- #
 # Built-in capability taxonomy (one `capability <domain>` per built-in domain)
 # `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
@@ -239,4 +253,12 @@ capability ebpf {
 capability process {
   grant none spawn_sandboxed spawn exec_host
   order none < spawn_sandboxed < spawn < exec_host
+}
+
+# `mem` — runtime-memory authority for the `memory` kind (#24).  Total order.
+# Named `mem` (not `memory`): a top-level `capability memory` would collide
+# with `schema memory` in the LPG, whose decl ids are kind-agnostic.
+capability mem {
+  grant none recall append admin
+  order none < recall < append < admin
 }

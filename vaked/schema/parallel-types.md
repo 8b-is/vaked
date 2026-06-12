@@ -36,7 +36,7 @@ Index<T>          Catalog<T>        Stream<T>
 Fiber<I, O>       Surface           Mesh<Node, Edge>
 Device            MediaPipeline     ParallelGroup
 Engine            Capability        Schema<T>
-Runtime
+Runtime           Memory<T>
 ```
 
 ## Auxiliary (built-in) types referenced by the schemas
@@ -488,6 +488,42 @@ schema container {
 
 ---
 
+## Schema: `memory`
+
+`Memory<T>` — a MemPalace-shaped **runtime-accumulated, mined, replayable**
+store of typed entries (#24,
+[`docs/language/0014-memory-primitive.md`](../../docs/language/0014-memory-primitive.md)).
+Distinct from `index` (a build-time read-only corpus), `catalog` (a derived
+view of an index), and `stream` (an ephemeral flow): memory entries are
+appended at runtime by **mining** `source` streams and recalled under the
+`mem` capability domain. Memory state is the fold over the runtime's
+`eventd` log, so rewind rewinds memory too. **Closed.**
+
+```vaked
+schema memory {
+  field source    : Stream<T> | List<Stream<T>> { nonempty }   # what gets mined
+  field schema    : Schema<T>    { optional }     # entry schema; binds T
+  field mine      : Normalizer   { optional }     # distiller: raw events → entries
+  field scope     : String       { optional oneof ["session", "agent", "runtime"] default = "agent" }
+  field retention : Duration     { optional }     # entry time-to-live in the fold
+  field emit      : List<ArtifactTarget> { optional nonempty }
+}
+```
+
+- Conforms to `examples/primitives/memory.vaked`: `source =
+  stream.agentTranscripts`, `schema = schema.memoryEpisode`, `mine =
+  mempalace.convos`, `scope = "agent"`, `retention = 90d`, `emit =
+  [catalog.jsonl, catalog.sqlite]`.
+- `schema` binds the entry type `T` (0011 §5.1), exactly as `index.schema`
+  does; `emit` materializes the **recall side** as ordinary catalog artifacts.
+- `scope` partitions the fold: `"session"` (one turn-sequence), `"agent"` (one
+  agent across sessions — the default), `"runtime"` (shared across the
+  runtime's agents).
+- Reading a memory *uses* `mem.recall`; a mining daemon *uses*
+  `mem.append` (0011 §4.3 use-gathering; § Domain `mem`).
+
+---
+
 ## Schema: `schema` and `capability` (the meta-kinds)
 
 - **`schema <Name> { field … ; [open] }`** — declares a schema. Its body is a
@@ -505,7 +541,7 @@ evaluation.
 
 # Built-in capability taxonomy
 
-A capability is `domain.grant` (0011 §4). The five built-in domains below are
+A capability is `domain.grant` (0011 §4). The six built-in domains below are
 **predeclared**; each lists its grants and its attenuation order (`a < b` ⇒ `a`
 is the weaker/more-attenuated grant; delegation may only go to `≤`). Each order
 is acyclic ⇒ a partial order (0011 §4.2). Users may declare further domains with
@@ -612,6 +648,29 @@ capability process {
 
 Total order. An `engine` whose smoke `check(…)` runs a command *uses*
 `process.spawn` (or `spawn_sandboxed`), gathered per 0011 §4.3.
+
+### Domain `mem` — runtime-memory authority
+
+```vaked
+capability mem {
+  grant none recall append admin
+  order none < recall < append < admin
+}
+```
+
+| Grant | Meaning |
+|-------|---------|
+| `none` | no memory access |
+| `recall` | query/read folded memory entries |
+| `append` | mine/append new entries (implies recall) |
+| `admin` | administer the store (scope, retention, eviction) |
+
+Total order. Authority over the `memory` kind (#24,
+[`0014-memory-primitive.md`](../../docs/language/0014-memory-primitive.md)):
+a mesh node holding `mem.recall` may read but not write; the mining daemon
+holds `mem.append`; only the control plane holds `mem.admin`. The domain is
+named `mem` (not `memory`) because a top-level `capability memory` would
+collide with `schema memory` in the LPG's kind-agnostic decl ids (#25).
 
 ---
 
