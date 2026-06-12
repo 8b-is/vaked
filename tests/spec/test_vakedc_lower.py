@@ -54,6 +54,8 @@ EMITTER_REGISTRY = {
     # NixOS-deployment cohort (#1-#6).
     "sops.secrets", "nixos.service", "host.resources", "caddy.ingress",
     "oci.containers",
+    # Runtime plane (#18/#24/#27).
+    "eventd.config", "memory.store", "workflow.spec",
 }
 
 
