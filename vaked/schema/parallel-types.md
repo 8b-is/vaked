@@ -58,6 +58,7 @@ Runtime           Memory<T>         Workflow
 | `Stage` | an app-with-record stage (`resize { … }`, `encode { … }`) |
 | `Schema<T>` | a `ref` to a `schema` declaration (`schema.zigbeeOta`) |
 | `Capability` | `domain.grant` ref (§ Capability taxonomy) |
+| `RunClass` | a `ref` to a `runclass` declaration (`runclass.interactive`) — the scheduling class a fiber/step runs under |
 | `MeshNode` | a `<mesh>.<node>` ref to a declared mesh node (`field.coder`) — the executing agent of a workflow step |
 | `Budget` | a `ref` to a `budget` decl, or a budget record |
 | `Policy` | a structural record (per-kind, e.g. the `fiber` policy block) |
@@ -203,6 +204,7 @@ schema fiber {
   field output  : O                        # an artifact / target ref
   field policy  : Policy  { optional }     # structural record (see below)
   field budget  : Budget  { optional }
+  field runclass : RunClass { optional }   # scheduling class (#28)
   field observe : Bool    { optional default = false }
 }
 ```
@@ -396,6 +398,7 @@ schema workflowStep {
   field input   : I      { optional }     # consumed artifact/stream ref
   field output  : O      { optional }     # produced artifact ref
   field budget  : Budget { optional }
+  field runclass : RunClass { optional }     # scheduling class (#28)
   field retries : Int    { optional >= 0 }   # bounded revision loop (NOT a back-edge)
   open                                    # step vocabularies grow with the roster
 }
@@ -441,6 +444,36 @@ schema budget {
 - `approvals` gates the broker: `"never"` (fully autonomous), `"destructive"`
   (approval on destructive calls only), `"always"`.
 - `runclass` and the remaining schema-less kinds stay open under #28.
+
+---
+
+## Schema: `runclass`
+
+`RunClass` — the scheduling class a fiber / workflow step runs under (#28,
+second slice). `priority` is the intended worker process priority (the
+`process_flag` mapping is follow-up); `interval` is
+the worker's tick baseline (the RFC 0005 `slow` verb overrides it live);
+`maxRestarts`/`window` feed supervisor restart intensity. Referenced via the
+`RunClass` auxiliary type (`runclass = runclass.interactive`). Lowering wiring into the
+`otp.supervision` lowering (worker args + SupFlags) is a follow-up tracked
+on #28.
+**Closed.**
+
+```vaked
+schema runclass {
+  field priority    : String   { optional oneof ["low", "normal", "high"] default = "normal" }
+  field interval    : Duration { optional }     # tick baseline, e.g. 5s
+  field maxRestarts : Int      { optional >= 0 }
+  field window      : Duration { optional }     # restart-intensity window
+}
+```
+
+- Conforms to `examples/agentfield-swe.vaked` (`runclass interactive {
+  priority = "high"  interval = 5s }`, referenced from the `transcriptMiner`
+  fiber).
+- The remaining schema-less kinds (`input`, `host`, `network`, `filesystem`,
+  `mcp`, `ebpf`, `observability`) stay open under #28's audit: each gets a
+  schema or a removal decision.
 
 ---
 

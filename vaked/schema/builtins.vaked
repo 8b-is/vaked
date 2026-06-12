@@ -72,6 +72,7 @@ schema fiber {
   field output  : O
   field policy  : Policy  { optional }
   field budget  : Budget  { optional }
+  field runclass : RunClass { optional }
   field observe : Bool    { optional default = false }
 }
 
@@ -236,6 +237,7 @@ schema workflowStep {
   field input   : I      { optional }
   field output  : O      { optional }
   field budget  : Budget { optional }
+  field runclass : RunClass { optional }
   field retries : Int    { optional >= 0 }
   open
 }
@@ -249,6 +251,20 @@ schema budget {
   field wallClock : Duration { optional }
   field toolCalls : Int      { optional > 0 }
   field approvals : String   { optional oneof ["never", "destructive", "always"] }
+}
+
+# `runclass` (#28, second slice) — RunClass: the scheduling class a fiber /
+# workflow step runs under.  `priority` is the intended worker process priority (process_flag
+# mapping is follow-up);
+# `interval` is the worker tick baseline (the RFC 0005 `slow` verb overrides
+# it live); `maxRestarts`/`window` feed supervisor restart intensity.
+# Lowering wiring into the otp.supervision lowering (worker args +
+# SupFlags) is a follow-up on #28.
+schema runclass {
+  field priority    : String   { optional oneof ["low", "normal", "high"] default = "normal" }
+  field interval    : Duration { optional }
+  field maxRestarts : Int      { optional >= 0 }
+  field window      : Duration { optional }
 }
 
 # --------------------------------------------------------------------------- #

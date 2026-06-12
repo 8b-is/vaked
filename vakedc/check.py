@@ -1251,7 +1251,9 @@ def _collect_runtime_decls(runtime_decl):
 # engine/input/output/from/source.)
 def _ref_fields():
     from .resolve import _DEPENDS_FIELDS
-    return _DEPENDS_FIELDS | {"fibers"}
+    # budget/runclass are resolution-enforced but are NOT data-flow edges
+    # (adding them to _DEPENDS_FIELDS would mint wrong depends_on edges).
+    return _DEPENDS_FIELDS | {"fibers", "budget", "runclass"}
 
 
 def _walk_depends_refs(decl, out):
