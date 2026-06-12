@@ -1188,10 +1188,13 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None,
 
     smap = smaps[filename]
 
-    # Stage 4b/4c/4d — walk every in-file declaration.
+    # Stage 4b/4c/4d — walk every in-file declaration.  Top-level meshes are
+    # sibling-scope for top-level workflows (agent-target validation, #27).
+    top_meshes = _mesh_node_index(items)
     for it in items:
         if isinstance(it, P.Decl):
-            _check_decl_tree(it, registry, by_name_kind, smap, filename, diags)
+            _check_decl_tree(it, registry, by_name_kind, smap, filename, diags,
+                             top_meshes)
             # Stage 2 (closed-world ref resolution) for each top-level runtime.
             if it.kind == "runtime":
                 _check_ref_resolution(it, filename, diags, imported_decls)
@@ -1346,8 +1349,21 @@ def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
                   f"declaration is in scope of runtime `{runtime_decl.name}`")
 
 
-def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags):
-    """Check ``decl`` and recurse into nested declarations / mesh nodes."""
+def _mesh_node_index(stmts):
+    """{mesh decl name -> set of its node names} for the meshes in ``stmts``."""
+    return {
+        st.name: {nd.name for nd in st.body if isinstance(nd, P.NodeDecl)}
+        for st in stmts
+        if isinstance(st, P.Decl) and st.kind == "mesh"
+    }
+
+
+def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
+                     sibling_meshes=None):
+    """Check ``decl`` and recurse into nested declarations / mesh nodes.
+
+    ``sibling_meshes`` is the {mesh -> node names} index of the block the decl
+    sits in — the in-scope agent roster for workflow agent-target validation."""
     kind = decl.kind
 
     # Conformance for kinds that have a schema (skip the meta-kinds themselves).
@@ -1363,14 +1379,18 @@ def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags):
         _check_mesh(decl, registry, smap, file, diags)
 
     # Workflow (#27): check each step body against workflowStep, verify the
-    # step `->` edges form a DAG, and enforce a declared `maxDepth` bound.
+    # step `->` edges form a DAG, enforce a declared `maxDepth` bound, and
+    # validate `agent` targets against sibling meshes.
     if kind == "workflow":
-        _check_workflow(decl, registry, smap, file, diags)
+        _check_workflow(decl, registry, smap, file, diags, sibling_meshes)
 
     # Recurse into nested declarations (e.g. a runtime's index/stream/fiber/…).
+    # Meshes declared in THIS body are sibling-scope for nested workflows.
+    child_meshes = _mesh_node_index(decl.body)
     for st in decl.body:
         if isinstance(st, P.Decl):
-            _check_decl_tree(st, registry, by_name_kind, smap, file, diags)
+            _check_decl_tree(st, registry, by_name_kind, smap, file, diags,
+                             child_meshes)
 
 
 def _check_mesh(mesh_decl, registry, smap, file, diags):
@@ -1417,7 +1437,7 @@ def _check_mesh(mesh_decl, registry, smap, file, diags):
                     a_ref, b_ref, registry, file, mesh_decl, diags)
 
 
-def _check_workflow(wf_decl, registry, smap, file, diags):
+def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None):
     """#27 / 0015: a `workflow` is a typed agent-step DAG.
 
     Mesh edges are capability *delegations* (attenuation, §4.4); workflow edges
@@ -1426,18 +1446,31 @@ def _check_workflow(wf_decl, registry, smap, file, diags):
     a DAG (E-WORKFLOW-CYCLE), and — when the record declares `maxDepth` — bound
     the longest step chain, counted in steps (E-WORKFLOW-DEPTH). Edges with an
     endpoint that is not a declared step are external and skipped, exactly like
-    mesh edge handling. Deterministic: steps in declaration order; at most one
-    cycle diagnostic (the first cycle reached in that order)."""
+    mesh edge handling. A step's `agent = <mesh>.<node>` ref whose head names a
+    *sibling* mesh must name one of that mesh's nodes (E-REF-UNRESOLVED);
+    unknown heads stay unvalidated until the value-namespace roster (#8).
+    Deterministic: steps in declaration order; at most one cycle diagnostic
+    (the first cycle reached in that order)."""
     step_schema = registry.schemas.get("workflowStep")
+    sibling_meshes = sibling_meshes or {}
     dspan = (wf_decl.byteStart, wf_decl.byteEnd, wf_decl.line, wf_decl.col)
 
     steps = []                      # declaration order
     for st in wf_decl.body:
         if isinstance(st, P.NodeDecl):
             steps.append(st.name)
+            nspan = (st.byteStart, st.byteEnd, st.line, st.col)
             if step_schema is not None:
-                nspan = (st.byteStart, st.byteEnd, st.line, st.col)
                 _conform_node(st, step_schema, registry, smap, file, diags, nspan)
+            bindings, _order = _node_bindings(st)
+            ag = _grant_ref_parts(bindings.get("agent"))
+            if ag is not None and ag[0] in sibling_meshes \
+                    and ag[1] not in sibling_meshes[ag[0]]:
+                span = (smap.field_value_span(st.byteStart, st.byteEnd, "agent")
+                        if smap else None) or nspan
+                _emit(diags, "E-REF-UNRESOLVED", file, span, wf_decl,
+                      f"step `{st.name}`: `agent = {ag[0]}.{ag[1]}` references "
+                      f"mesh `{ag[0]}` but it declares no node `{ag[1]}`")
     step_set = set(steps)
 
     succ = {s: [] for s in steps}
@@ -1496,8 +1529,13 @@ def _check_workflow(wf_decl, registry, smap, file, diags):
     bindings, _order = _node_bindings(wf_decl)
     md = bindings.get("maxDepth")
     if isinstance(md, dict) and md.get("lit") == "number":
-        bound = int(md["value"])
-        if depth > bound:
+        try:
+            bound = int(str(md["value"]))
+        except ValueError:
+            # Non-integer literal (`maxDepth = 2.5`): the Int constraint owns
+            # the type error; the depth bound is simply not enforceable.
+            bound = None
+        if bound is not None and depth > bound:
             span = (smap.field_value_span(wf_decl.byteStart, wf_decl.byteEnd,
                                           "maxDepth") if smap else None) or dspan
             _emit(diags, "E-WORKFLOW-DEPTH", file, span, wf_decl,

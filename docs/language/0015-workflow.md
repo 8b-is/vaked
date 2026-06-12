@@ -96,6 +96,8 @@ existing LPG — no MLIR dependency. These codes live here until folded into a
   schema-less kinds stay open under #28.
 - Fan-in semantics (`a -> c`, `b -> c`): join behavior (all-of vs any-of) —
   deferred; today fan-in is permitted and unspecified, supervisord-defined.
-- A step's `agent` ref is not yet resolution-enforced against the mesh (the
-  `agent` field is not a data-flow ref; closed-world enforcement of
-  `<mesh>.<node>` refs rides with #8 branch B).
+- A step's `agent` ref **is** enforced when its head names a sibling mesh
+  (same block): `agent = field.ghost` against a `mesh field` without a `ghost`
+  node is `E-REF-UNRESOLVED` (typo-catching, landed with the PR-26 review
+  round). Unknown heads (`missingMesh.x`) remain unvalidated until the
+  value-namespace roster (#8 branch B).
