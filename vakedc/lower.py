@@ -1682,11 +1682,14 @@ def emit_memory_store(graph, nodes):
 
 
 def _otp_slug(name: str) -> str:
-    """A runtime name as a legal Erlang module atom prefix: lowercase,
-    non-alphanumerics → '_', 'v' prefixed when not starting with a letter
-    (module name MUST match filename — OTP rule)."""
-    s = "".join(c if c.isalnum() else "_" for c in name.lower())
-    if not s or not s[0].isalpha():
+    """A runtime name as a legal Erlang module atom prefix — strictly
+    ``[a-z][a-z0-9_]*``. Explicit ASCII ranges, NOT str.isalnum(): Python's
+    test is Unicode-aware (Arabic-Indic digits etc. pass it), and a non-ASCII
+    module name is rejected by erlc. 'v' prefixed when not starting with a
+    letter (module name MUST match filename — OTP rule)."""
+    s = "".join(c if ("a" <= c <= "z" or "0" <= c <= "9") else "_"
+                for c in name.lower())
+    if not s or not ("a" <= s[0] <= "z"):
         s = "v" + s
     return s
 
