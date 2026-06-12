@@ -267,6 +267,15 @@ schema runclass {
   field window      : Duration { optional }
 }
 
+# `host` (#28, third slice) — Host: a deployment target the runtime's
+# nixosModules bind to.  Thin on purpose: richer host modeling (hardware,
+# membranes) arrives with the daemon designs; binding nixosModules.<runtime>
+# to a host decl is the lowering follow-up.  Closed.
+schema host {
+  field system : String { nonempty }            # nix system double
+  field deploy : String { optional nonempty }   # "ssh://root@vps" | "local"
+}
+
 # --------------------------------------------------------------------------- #
 # Built-in capability taxonomy (one `capability <domain>` per built-in domain)
 # `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
