@@ -417,6 +417,33 @@ Conforms to `examples/agentfield-swe.vaked` (`workflow swe_af`: four steps,
 
 ---
 
+## Schema: `budget`
+
+`Budget` — resource bounds a fiber/surface/workflow (step) runs under (#28,
+first slice), enforced by the runtime plane (`mcp-brokerd` is specced as
+"policy, budgets, approvals"; `fs-snapshotd` carries write budgets). Referenced
+by the `Budget` auxiliary type (`fiber.budget`, `surface.budget`,
+`workflow.budget`, `workflowStep.budget`). All fields optional — a budget
+constrains only what it names. **Closed.**
+
+```vaked
+schema budget {
+  field tokens    : Int      { optional > 0 }     # model-token ceiling
+  field wallClock : Duration { optional }         # 2h
+  field toolCalls : Int      { optional > 0 }     # brokered MCP call ceiling
+  field approvals : String   { optional oneof ["never", "destructive", "always"] }
+}
+```
+
+- Conforms to `examples/agentfield-swe.vaked` (`budget swe { tokens = 2000000
+  wallClock = 2h toolCalls = 400 approvals = "destructive" }`, referenced as
+  `budget = budget.swe`).
+- `approvals` gates the broker: `"never"` (fully autonomous), `"destructive"`
+  (approval on destructive calls only), `"always"`.
+- `runclass` and the remaining schema-less kinds stay open under #28.
+
+---
+
 ## Schema: `service`
 
 `Service` — a long-running nixpkgs-packaged NixOS systemd service (#1), e.g.

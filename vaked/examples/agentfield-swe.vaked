@@ -69,10 +69,20 @@ runtime "agent-field" {
     operator -> broker
   }
 
+  # The run budget the workflow (and its heaviest step) is bounded by,
+  # enforced by mcp-brokerd / the supervision plane (#28).
+  budget swe {
+    tokens = 2000000
+    wallClock = 2h
+    toolCalls = 400
+    approvals = "destructive"
+  }
+
   # The swe_af workflow. Workflow edges are step ORDERING (a checked DAG);
   # each step names its executing agent from the mesh.
   workflow swe_af {
     on = "github.issue.labeled:agent"
+    budget = budget.swe
     maxDepth = 6
 
     node plan {

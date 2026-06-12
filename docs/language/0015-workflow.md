@@ -91,7 +91,9 @@ existing LPG — no MLIR dependency. These codes live here until folded into a
 
 - Trigger vocabulary: `on` is a bare string selector today; a typed event
   source (relates to streams + the daemon-channel roster, #8) should replace it.
-- Step budgets need the real `budget` schema (#28).
+- Step budgets: the `budget` schema's first slice (tokens / wallClock /
+  toolCalls / approvals) landed with this note; `runclass` and the remaining
+  schema-less kinds stay open under #28.
 - Fan-in semantics (`a -> c`, `b -> c`): join behavior (all-of vs any-of) —
   deferred; today fan-in is permitted and unspecified, supervisord-defined.
 - A step's `agent` ref is not yet resolution-enforced against the mesh (the
