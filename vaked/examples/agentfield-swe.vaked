@@ -14,6 +14,12 @@ use "./engines/zig.vaked"
 runtime "agent-field" {
   systems = ["x86_64-linux"]
 
+  # The box this runtime deploys to (#28 third slice).
+  host vps {
+    system = "x86_64-linux"
+    deploy = "ssh://root@vps"
+  }
+
   index repoCorpus {
     source = [github("peterlodri-sec/vaked-base")]
     normalize = crabcc.markdown

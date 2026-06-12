@@ -471,9 +471,34 @@ schema runclass {
 - Conforms to `examples/agentfield-swe.vaked` (`runclass interactive {
   priority = "high"  interval = 5s }`, referenced from the `transcriptMiner`
   fiber).
-- The remaining schema-less kinds (`input`, `host`, `network`, `filesystem`,
-  `mcp`, `ebpf`, `observability`) stay open under #28's audit: each gets a
-  schema or a removal decision.
+- The remaining schema-less kinds (`input`, `network`, `filesystem`, `mcp`,
+  `ebpf`, `observability`) stay open under #28's audit: each gets a schema or
+  a removal decision (`host` got its schema in slice 3, below).
+
+---
+
+## Schema: `host`
+
+`Host` — a deployment target the runtime's `nixosModules` bind to (#28, third
+slice). Thin on purpose: richer host modeling (hardware, membranes) arrives
+with the daemon designs; binding `nixosModules.<runtime>` to a host decl is
+the lowering follow-up. **Closed.**
+
+```vaked
+schema host {
+  field system : String { nonempty }            # nix system double
+  field deploy : String { optional nonempty }   # "ssh://root@vps" | "local"
+}
+```
+
+- Conforms to `examples/agentfield-swe.vaked` (`host vps { system =
+  "x86_64-linux"  deploy = "ssh://root@vps" }`).
+- `deploy`'s format ("ssh://…" | "local") is documentation until the lowering
+  follow-up enforces it; a `host.system` ∈ enclosing `runtime.systems`
+  membership check is a follow-up checker rule tracked on #28.
+- Audit state (#28): `input` has a removal decision issue (#48); `network` /
+  `filesystem` / `mcp` / `ebpf` / `observability` get schemas with their
+  daemons' policy formats.
 
 ---
 
