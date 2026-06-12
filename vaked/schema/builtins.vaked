@@ -240,6 +240,17 @@ schema workflowStep {
   open
 }
 
+# `budget` (#28, first slice) — Budget: resource bounds a fiber/surface/workflow
+# (step) runs under, enforced by the runtime plane (mcp-brokerd: "policy,
+# budgets, approvals"; fs-snapshotd: write budgets).  All fields optional — a
+# budget constrains only what it names.  Closed.
+schema budget {
+  field tokens    : Int      { optional > 0 }
+  field wallClock : Duration { optional }
+  field toolCalls : Int      { optional > 0 }
+  field approvals : String   { optional oneof ["never", "destructive", "always"] }
+}
+
 # --------------------------------------------------------------------------- #
 # Built-in capability taxonomy (one `capability <domain>` per built-in domain)
 # `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
