@@ -214,8 +214,10 @@ Minimal per-primitive examples live in
 | `parallel.vaked` | `parallel` |
 | `memory.vaked` | `memory` (#24, [0014](../../docs/language/0014-memory-primitive.md)) |
 
-A complete, real-world example is
-[`../examples/operator-field.vaked`](../examples/operator-field.vaked).
+Complete, real-world examples:
+[`../examples/operator-field.vaked`](../examples/operator-field.vaked) and
+[`../examples/agentfield-swe.vaked`](../examples/agentfield-swe.vaked) (the
+swe_af agent-workflow system: mesh delegation + workflow DAG + memory).
 
 Type-layer (v0.3) examples — user `schema` with constraints, a `capability`
 taxonomy, and an attenuated delegation, plus paired conformant/rejected blocks

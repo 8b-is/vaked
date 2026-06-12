@@ -36,7 +36,7 @@ Index<T>          Catalog<T>        Stream<T>
 Fiber<I, O>       Surface           Mesh<Node, Edge>
 Device            MediaPipeline     ParallelGroup
 Engine            Capability        Schema<T>
-Runtime           Memory<T>
+Runtime           Memory<T>         Workflow
 ```
 
 ## Auxiliary (built-in) types referenced by the schemas
@@ -58,6 +58,7 @@ Runtime           Memory<T>
 | `Stage` | an app-with-record stage (`resize { … }`, `encode { … }`) |
 | `Schema<T>` | a `ref` to a `schema` declaration (`schema.zigbeeOta`) |
 | `Capability` | `domain.grant` ref (§ Capability taxonomy) |
+| `MeshNode` | a `<mesh>.<node>` ref to a declared mesh node (`field.coder`) — the executing agent of a workflow step |
 | `Budget` | a `ref` to a `budget` decl, or a budget record |
 | `Policy` | a structural record (per-kind, e.g. the `fiber` policy block) |
 
@@ -366,6 +367,53 @@ schema parallel {
 - `fibers` elements are `Fiber<_, _>` refs (any in/out types). `parallel` is
   **closed**, enforcing the deferral: a stray `backpressure { … }` would be
   rejected as an unknown field until that sub-language lands.
+
+---
+
+## Schema: `workflow`
+
+`Workflow` — a typed **agent-step DAG** (#27,
+[`docs/language/0015-workflow.md`](../../docs/language/0015-workflow.md)): the
+swe_af pattern (plan → code → review → publish). Graph-shaped like `mesh`:
+steps are `node` decls, ordering is `->` edges. The semantic split that keeps
+both kinds honest: **mesh edges delegate authority** (attenuation-checked,
+0011 §4.4); **workflow edges order steps** (DAG-checked). Agents are declared
+once in the mesh; steps *reference* them. **Closed** record.
+
+```vaked
+schema workflow {
+  field on       : String { optional nonempty }   # trigger selector, e.g. "github.issue.labeled:agent"
+  field budget   : Budget { optional }
+  field maxDepth : Int    { optional > 0 }        # declared critical-path bound
+}
+```
+
+Step record schema (the body of each `node`, like `meshNode` for `mesh`):
+
+```vaked
+schema workflowStep {
+  field agent   : MeshNode                # executing agent: a mesh node ref
+  field input   : I      { optional }     # consumed artifact/stream ref
+  field output  : O      { optional }     # produced artifact ref
+  field budget  : Budget { optional }
+  field retries : Int    { optional >= 0 }   # bounded revision loop (NOT a back-edge)
+  open                                    # step vocabularies grow with the roster
+}
+```
+
+Checking (0015; Stage-0 Pass 1 of the topology pipeline,
+[`0013-mlir-topology-compilation.md`](../../docs/language/0013-mlir-topology-compilation.md)):
+
+- Each step body conforms to `workflowStep` (a step without an `agent` is
+  `E-CONFORM-MISSING-FIELD`).
+- The step edges must form a **DAG** — a cycle is `E-WORKFLOW-CYCLE`. Revision
+  loops are `retries` on a step; a bounded-loop edge surface is deferred.
+- With `maxDepth` declared, the longest step chain (counted in steps) must not
+  exceed it — `E-WORKFLOW-DEPTH`. This is the O(depth) propagation-latency
+  bound enforced at check time.
+
+Conforms to `examples/agentfield-swe.vaked` (`workflow swe_af`: four steps,
+`plan -> code -> review -> publish`, depth 4 ≤ `maxDepth = 6`).
 
 ---
 
