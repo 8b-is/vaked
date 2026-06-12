@@ -17,7 +17,7 @@ Tests):
    documented codes (E-CAP-ATTENUATION, E-CONSTRAINT-RANGE,
    E-CONFORM-UNKNOWN-FIELD), and its canonical ``--json`` output is byte-identical
    to tests/spec/golden/rejected.diagnostics.json.
-5. All examples. All 15 ``.vaked`` examples check clean (rejected.vaked is the
+5. All examples. All 17 ``.vaked`` examples check clean (rejected.vaked is the
    sole intentional exception — see group 4).
 5b. Ref resolution (#7). Closed-world resolution: a kind-qualified or bare
    data-flow / `fibers` ref inside a `runtime {}` must resolve to an in-runtime
@@ -213,7 +213,7 @@ def _test_rejected(lines):
 
 
 # --------------------------------------------------------------------------- #
-# 5. All 16 examples check clean (rejected is the sole exception)
+# 5. All 17 examples check clean (rejected is the sole exception)
 # --------------------------------------------------------------------------- #
 
 def _test_all_examples(lines):
@@ -446,6 +446,71 @@ def _test_import_binding(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 5d. Workflow step-DAG checks (#27 — 0015)
+# --------------------------------------------------------------------------- #
+# A `workflow` is a typed agent-step DAG: step bodies conform to workflowStep,
+# the `->` edges must be acyclic (E-WORKFLOW-CYCLE), and a declared `maxDepth`
+# bounds the longest step chain (E-WORKFLOW-DEPTH).
+
+_WF_CYCLE = '''workflow cyclic {
+  node a { agent = m.x }
+  node b { agent = m.y }
+  a -> b
+  b -> a
+}
+'''
+
+_WF_DEEP = '''workflow deep {
+  maxDepth = 2
+  node p { agent = m.x }
+  node q { agent = m.y }
+  node r { agent = m.z }
+  p -> q -> r
+}
+'''
+
+_WF_NO_AGENT = '''workflow noagent {
+  node s { input = artifacts.x }
+}
+'''
+
+# A valid workflow: DAG with fan-out, depth 3 == maxDepth 3, all steps agented.
+_WF_OK = '''workflow ok {
+  maxDepth = 3
+  node a { agent = m.x }
+  node b { agent = m.y  retries = 1 }
+  node c { agent = m.z }
+  a -> b -> c
+  a -> c
+}
+'''
+
+
+def _test_workflow(lines):
+    cache = _builtins_cache()
+
+    def codes(src, name):
+        return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
+
+    ok = True
+    cases = [
+        (_WF_CYCLE, "wf-cycle.vaked", ["E-WORKFLOW-CYCLE"]),
+        (_WF_DEEP, "wf-deep.vaked", ["E-WORKFLOW-DEPTH"]),
+        (_WF_NO_AGENT, "wf-noagent.vaked", ["E-CONFORM-MISSING-FIELD"]),
+        (_WF_OK, "wf-ok.vaked", []),
+    ]
+    for src, name, want in cases:
+        got = codes(src, name)
+        if got != want:
+            ok = False
+            lines.append(f"  FAIL workflow: {name} expected {want}, got {got}")
+    if ok:
+        lines.append("  workflow: cycle/depth/missing-agent rejected; "
+                     "fan-out DAG at the depth bound checks clean")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # 6. Determinism
 # --------------------------------------------------------------------------- #
 
@@ -475,7 +540,7 @@ def run():
     ok = True
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
                _test_all_examples, _test_ref_resolution, _test_import_binding,
-               _test_determinism):
+               _test_workflow, _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:

@@ -1362,6 +1362,11 @@ def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags):
     if kind == "mesh":
         _check_mesh(decl, registry, smap, file, diags)
 
+    # Workflow (#27): check each step body against workflowStep, verify the
+    # step `->` edges form a DAG, and enforce a declared `maxDepth` bound.
+    if kind == "workflow":
+        _check_workflow(decl, registry, smap, file, diags)
+
     # Recurse into nested declarations (e.g. a runtime's index/stream/fiber/…).
     for st in decl.body:
         if isinstance(st, P.Decl):
@@ -1410,6 +1415,94 @@ def _check_mesh(mesh_decl, registry, smap, file, diags):
                 _check_edge_attenuation(
                     sender, receiver, node_grants[sender], node_grants[receiver],
                     a_ref, b_ref, registry, file, mesh_decl, diags)
+
+
+def _check_workflow(wf_decl, registry, smap, file, diags):
+    """#27 / 0015: a `workflow` is a typed agent-step DAG.
+
+    Mesh edges are capability *delegations* (attenuation, §4.4); workflow edges
+    are step *ordering*. So: conform each `node` step body against the
+    `workflowStep` schema, require the `->` edges among declared steps to form
+    a DAG (E-WORKFLOW-CYCLE), and — when the record declares `maxDepth` — bound
+    the longest step chain, counted in steps (E-WORKFLOW-DEPTH). Edges with an
+    endpoint that is not a declared step are external and skipped, exactly like
+    mesh edge handling. Deterministic: steps in declaration order; at most one
+    cycle diagnostic (the first cycle reached in that order)."""
+    step_schema = registry.schemas.get("workflowStep")
+    dspan = (wf_decl.byteStart, wf_decl.byteEnd, wf_decl.line, wf_decl.col)
+
+    steps = []                      # declaration order
+    for st in wf_decl.body:
+        if isinstance(st, P.NodeDecl):
+            steps.append(st.name)
+            if step_schema is not None:
+                nspan = (st.byteStart, st.byteEnd, st.line, st.col)
+                _conform_node(st, step_schema, registry, smap, file, diags, nspan)
+    step_set = set(steps)
+
+    succ = {s: [] for s in steps}
+    for st in wf_decl.body:
+        if isinstance(st, P.Edge):
+            for a_ref, b_ref in zip(st.refs, st.refs[1:]):
+                a = a_ref.parts[0] if len(a_ref.parts) == 1 else None
+                b = b_ref.parts[0] if len(b_ref.parts) == 1 else None
+                if a in step_set and b in step_set:
+                    succ[a].append(b)
+
+    # Cycle detection — iterative DFS with an explicit colour map.
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour = {s: WHITE for s in steps}
+    cycle = None
+    for root in steps:
+        if cycle is not None or colour[root] != WHITE:
+            continue
+        stack = [(root, iter(succ[root]))]
+        colour[root] = GREY
+        path = [root]
+        while stack and cycle is None:
+            node, it = stack[-1]
+            advanced = False
+            for nxt in it:
+                if colour[nxt] == GREY:
+                    cycle = path[path.index(nxt):] + [nxt]
+                    break
+                if colour[nxt] == WHITE:
+                    colour[nxt] = GREY
+                    path.append(nxt)
+                    stack.append((nxt, iter(succ[nxt])))
+                    advanced = True
+                    break
+            if not advanced and cycle is None:
+                colour[node] = BLACK
+                path.pop()
+                stack.pop()
+    if cycle is not None:
+        _emit(diags, "E-WORKFLOW-CYCLE", file, dspan, wf_decl,
+              f"workflow `{wf_decl.name}` step edges must form a DAG; cycle: "
+              f"{' -> '.join(cycle)} (express revision loops as `retries` on a "
+              f"step, not back-edges)")
+        return   # depth is undefined on a cyclic graph
+
+    # Longest chain, counted in steps (memoized over the verified DAG).
+    depth_of = {}
+
+    def _depth(s):
+        if s not in depth_of:
+            depth_of[s] = 1 + max((_depth(n) for n in succ[s]), default=0)
+        return depth_of[s]
+
+    depth = max((_depth(s) for s in steps), default=0)
+
+    bindings, _order = _node_bindings(wf_decl)
+    md = bindings.get("maxDepth")
+    if isinstance(md, dict) and md.get("lit") == "number":
+        bound = int(md["value"])
+        if depth > bound:
+            span = (smap.field_value_span(wf_decl.byteStart, wf_decl.byteEnd,
+                                          "maxDepth") if smap else None) or dspan
+            _emit(diags, "E-WORKFLOW-DEPTH", file, span, wf_decl,
+                  f"workflow `{wf_decl.name}` has critical-path depth {depth}, "
+                  f"exceeding the declared maxDepth = {bound}")
 
 
 def _conform_node(node_decl, schema, registry, smap, file, diags, nspan):

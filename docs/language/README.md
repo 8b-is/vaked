@@ -93,6 +93,16 @@ mined, replayable, capability-bound store (distinct from `index`/`catalog`/
 worked example in
 [`vaked/examples/primitives/memory.vaked`](../../vaked/examples/primitives/memory.vaked).
 
+## Workflow (0015)
+
+The `workflow` kind — a typed **agent-step DAG** (the swe_af pattern): steps
+conform to `workflowStep`, edges are checked acyclic (`E-WORKFLOW-CYCLE`), and
+`maxDepth` bounds the critical path (`E-WORKFLOW-DEPTH`). Mesh edges delegate
+authority; workflow edges order steps. Designed in
+[`0015-workflow.md`](./0015-workflow.md) (#27); the daily-use calibration
+example is
+[`vaked/examples/agentfield-swe.vaked`](../../vaked/examples/agentfield-swe.vaked).
+
 ## Topology compilation (0013)
 
 The MLIR-based multi-agent topology compilation strategy — the `vaked` (agent

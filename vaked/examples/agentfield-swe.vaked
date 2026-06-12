@@ -1,0 +1,119 @@
+# agentfield-swe.vaked — the daily-use target system (#27 calibration example):
+# a Nix-based agentfield-like runtime running swe_af workflows.
+#
+# Demonstrates the full composition:
+#   index    — the repo corpus the agents ground against
+#   stream   — transcripts + eBPF evidence
+#   memory   — the MemPalace-shaped palace mined from transcripts (0014)
+#   mesh     — the agent field: operator DELEGATES attenuated authority (§4.4)
+#   workflow — swe_af: step ORDERING as a checked DAG (0015)
+#   fiber/parallel/surface — the runtime plane around them
+
+use "./engines/zig.vaked"
+
+runtime "agent-field" {
+  systems = ["x86_64-linux"]
+
+  index repoCorpus {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  stream transcripts {
+    source = agentpipe.transcripts
+    type = Agent.Transcript
+    retention = 30d
+  }
+
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 24h
+  }
+
+  memory palace {
+    source = stream.transcripts
+    mine = mempalace.convos
+    scope = "agent"
+    retention = 90d
+    emit = [catalog.sqlite]
+  }
+
+  # The agent field. Mesh edges are capability DELEGATIONS: the operator holds
+  # the strongest grants and every agent receives an attenuated subset (POLA).
+  mesh field {
+    node operator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin]
+    }
+    node planner {
+      role = "plan"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node coder {
+      role = "implement"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    node reviewer {
+      role = "review"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node broker {
+      role = "mcp-broker"
+      capabilities = [mcp.github_write]
+    }
+    operator -> planner
+    operator -> coder
+    operator -> reviewer
+    operator -> broker
+  }
+
+  # The swe_af workflow. Workflow edges are step ORDERING (a checked DAG);
+  # each step names its executing agent from the mesh.
+  workflow swe_af {
+    on = "github.issue.labeled:agent"
+    maxDepth = 6
+
+    node plan {
+      agent = field.planner
+      output = artifacts.plan
+    }
+    node code {
+      agent = field.coder
+      input = artifacts.plan
+      output = artifacts.patch
+      retries = 2
+    }
+    node review {
+      agent = field.reviewer
+      input = artifacts.patch
+      output = artifacts.verdict
+    }
+    node publish {
+      agent = field.broker
+      input = artifacts.verdict
+    }
+
+    plan -> code -> review -> publish
+  }
+
+  fiber transcriptMiner {
+    engine = zigDaemon
+    input = stream.transcripts
+    output = artifacts.palaceEntries
+  }
+
+  surface fieldView {
+    mode = raylib
+    fps = 30
+    input = [stream.ebpfEvents, graph.swe_af, graph.field]
+    views = ["workflow-dag", "mesh-topology", "memory-recall"]
+  }
+
+  parallel "field-runtime" {
+    fibers = [transcriptMiner, fieldView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}

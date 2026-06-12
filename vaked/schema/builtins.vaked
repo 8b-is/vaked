@@ -217,6 +217,29 @@ schema memory {
   field emit      : List<ArtifactTarget> { optional nonempty }
 }
 
+# `workflow` (#27) — Workflow: a typed agent-step DAG (the swe_af pattern,
+# docs/language/0015-workflow.md).  Graph-shaped like `mesh`: steps are `node`
+# decls (checked against workflowStep below), ordering is `->` edges — which
+# MUST form a DAG (E-WORKFLOW-CYCLE); `maxDepth` bounds the longest step chain
+# (E-WORKFLOW-DEPTH).  Mesh edges delegate authority; workflow edges order
+# steps.  Closed.
+schema workflow {
+  field on       : String { optional nonempty }
+  field budget   : Budget { optional }
+  field maxDepth : Int    { optional > 0 }
+}
+
+# the shape of a workflow's `node <step> { … }` body (open — step vocabularies
+# grow with the agent roster).  `agent` is the executing mesh node.
+schema workflowStep {
+  field agent   : MeshNode
+  field input   : I      { optional }
+  field output  : O      { optional }
+  field budget  : Budget { optional }
+  field retries : Int    { optional >= 0 }
+  open
+}
+
 # --------------------------------------------------------------------------- #
 # Built-in capability taxonomy (one `capability <domain>` per built-in domain)
 # `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
