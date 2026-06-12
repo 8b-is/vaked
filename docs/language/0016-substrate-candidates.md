@@ -22,7 +22,7 @@ issue is open), **reference** (recorded here + the
 | Candidate | Anchor in this repo | Verdict |
 |-----------|--------------------|---------|
 | **Wasmtime / Component Model** | worker isolation with instant linear-memory snapshots (↔ arena checkpoints #16, eventd phase 4) and instruction-metered budgets (↔ `budget` #28, enforced mathematically rather than by broker policy); a third worker backend after BEAM port and Zig daemon | **slot → #50** (bundles distroless OCI as the conservative alternative) |
-| **NixOps / Colmena** | the direct consumer of the `host` schema's `deploy` field (#28 slice 3): one declarative `colmena apply` over the emitted `nixosModules` for the whole multi-runtime topology | **slot → #51** (the nearest-term item of the thirteen) |
+| **NixOps / Colmena** | the direct consumer of the `host` schema's `deploy` field (#28 slice 3): one declarative `colmena apply` over the emitted `nixosModules` for the whole multi-runtime topology | **slot → #51** (the nearest-term row) |
 | **SPIFFE/SPIRE** | transport-layer identity: `DependencyRegistration` frames validated by mTLS *before parsing*; candidate canonical AgentId for RFC 0005's name→AgentId roster question | **slot → #52** |
 | **NATS** | `agent.*.rewind` wildcard fan-out for cross-node `RewindEvent` distribution; KV/object store as retained-accumulator transport (RFC 0004 §4). Boundary: notifications and proofs only — the hash-chained log stays the single source of truth | **slot → #52** |
 | **Temporal / effect systems** | **have-it**: durable execution = the eventd fold + the supervisord `workflow_engine` — "virtual threads sleeping for days" and crash-resume follow from state-is-a-fold plus the engine's logged step events (an inference from the designs, not yet a stated requirement in them) | have-it |
@@ -39,7 +39,7 @@ issue is open), **reference** (recorded here + the
 ## The pattern worth stating once
 
 Every "verdict: have-it" above resolves to the same two foundations — the
-hash-chained log (state is a fold; RFC 0004) and content addressing
+hash-chained log (state is a fold; eventd design + RFC 0004) and content addressing
 (environments and graph nodes; Nix store + arena). Candidates should be
 evaluated by what they add *on top of* those two, never as replacements:
 Wasmtime adds a snapshotable compute substrate, NATS adds fan-out, SPIFFE adds
