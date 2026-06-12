@@ -13,6 +13,15 @@
 - Zig: explicit native systems posture.
 - MLIR: dialects, SSA use-def graphs, progressive lowering, pass infrastructure.
 - MemPalace: mined, replayable session memory (the `memory` primitive's shape).
+- Wasmtime/Component Model: snapshotable, instruction-metered worker sandboxes.
+- Colmena: purely functional fleet deployment (`host.deploy` consumer).
+- SPIFFE/SPIRE + NATS: transport identity and subject-mapped event fan-out.
+- Temporal: durable-execution framing (we realize it as the eventd fold + the
+  supervisord workflow_engine).
+- crane/dream2nix, CA-Nix: granular + content-addressed build caching.
+- TVM, polyhedral: below/inside-MLIR compilation for inference and scheduling.
+- Linear/affine types, CCN/NDN, ZKP (RISC Zero): future type/transport/proof
+  borrowings, triaged in 0016.
 - Zigbee: mesh/device/capability topology.
 - CrabCC: raw indexes and reproducible catalogs.
 
@@ -29,3 +38,6 @@
   [`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md).
 - **Memory** — the MemPalace borrowing lands as the `memory` primitive in
   [`0014-memory-primitive.md`](./0014-memory-primitive.md).
+- **Substrate & distribution** — the Wasmtime/Colmena/SPIFFE/NATS/… batch is
+  triaged (slot / reference / have-it) in
+  [`0016-substrate-candidates.md`](./0016-substrate-candidates.md).
