@@ -1642,9 +1642,18 @@ def emit_memory_store(graph, nodes):
     entries = []
     for mem in nodes:
         pairs = [("_generated", _header(sf, "memory " + mem.name))]
-        src = _ref(mem.props.get("source"))
-        if src is not None:
-            pairs.append(("source", src))
+        # source : Stream<T> | List<Stream<T>> — both forms are schema-legal;
+        # the list form must survive into the store config (memoryd mines
+        # every named stream).
+        src_prop = mem.props.get("source")
+        if isinstance(src_prop, list):
+            srcs = [_ref(x) for x in src_prop if _ref(x) is not None]
+            if srcs:
+                pairs.append(("source", srcs))
+        else:
+            src = _ref(src_prop)
+            if src is not None:
+                pairs.append(("source", src))
         mine = _ref(mem.props.get("mine"))
         if mine is not None:
             pairs.append(("mine", mine))
