@@ -48,6 +48,8 @@ EMITTER_REGISTRY = {
     "nix.spine", "docs.runtime",
     # emit-SELECTED (direct gen/ artifacts)
     "catalog.jsonl", "catalog.sqlite", "crabcc.index", "zig.daemoncfg",
+    # Runtime plane (#18/#24/#27) + Track C (#19)
+    "eventd.config", "memory.store", "workflow.spec", "otp.supervision",
     # DEFERRED (interface slots, §7)
     "ebpf.policy", "otel.config", "systemd.units", "surface.launcher",
 }

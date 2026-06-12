@@ -1681,6 +1681,151 @@ def emit_memory_store(graph, nodes):
     return files, entries
 
 
+def _otp_slug(name: str) -> str:
+    """A runtime name as a legal Erlang module atom prefix: lowercase,
+    non-alphanumerics → '_', 'v' prefixed when not starting with a letter
+    (module name MUST match filename — OTP rule)."""
+    s = "".join(c if c.isalnum() else "_" for c in name.lower())
+    if not s or not s[0].isalpha():
+        s = "v" + s
+    return s
+
+
+def _otp_members(rv, par):
+    """The resolved members of a parallel group's `fibers` list, in declared
+    order: (name, kind, config) — fibers carry their gen/zig config path,
+    surfaces have none (launcher deferred, 0012 §7). Members are in-runtime
+    decls (closed-world checked), so unresolved names are simply skipped."""
+    fibers = {f.name for f in rv.fibers}
+    surfaces = {s.name for s in rv.surfaces}
+    out = []
+    members = par.props.get("fibers")
+    if isinstance(members, list):
+        for m in members:
+            name = _ref(m)
+            if name is None:
+                continue
+            if name in fibers:
+                out.append((name, "fiber", "gen/zig/%s.json" % name))
+            elif name in surfaces:
+                out.append((name, "surface", None))
+    return out
+
+
+_OTP_WORKER_BODY = """-module(vaked_fiber_worker).
+-behaviour(gen_server).
+
+-export([start_link/1]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+
+-define(TICK_MS, 5000).
+
+start_link(#{name := Name} = Args) ->
+    gen_server:start_link({local, Name}, ?MODULE, Args, []).
+
+init(#{name := Name, kind := Kind} = Args) ->
+    logger:info("vaked ~p ~p up (placeholder; daemon port pending)",
+                [Kind, Name]),
+    erlang:send_after(?TICK_MS, self(), tick),
+    {ok, Args}.
+
+handle_call(_Req, _From, State) ->
+    {reply, ok, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(tick, #{name := Name} = State) ->
+    logger:debug("vaked heartbeat ~p", [Name]),
+    erlang:send_after(?TICK_MS, self(), tick),
+    {noreply, State}.
+"""
+
+
+def emit_otp_supervision(graph, nodes):
+    """Emit the OTP supervision tree (#19, Track C; design:
+    docs/superpowers/specs/2026-06-12-otp-supervision-lowering-design.md):
+    one ``gen/otp/<runtime_slug>_sup.erl`` supervisor (child spec per member
+    of each ``parallel … supervisor = otp`` group, declared order —
+    byte-determinism only, no restart-coupling claim) plus the generic
+    placeholder worker ``gen/otp/vaked_fiber_worker.erl``.
+
+    v0 strategy mapping: ``"supervised-dag"`` (and anything else) lowers to
+    ``one_for_one`` — downstream consistency is RFC 0004's job
+    (stale_dependency pausing); eager per-chain ``rest_for_one`` is the
+    edge-aware follow-up."""
+    rv = _runtime_view(graph)
+    if rv is None:
+        return {}, []
+    sf = graph.source_file
+    rt = rv.runtime
+    slug = _otp_slug(rt.name)
+
+    child_blocks = []
+    entries = []
+    sup_path = "gen/otp/%s_sup.erl" % slug
+    for par in nodes:
+        for name, kind, config in _otp_members(rv, par):
+            cfg = '"%s"' % config if config is not None else "none"
+            child_blocks.append(
+                "        #{id => '%s',\n"
+                "          start => {vaked_fiber_worker, start_link,\n"
+                "                    [#{name => '%s', kind => %s,\n"
+                "                       config => %s}]},\n"
+                "          restart => permanent, shutdown => 5000,\n"
+                "          type => worker,\n"
+                "          modules => [vaked_fiber_worker]}"
+                % (name, name, kind, cfg))
+        entries.append(ProvEntry(
+            artifact=sup_path, region="parallel/" + par.name, source_file=sf,
+            decl="parallel " + par.name, span=par.provenance.span,
+            emitter="otp.supervision",
+            inputs_projection=_node_projection(par)))
+
+    sup_text = "\n".join([
+        "%% " + _header(sf, "runtime " + rt.name),
+        "%%",
+        "%% otp.supervision (0012 3.4; Track C #19). v0 strategy: one_for_one -",
+        "%% downstream consistency is RFC 0004's job (stale_dependency pausing);",
+        "%% eager per-chain rest_for_one is the edge-aware follow-up (design",
+        "%% 2026-06-12-otp-supervision-lowering-design.md).",
+        "-module(%s_sup)." % slug,
+        "-behaviour(supervisor).",
+        "",
+        "-export([start_link/0, init/1]).",
+        "",
+        "start_link() ->",
+        "    supervisor:start_link({local, ?MODULE}, ?MODULE, []).",
+        "",
+        "init([]) ->",
+        "    SupFlags = #{strategy => one_for_one, intensity => 3,"
+        " period => 10},",
+        "    Children = [",
+        ",\n".join(child_blocks),
+        "    ],",
+        "    {ok, {SupFlags, Children}}.",
+        "",
+    ])
+
+    worker_path = "gen/otp/vaked_fiber_worker.erl"
+    worker_text = "\n".join([
+        "%% " + _header(sf, "runtime " + rt.name),
+        "%%",
+        "%% Generic placeholder worker: heartbeats until the member's Zig",
+        "%% daemon port replaces it. Deliberately does NOT write eventd (the",
+        "%% canonical-hash byte contract stays with the Python oracle; the",
+        "%% daemon owns the single writer, RFC 0004).",
+        _OTP_WORKER_BODY,
+    ])
+
+    files = {sup_path: sup_text, worker_path: worker_text}
+    entries.append(ProvEntry(
+        artifact=worker_path, region=None, source_file=sf,
+        decl="runtime " + rt.name, span=rt.provenance.span,
+        emitter="otp.supervision", inputs_projection=_node_projection(rt)))
+    return files, entries
+
+
 def _budget_prop(prop):
     """The Budget auxiliary type admits BOTH forms — a ref to a `budget` decl
     (``budget = budget.swe`` → emitted as the ref string) and an inline budget
@@ -1833,6 +1978,8 @@ REGISTRY = {
     "eventd.config":  _Registered("eventd.config", emit_eventd_config),
     "memory.store":   _Registered("memory.store", emit_memory_store),
     "workflow.spec":  _Registered("workflow.spec", emit_workflow_spec),
+    # Track C (#19) — the OTP supervision tree (design 2026-06-12).
+    "otp.supervision": _Registered("otp.supervision", emit_otp_supervision),
     # DEFERRED (interface slots, §7) — inert no-ops
     "ebpf.policy":      _Registered("ebpf.policy", emit_deferred, deferred=True),
     "otel.config":      _Registered("otel.config", emit_deferred, deferred=True),
@@ -1915,6 +2062,12 @@ def lower(graph, items=None) -> LowerResult:
         _run("caddy.ingress", rv.ingresses)
     if rv.containers:
         _run("oci.containers", rv.containers)
+
+    # Track C (#19): the OTP supervision tree for `parallel … supervisor=otp`.
+    otp_parallels = [p for p in rv.parallels
+                     if _ref(p.props.get("supervisor")) == "otp"]
+    if otp_parallels:
+        _run("otp.supervision", otp_parallels)
 
     # Runtime plane (#18/#24/#27): workflow specs + memory stores, plus the
     # per-runtime eventd log contract when either consumer is present.

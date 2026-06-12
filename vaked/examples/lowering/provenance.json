@@ -119,6 +119,25 @@
         "inputsHash": "sha256-2c1bdb46e566f6256c6b64b17311530b1fa6428e8aecec206d1b76f8777e4361"
       }
     ],
+    "gen/otp/operator_field_sup.erl": [
+      {
+        "region": "parallel/operator-runtime",
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "parallel operator-runtime",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 1207, "byteEnd": 1335, "line": 58, "col": 3 },
+        "emitter": "otp.supervision",
+        "inputsHash": "sha256-bf3cb2d209719b0f273b4a7737f37cfb57437392a57f24b6ee81d931a9df29af"
+      }
+    ],
+    "gen/otp/vaked_fiber_worker.erl": [
+      {
+        "sourceFile": "vaked/examples/operator-field.vaked",
+        "decl": "runtime operator-field",
+        "span": { "file": "vaked/examples/operator-field.vaked", "byteStart": 27, "byteEnd": 1337, "line": 3, "col": 1 },
+        "emitter": "otp.supervision",
+        "inputsHash": "sha256-fcf08006f8dcf4dca2c650d6f7fb38338ef3ec179366b4cc3576ab616abb4a81"
+      }
+    ],
     "gen/zig/mediaCompress.json": [
       {
         "sourceFile": "vaked/examples/operator-field.vaked",

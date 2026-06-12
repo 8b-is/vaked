@@ -56,6 +56,8 @@ EMITTER_REGISTRY = {
     "oci.containers",
     # Runtime plane (#18/#24/#27).
     "eventd.config", "memory.store", "workflow.spec",
+    # Track C (#19).
+    "otp.supervision",
 }
 
 

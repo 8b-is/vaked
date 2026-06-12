@@ -323,6 +323,8 @@ runtime plane (#18/#24/#27 — presence-gated, like zig.daemoncfg):
   workflow.spec    workflow (presence)                     → gen/workflow/<name>.json  (0015: steps/edges/depth, AOT supervisor spec)
   memory.store     memory (presence)                       → gen/memory/<name>.json    (0014: source/mine/scope/retention/emit + log)
   eventd.config    runtime w/ any memory|workflow          → gen/eventd.json           (#18: per-runtime log path + boot contract)
+  otp.supervision  parallel with supervisor = otp          → gen/otp/<slug>_sup.erl + vaked_fiber_worker.erl
+                                                             (Track C #19; v0 one_for_one — design 2026-06-12)
 
 DEFERRED (interface slot defined; mapping deferred — §7):
   ebpf.policy      mesh/capability grants    → (no-op today)
@@ -731,7 +733,7 @@ records *what the mapping must cover* so it isn't reinvented.
 |-------------------|-------------|-------------------------------|------------------|
 | `ebpf.policy` | `mesh` nodes + capability grants (0011 §4); network/ebpf membrane | per-principal allow/deny sets for network egress, file, and process events — compiled from the capability grant-sets — consumable by `agent-guardd` | the eBPF policy *format* and the grant→rule compilation are a daemon-design concern ([`docs/runtime/README.md`](../runtime/README.md)); no concrete format is approved yet |
 | `otel.config` | `stream` with `observe`/telemetry intent; the OTel collector | mapping each observed stream/fiber to an OTel pipeline (receiver → processor → exporter) for `otelcol` | the OTel mapping needs the telemetry schema, not yet specified |
-| `systemd.units` | `fiber`/`parallel`/`surface` needing host units | service units for the Zig daemons / surface processes, with the dependency order implied by `parallel.strategy` and `supervisor` | unit details depend on the daemon packaging, deferred with the daemons |
+| `systemd.units` | `fiber`/`parallel`/`surface` needing host units | service units for the Zig daemons / surface processes, with the dependency order implied by `parallel.strategy` and `supervisor` | unit details depend on the daemon packaging, deferred with the daemons. The OTP supervision *tree* itself is no longer deferred: `otp.supervision` (§3.4) emits it |
 | `surface.launcher` | `surface` node | the launcher config/app that starts a `mode = raylib` surface with its `input`/`views` wired | the surface backend (raylib host integration) is not yet specified |
 
 The `surface.launcher` slot is the one deferred target that still surfaces in the
