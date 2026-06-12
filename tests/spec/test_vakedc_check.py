@@ -304,6 +304,21 @@ _RR_BARE_ENGINE = '''runtime "t" {
 }
 '''
 
+# budget/runclass kind-qualified refs are resolution-enforced too (#28 review:
+# previously silently dangling). The fiber's runclass names an UNDECLARED decl.
+_RR_RUNCLASS = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  engine e { package = nix.derivation }
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+  fiber f {
+    engine = e
+    input  = stream.s
+    output = artifacts.x
+    runclass = runclass.ghost
+  }
+}
+'''
+
 # A bare member of a `parallel`'s `fibers` list must also resolve in-runtime.
 _RR_BARE_FIBER = '''runtime "t" {
   systems = ["x86_64-linux"]
@@ -404,6 +419,13 @@ def _test_ref_resolution(lines):
         ok = False
         lines.append(f"  FAIL ref-res: runtime with bare `engine = ghostEngine` "
                      f"should yield exactly one {_REF_UNRESOLVED}, got {bare_engine}")
+
+    rc = [c for c in codes(_RR_RUNCLASS, "rr-runclass.vaked")
+          if c == _REF_UNRESOLVED]
+    if rc != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ref-res: undeclared `runclass.ghost` should yield "
+                     f"exactly one {_REF_UNRESOLVED}, got {rc}")
 
     bare_fiber = [c for c in codes(_RR_BARE_FIBER, "rr-bare-fiber.vaked")
                   if c == _REF_UNRESOLVED]

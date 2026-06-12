@@ -108,10 +108,17 @@ runtime "agent-field" {
     plan -> code -> review -> publish
   }
 
+  # The scheduling class interactive agents run under (#28).
+  runclass interactive {
+    priority = "high"
+    interval = 5s
+  }
+
   fiber transcriptMiner {
     engine = zigDaemon
     input = stream.transcripts
     output = artifacts.palaceEntries
+    runclass = runclass.interactive
   }
 
   surface fieldView {
