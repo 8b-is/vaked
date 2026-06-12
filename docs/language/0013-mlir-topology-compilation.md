@@ -32,9 +32,9 @@ real anchors:
 
 | Source term | What it is here |
 |-------------|-----------------|
-| "RFC 0004 / RFC 0005" | Do not exist. The repo has RFCs [0001-hcp](../../protocol/rfcs/0001-hcp.md), [0002-hcplang](../../protocol/rfcs/0002-hcplang.md), [0003-litany-wire](../../protocol/rfcs/0003-litany-wire.md). The frames below need a **new HCP RFC** before the `hcp` dialect is normative (#23 checklist). |
-| `DependencyRegistration` frame | A write-ahead "B depends on A's step-N output" registration — to be specified in that RFC, carried on the Litany wire, logged via `eventd`. |
-| `rewind_scope` | A block vulnerable to upstream state drift — maps to the eventd fold + arena structural sharing (#16, #18) consumed by the Track D control plane (#20). |
+| "RFC 0004 / RFC 0005" | Now [RFC 0004 — Multi-Agent State Dependency](../../protocol/rfcs/0004-multi-agent-state-dependency.md) (one RFC; the design sessions' "RFC 0005" is its recorded alias). The series also has [0001-hcp](../../protocol/rfcs/0001-hcp.md), [0002-hcplang](../../protocol/rfcs/0002-hcplang.md), [0003-litany-wire](../../protocol/rfcs/0003-litany-wire.md). |
+| `DependencyRegistration` frame | The write-ahead "B depends on A's step-N output" registration — RFC 0004 §2–§3, logged via `eventd`, carrying the topology epoch. |
+| `rewind_scope` | A block vulnerable to upstream state drift — RFC 0004 §3.3/§6 (`RewindEvent` + cold-start verification) over the eventd fold + arena structural sharing (#16, #18), consumed by the Track D control plane (#20). |
 | "MemPalace schemas" | The `memory` primitive ([0014](./0014-memory-primitive.md), #24). |
 | "multi-agent dependency graph" | The **typed semantic graph** `vakedc` already produces (parse → check → lower). |
 
@@ -112,7 +112,7 @@ hcp.write_ahead_log(%token)            // write-ahead safety guarantee
 ```
 
 The WAL discipline becomes structural — generated, never hand-maintained.
-(Frames per the new HCP RFC; the log is `eventd`, #18.)
+(Frames per RFC 0004 §3.1; the log is `eventd`, #18.)
 
 ### Pass 3 — AOT supervisor index generation
 
