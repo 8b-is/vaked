@@ -1956,6 +1956,16 @@ def emit_workflow_spec(graph, nodes):
 
 
 
+def _nix_str(s: str) -> str:
+    """A safe Nix double-quoted string literal: neutralizes the three
+    sequences that are active inside `"..."` — backslash (first), `"`, and
+    `${` antiquotation — so host-controlled values can never inject Nix
+    (the issue #7 splice class). Backslash MUST be escaped before the others."""
+    return '"' + (s.replace("\\", "\\\\")
+                   .replace('"', '\\"')
+                   .replace("${", "\\${")) + '"'
+
+
 def emit_colmena_hive(graph, nodes):
     """Emit ``gen/colmena/hive.nix`` (#51): one colmena node per `host` decl,
     so `colmena apply` deploys the runtime's nixosModules to its declared
@@ -1983,25 +1993,33 @@ def emit_colmena_hive(graph, nodes):
     lines.append("# here is the documented interface-only escape (0012 §4.3).")
     lines.append("{")
     lines.append("  meta = {")
-    lines.append("    nixpkgs = import <nixpkgs> { };")
+    # PATH form (not `import <nixpkgs> {}`): colmena imports nixpkgs per node,
+    # honoring each node's `nixpkgs.system`. An already-evaluated set would be
+    # used as-is and the per-node system silently ignored (multi-arch bug).
+    lines.append("    nixpkgs = <nixpkgs>;")
     lines.append("  };")
     lines.append("")
     entries = []
-    for h in nodes:
+    for i, h in enumerate(nodes):
+        if i:
+            lines.append("")   # blank line BETWEEN nodes only
         system = _lit(h.props.get("system")) or ""
         deploy = _lit(h.props.get("deploy"))
-        lines.append('  "%s" = { ... }: {' % h.name)
+        # All host-controlled strings go through _nix_str — host name, deploy
+        # target, and system are free-form (deploy is only `nonempty String`),
+        # so raw interpolation would allow `${…}` antiquotation injection
+        # (the issue #7 attrpath-splice class). _nix_str neutralizes it.
+        lines.append("  %s = { ... }: {" % _nix_str(h.name))
         if deploy is None or deploy == "local":
             lines.append("    deployment.allowLocalDeployment = true;")
         else:
             target = deploy[6:] if deploy.startswith("ssh://") else deploy
-            lines.append('    deployment.targetHost = "%s";' % target)
-        lines.append('    nixpkgs.system = "%s";' % system)
+            lines.append("    deployment.targetHost = %s;" % _nix_str(target))
+        lines.append("    nixpkgs.system = %s;" % _nix_str(system))
         lines.append("    # interface-only module path, exactly as the spine")
         lines.append("    # declares nixosModules.%s (0012 §4.3)." % rt.name)
         lines.append("    imports = [ ../../nixos/%s.nix ];" % rt.name)
         lines.append("  };")
-        lines.append("")
         entries.append(ProvEntry(
             artifact="gen/colmena/hive.nix", region="host/" + h.name,
             source_file=sf, decl="host " + h.name, span=h.provenance.span,
