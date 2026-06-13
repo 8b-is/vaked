@@ -153,8 +153,8 @@ The following is the minimal complete example. The `crypto.pq-default` declarati
 supplies the suite and seal authority; the `network edge` membrane references it;
 the mesh delegates `crypto.seal` with attenuation from the spine.
 
-The worked example file (`vaked/examples/types/crypto.vaked`) will be added
-in the same PR as the grammar extension — this design note is step 0.
+A worked example file will be added alongside the grammar extension PR.
+This design note is step 0; the example follows with the grammar change.
 
 ## Checker integration (0011)
 
