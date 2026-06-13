@@ -1,0 +1,82 @@
+# DESIGN PROPOSAL — does not yet parse under vakedc (see docs/language/0017-ralphloop-cache.md)
+#
+# ralphloop-cache.vaked — a cached, closed-loop dogfooding example.
+#
+# Demonstrates the proposed `ralphloop` kind: a bounded recurrence over a single
+# `step` fiber, with per-iteration content-addressed caching keyed by input hash.
+# Re-running an unchanged input is a cache HIT (byte-identical to a miss), so the
+# loop's cost stays flat as history compounds (tools/ralph/PURPOSE.md).
+#
+# NOTE: `cache`, `until`, `step` are NOT keywords — they are ordinary field names
+# (assignments), so the ONLY grammar change is adding "ralphloop" to the kind list.
+
+use "./engines/zig.vaked"
+
+runtime "ralph-dogfood" {
+  systems = ["x86_64-linux"]
+
+  # The structural project state the decision loop reads each tick (issues,
+  # commits, docs). Pinned, reproducible — the loop never sees a human in the turn.
+  index projectState {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl]
+  }
+
+  # The step executor: a single fiber that surfaces ONE decision from the state.
+  # Deterministic in its declared input (same state in -> same decision out),
+  # which is what makes the per-iteration cache sound.
+  fiber decisionStep {
+    engine = zigDaemon
+    input = catalog.projectState
+    output = artifacts.decision
+    policy { role = "strategy" mode = "decision-surfacing" }
+  }
+
+  # The closed-loop dogfood, expressed natively.
+  #   - input        : the seed state for iteration 0
+  #   - step         : the fiber re-applied each tick
+  #   - cache        : content-addressed memoization keyed by input hash
+  #   - until        : ref-only stop condition (no predicate sub-language)
+  #   - max_iterations : the hard termination bound (always terminates)
+  #   - output       : where the final iteration result is published
+  ralphloop decisionLoop {
+    input = catalog.projectState
+    step = decisionStep
+
+    cache {
+      key = hash([input, step.config])   # hit iff (input, step config) unchanged
+      store = ./.ralph/cache             # content-addressed store (CAS)
+      ttl = 7d
+    }
+
+    until = step.output.ratified         # stop when a decision is human-ratified
+    max_iterations = 1                    # one decision per tick; loop is re-driven
+    output = artifacts.decisionLog        # append-only, hash-chained decision log
+  }
+
+  # The eval/optimization dogfood: re-benchmark vakedc, cache by (compilerRev, fixtures).
+  # Re-running an unchanged compiler on an unchanged fixture set is a cache HIT,
+  # so eval cost stays flat (docs/compiler/OPTIMIZATION_ROADMAP.md, examples/evaluation).
+  fiber benchStep {
+    engine = zigDaemon
+    input = artifacts.evalFixtures
+    output = artifacts.benchResults
+    policy { role = "eval" }
+  }
+
+  ralphloop evalLoop {
+    input = artifacts.evalFixtures
+    step = benchStep
+
+    cache {
+      key = hash([compilerRev, input])   # re-bench unchanged compiler+fixtures = hit
+      store = ./.ralph/eval-cache
+      ttl = 30d
+    }
+
+    until = perf.regressed                # surface when a phase regresses
+    max_iterations = 10
+    output = artifacts.benchLog
+  }
+}
