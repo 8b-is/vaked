@@ -1,4 +1,4 @@
-# DESIGN PROPOSAL — does not yet parse under vakedc (see docs/language/0017-ralphloop-cache.md)
+# DESIGN PROPOSAL — does not yet parse under vakedc (see ../0017-ralphloop-cache.md)
 #
 # ralphloop-cache.vaked — a cached, closed-loop dogfooding example.
 #

@@ -256,7 +256,7 @@ become *measurable properties of a declared `ralphloop`*: cost/decision is "cach
 hit-rate × tick cost," and coherence is whatever fraction of ticks resolve to a
 prior cached key.
 
-Worked example: [`vaked/examples/ralphloop-cache.vaked`](../../vaked/examples/ralphloop-cache.vaked).
+Worked example: [`docs/language/examples/0017-ralphloop-cache.vaked`](examples/0017-ralphloop-cache.vaked).
 
 ## Lowering (output-first; emitter not yet built)
 
@@ -297,6 +297,6 @@ accepted.
 
 **Design proposal (v0.x), not yet implemented in vakedc.** No parser, schema,
 checker, or emitter exists for `ralphloop` yet. The example
-[`ralphloop-cache.vaked`](../../vaked/examples/ralphloop-cache.vaked) will **not**
+[`0017-ralphloop-cache.vaked`](examples/0017-ralphloop-cache.vaked) will **not**
 parse under the current vakedc (the `kind` is not in the grammar) and is marked as
 a design proposal in its header.
