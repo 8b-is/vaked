@@ -11,8 +11,8 @@ the surface syntax is [`../grammar/vaked-v0-plus.ebnf`](../grammar/vaked-v0-plus
 
 Every schema below is written in the v0.3 `schema` surface syntax (or its
 prose-table equivalent) and is **calibrated against the worked examples** in
-[`../examples/`](../examples/): every block in `examples/primitives/*.vaked`,
-`examples/operator-field.vaked`, and `examples/engines/zig.vaked` conforms to the
+[`../examples/`](../examples/): every block in `vaked/examples/primitives/*.vaked`,
+`vaked/examples/operator-field.vaked`, and `vaked/examples/engines/zig.vaked` conforms to the
 schema for its kind. Where an example revealed a field the earlier sketch
 omitted, the schema was widened to match real usage (never the reverse); those
 cases are flagged **[from examples]**.
@@ -129,7 +129,7 @@ schema index {
 }
 ```
 
-- Conforms to both `index` blocks in `examples/primitives/index.vaked` and
+- Conforms to both `index` blocks in `vaked/examples/primitives/index.vaked` and
   `operator-field.vaked`:
   - `zigRefs`: `source` (list of `github(...)`), `normalize = crabcc.markdown`,
     `chunk = crabcc.semantic { max_tokens = 1200, overlap = 120 }`, `emit =
@@ -158,7 +158,7 @@ schema catalog {
 }
 ```
 
-- Conforms to `examples/primitives/catalog.vaked`: `from = index.zigbeeFirmware`,
+- Conforms to `vaked/examples/primitives/catalog.vaked`: `from = index.zigbeeFirmware`,
   `key = ["manufacturer", "image_type", "file_version"]`, `emit =
   sqlite("./var/firmware.db")`.
 - `emit` is `ArtifactTarget | List<ArtifactTarget>` to accept both the single
@@ -220,7 +220,7 @@ schema fiberPolicy {           # the shape of a fiber's `policy { … }` block
 }
 ```
 
-- Conforms to `examples/primitives/fiber.vaked` and `operator-field.vaked`:
+- Conforms to `vaked/examples/primitives/fiber.vaked` and `operator-field.vaked`:
   `engine = zigimg`, `input = stream.screenrec`, `output =
   artifacts.compressedMedia`, `policy { strip_metadata = true; max_pixels =
   "4K"; formats = ["png", "webp"] }`.
@@ -247,7 +247,7 @@ schema surface {
 }
 ```
 
-- Conforms to `examples/primitives/surface.vaked` and `operator-field.vaked`:
+- Conforms to `vaked/examples/primitives/surface.vaked` and `operator-field.vaked`:
   `mode = raylib`, `fps = 60`, `input = [stream.ebpfEvents, graph.workflow,
   graph.agentfield]`, `views = ["network-flows", …]`.
 - `input` elements are a union of `Stream<_>`, `Graph` (a graph ref like
@@ -280,7 +280,7 @@ Edges:
   attenuation check (0011 §4.4); a labelled edge (`mcpBroker -> eventd :
   "audit"`) records the label for source-mapping.
 
-- Conforms to `examples/primitives/mesh.vaked`: nodes `codex`
+- Conforms to `vaked/examples/primitives/mesh.vaked`: nodes `codex`
   (`capabilities = [fs.repo_rw, mcp.github_read]`) and `redteam`
   (`capabilities = [fs.repo_ro, network.none]`), and the edges `codex ->
   mcpBroker`, `redteam -> eventd`, `mcpBroker -> eventd : "audit"`.
@@ -304,7 +304,7 @@ schema device {
 }
 ```
 
-- Conforms to `examples/primitives/device.vaked`: `driver = usb.cdc_acm`,
+- Conforms to `vaked/examples/primitives/device.vaked`: `driver = usb.cdc_acm`,
   `mount = "/dev/ttyUSB0"`, `permissions = ["read", "write"]`, `observe = true`.
 - `mount` is `Path`; the quoted form is accepted per 0011 §2.5. `device` is
   `open` because its full driver-interface schema is deferred (consistent with
@@ -339,7 +339,7 @@ schema stageEncode {
 }
 ```
 
-- Conforms to `examples/primitives/mediaPipeline.vaked`: `source =
+- Conforms to `vaked/examples/primitives/mediaPipeline.vaked`: `source =
   device.framebuffer`, `stages = [resize { width=1920, height=1080 }, encode {
   codec="h264", bitrate=2000000 }]`, `sink = stream.screenrec`.
 - `Stage` is an app-with-record; the `resize`/`encode` builders carry the stage
@@ -362,7 +362,7 @@ schema parallel {
 }
 ```
 
-- Conforms to `examples/primitives/parallel.vaked` and the `parallel
+- Conforms to `vaked/examples/primitives/parallel.vaked` and the `parallel
   "operator-runtime"` block in `operator-field.vaked`: `fibers = [ebpfIngest,
   otaIndex, mediaCompress, operatorMap]`, `strategy = "supervised-dag"`,
   `supervisor = otp`.
@@ -415,7 +415,7 @@ Checking (0015; Stage-0 Pass 1 of the topology pipeline,
   exceed it — `E-WORKFLOW-DEPTH`. This is the O(depth) propagation-latency
   bound enforced at check time.
 
-Conforms to `examples/agentfield-swe.vaked` (`workflow swe_af`: four steps,
+Conforms to `vaked/examples/agentfield-swe.vaked` (`workflow swe_af`: four steps,
 `plan -> code -> review -> publish`, depth 4 ≤ `maxDepth = 6`).
 
 ---
@@ -439,7 +439,7 @@ schema budget {
 }
 ```
 
-- Conforms to `examples/agentfield-swe.vaked` (`budget swe { tokens = 2000000
+- Conforms to `vaked/examples/agentfield-swe.vaked` (`budget swe { tokens = 2000000
   wallClock = 2h toolCalls = 400 approvals = "destructive" }`, referenced as
   `budget = budget.swe`).
 - `approvals` gates the broker: `"never"` (fully autonomous), `"destructive"`
@@ -473,7 +473,7 @@ schema runclass {
 }
 ```
 
-- Conforms to `examples/agentfield-swe.vaked` (`runclass interactive {
+- Conforms to `vaked/examples/agentfield-swe.vaked` (`runclass interactive {
   priority = "high"  interval = 5s }`, referenced from the `transcriptMiner`
   fiber).
 - The remaining schema-less kinds (`network`, `filesystem`, `mcp`, `ebpf`,
@@ -498,7 +498,7 @@ schema host {
 }
 ```
 
-- Conforms to `examples/agentfield-swe.vaked` (`host vps { system =
+- Conforms to `vaked/examples/agentfield-swe.vaked` (`host vps { system =
   "x86_64-linux"  deploy = "ssh://root@vps" }`).
 - `deploy`'s format ("ssh://…" | "local") is documentation until the lowering
   follow-up enforces it; a `host.system` ∈ enclosing `runtime.systems`
@@ -650,7 +650,7 @@ schema memory {
 }
 ```
 
-- Conforms to `examples/primitives/memory.vaked`: `source =
+- Conforms to `vaked/examples/primitives/memory.vaked`: `source =
   stream.agentTranscripts`, `schema = schema.memoryEpisode`, `mine =
   mempalace.convos`, `scope = "agent"`, `retention = 90d`, `emit =
   [catalog.jsonl, catalog.sqlite]`.

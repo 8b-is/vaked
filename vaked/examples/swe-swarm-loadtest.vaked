@@ -80,7 +80,7 @@ runtime "swe-swarm" {
 
   # Stream: work queue for coordinator to workers
   stream workQueue {
-    source = agentGuardd.events
+    source = agentGuardd.ringbuf
     type = Event.WorkItem
     retention = 1h
   }
