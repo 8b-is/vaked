@@ -260,17 +260,64 @@ The current scaffold is suitable for **within-machine** determinism (CI/CD gate)
 
 ## Future Extensions
 
-1. **Parallel iteration:** Run multiple examples concurrently to benchmark throughput
-2. **Memory profiling:** Track peak RSS, GC pauses
-3. **AST size metrics:** Count nodes, edges, type annotations
-4. **Artifact granularity:** Break down lowering time by artifact type (flake.nix vs. gen/*)
-5. **Differential debugging:** If hash diverges, emit full artifact diff (binutils objdump style)
+### 1M Worker Scalability Test (Next Phase)
+
+**File:** `vaked/examples/swe-swarm-1m-workers-scalability.vaked`  
+**Status:** Skeleton created (2026-06-13); full benchmark pending
+
+**Rationale:**
+- 100k test proves compiler scales to realistic parallel swarms
+- 1M test explores limits + informs datacenter deployment constraints
+- Validates POLA at extreme parallelism (2M delegation edges)
+
+**Expected timeline:**
+- **Bare metal:** EPYC 7002 series (192 cores, 512GB RAM, NVMe) required
+- **Parse stage:** ~1–2 seconds (linear scaling from 100k baseline)
+- **Check stage:** ~0.9–1.8 seconds (POLA checking is O(n log n) on edges)
+- **Lower stage:** ~1–3 seconds (artifact generation scales with node count)
+- **Total estimate:** 3–7 seconds (if linear); up to 60s (if sublinear degradation)
+
+**Benchmarking approach:**
+```bash
+# Run 10 iterations (lower than 100k due to time cost)
+python3 scripts/benchmark-1m-scalability.py 10
+
+# Monitor system metrics during run
+watch -n 0.5 'ps aux | grep vakedc | tail -5'
+```
+
+### 1. Parallel iteration
+- Run multiple examples concurrently to benchmark throughput
+- Use `--parallel N` flag to spawn N workers
+
+### 2. Memory profiling
+- Track peak RSS, GC pauses via `memory_profiler`
+- Identify bottlenecks (hash tables, graph nodes, type constraints)
+
+### 3. AST size metrics
+- Count graph nodes, edges, type annotations
+- Correlate artifact size with compile time (non-linear growth = red flag)
+
+### 4. Artifact granularity
+- Break down lowering time by artifact type (flake.nix vs. gen/* vs. provenance.json)
+- Identify which artifact type dominates time budget
+
+### 5. Differential debugging
+- If hash diverges, emit full artifact diff (binutils objdump style)
+- Enables root-cause analysis of non-determinism
+
+### 6. Hardware scaling matrix
+- Benchmark on: laptop (8 core), standard server (32 core), EPYC (192 core)
+- Track compile time vs. core count + memory bandwidth
+- Identifies hardware bottlenecks (I/O vs. CPU vs. memory)
 
 ---
 
 **References:**
 
 - `scripts/benchmark-100k-scalability.py` — Implementation
-- `vaked/examples/swe-swarm-100k-workers-scalability.vaked` — Test case (100k agents)
+- `vaked/examples/swe-swarm-100k-workers-scalability.vaked` — 100k test case (proven)
+- `vaked/examples/swe-swarm-1m-workers-scalability.vaked` — 1M test case (planned)
 - `.benchmark-results/` — Artifacts (JSON results, reports)
 - `ROADMAP_2026-2027.md` — Integration into CI/CD pipeline
+
