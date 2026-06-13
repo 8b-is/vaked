@@ -5,7 +5,7 @@
 Current vakedc achieves **O(n)** per-principal POLA checking on graphs with n nodes. Analysis shows:
 - **Use Check:** For each principal, iterate `used(p)` against `granted(p)` → O(n²) worst-case
 - **Attenuation Check:** For each edge, compare grant-sets → O(n²) worst-case
-- **Bottleneck:** At 1K fibers, checking 2K+ edges with full comparisons takes ~350ms. At 10K, it exceeds practical limits.
+- **Bottleneck:** At 1K fibers, `check` takes ~395ms and `lower` ~811ms (measured). At 10K, `check` is ~4.3s and `lower` ~16.3s — the **`lower` stage dominates and grows super-linearly** (it is the primary optimization target, not `check`). See `examples/evaluation/METHODOLOGY.md`.
 
 ## Optimization Strategy
 
@@ -182,12 +182,16 @@ def check_file_incremental(vaked_file):
 
 After optimization:
 
-| Workers | Current | Target (v0.2) | Target (v1.0) |
-|---------|---------|---------------|---------------|
-| 8 | 60ms | 50ms | 40ms |
-| 64 | ~150ms | ~60ms | ~30ms |
-| 1024 | 350ms | ~100ms | ~50ms |
-| 10000 | >120s | ~5–10s | ~500ms |
+Current numbers are measured end-to-end (parse+check+lower) per
+`METHODOLOGY.md`; targets are projected. The earlier ">120s" entry was a
+generator-bug artifact and has been retracted.
+
+| Workers | Current (measured, end-to-end) | Target (v0.2) | Target (v1.0) |
+|---------|--------------------------------|---------------|---------------|
+| 8 | ~0.22s | ~0.15s | ~0.10s |
+| 64 | (not yet measured) | — | — |
+| 1024 | ~1.6s | ~0.6s | ~0.3s |
+| 10000 | ~25s (lower ~16s) | ~8s | ~2s |
 
 ---
 
@@ -230,7 +234,7 @@ diff results-v0.1.json results-v0.2-phase1.json
 
 Profile with:
 ```bash
-make -C examples/evaluation loadtests   # the 1k/10k fixtures are generated, not committed
+task loadtests   # the 1k/10k fixtures are generated, not committed
 python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-workers.vaked
 # Identify bottlenecks: use_check, attenuation checks, sorting
 ```
@@ -445,7 +449,7 @@ Recommended for validating optimizations:
 
 Example profile command:
 ```bash
-make -C examples/evaluation loadtests   # the 1k/10k fixtures are generated, not committed
+task loadtests   # the 1k/10k fixtures are generated, not committed
 python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-workers.vaked 2>&1 | head -20
 # Identify bottleneck functions: use_check, attenuation_check, graph_traversal
 ```
