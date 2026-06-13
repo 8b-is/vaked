@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "source": "vaked/examples/agentfield-swe.vaked",
+  "artifacts": {
+    "flake.nix": [
+      {
+        "region": "nixosModules.agent-field",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "runtime agent-field",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 598, "byteEnd": 3638, "line": 14, "col": 1 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-1fc9884af3d4b8967ead883c5d998d0c405d77bd1d54efbfcb3722086f135def"
+      },
+      {
+        "region": "packages.zigDaemon",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "fiber transcriptMiner",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3173, "byteEnd": 3327, "line": 124, "col": 3 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-ea3ddd381b6c461339734b874346552a11db75b660d34c1678f09e9b1ad9005b"
+      },
+      {
+        "region": "apps.fieldView",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "surface fieldView",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3331, "byteEnd": 3507, "line": 131, "col": 3 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-11ae6bdc9cd7fc7326988ffcf114a58ff07d4978f882d2f40799723577c1bf62"
+      }
+    ],
+    "gen/RUNTIME.md": [
+      {
+        "region": "header",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "runtime agent-field",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 598, "byteEnd": 3638, "line": 14, "col": 1 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-1fc9884af3d4b8967ead883c5d998d0c405d77bd1d54efbfcb3722086f135def"
+      },
+      {
+        "region": "indexes/repoCorpus",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "index repoCorpus",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 785, "byteEnd": 933, "line": 23, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-f0c73b992d2854b645052a7b353d1abe56f9a4dbc507f3a9aa6727772a827015"
+      },
+      {
+        "region": "streams/transcripts",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "stream transcripts",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 937, "byteEnd": 1044, "line": 29, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-e66b11da82a1a82b49dcaaa949a9806aaa11408d56afd196a575999ac2cd3a7f"
+      },
+      {
+        "region": "streams/ebpfEvents",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "stream ebpfEvents",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 1048, "byteEnd": 1146, "line": 35, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-606b0b3dbcca0472cb7c4e5a2a0971c9fed4bff3f039a01e9d4ad1df9759e51e"
+      },
+      {
+        "region": "fibers/transcriptMiner",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "fiber transcriptMiner",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3173, "byteEnd": 3327, "line": 124, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-f382c4523effe9b4f935fc6cc454d609957b21e0b4c32d39d0135afcb7c21f48"
+      },
+      {
+        "region": "surfaces/fieldView",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "surface fieldView",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3331, "byteEnd": 3507, "line": 131, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-11ae6bdc9cd7fc7326988ffcf114a58ff07d4978f882d2f40799723577c1bf62"
+      },
+      {
+        "region": "parallel/field-runtime",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "parallel field-runtime",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3511, "byteEnd": 3636, "line": 138, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-88567fe47b9abf73104d5a5d4865e3c47d0a982e8c792ac18866760824c18afd"
+      }
+    ],
+    "gen/catalog/repoCorpus.jsonl": [
+      {
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "index repoCorpus",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 785, "byteEnd": 933, "line": 23, "col": 3 },
+        "emitter": "catalog.jsonl",
+        "inputsHash": "sha256-f0c73b992d2854b645052a7b353d1abe56f9a4dbc507f3a9aa6727772a827015"
+      }
+    ],
+    "gen/colmena/hive.nix": [
+      {
+        "region": "host/vps",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "host vps",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 709, "byteEnd": 781, "line": 18, "col": 3 },
+        "emitter": "colmena.hive",
+        "inputsHash": "sha256-9df73db887b6a0a82407fa6d3bf08f8efeb79890e560fc5958ee538ea2142cbc"
+      }
+    ],
+    "gen/eventd.json": [
+      {
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "runtime agent-field",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 598, "byteEnd": 3638, "line": 14, "col": 1 },
+        "emitter": "eventd.config",
+        "inputsHash": "sha256-1fc9884af3d4b8967ead883c5d998d0c405d77bd1d54efbfcb3722086f135def"
+      }
+    ],
+    "gen/memory/palace.json": [
+      {
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "memory palace",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 1150, "byteEnd": 1297, "line": 41, "col": 3 },
+        "emitter": "memory.store",
+        "inputsHash": "sha256-25afdcaac75716d7d14636b240ec12dae7e52e02f58a3c3bdd282e405e5de60c"
+      }
+    ],
+    "gen/otp/agent_field_sup.erl": [
+      {
+        "region": "parallel/field-runtime",
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "parallel field-runtime",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3511, "byteEnd": 3636, "line": 138, "col": 3 },
+        "emitter": "otp.supervision",
+        "inputsHash": "sha256-88567fe47b9abf73104d5a5d4865e3c47d0a982e8c792ac18866760824c18afd"
+      }
+    ],
+    "gen/otp/vaked_fiber_worker.erl": [
+      {
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "runtime agent-field",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 598, "byteEnd": 3638, "line": 14, "col": 1 },
+        "emitter": "otp.supervision",
+        "inputsHash": "sha256-1fc9884af3d4b8967ead883c5d998d0c405d77bd1d54efbfcb3722086f135def"
+      }
+    ],
+    "gen/workflow/swe_af.json": [
+      {
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "workflow swe_af",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 2492, "byteEnd": 3038, "line": 90, "col": 3 },
+        "emitter": "workflow.spec",
+        "inputsHash": "sha256-6ce68e0586c16e06e1ba761d4e615c12f5f00891a9b44dbbe9db326e92164057"
+      }
+    ],
+    "gen/zig/transcriptMiner.json": [
+      {
+        "sourceFile": "vaked/examples/agentfield-swe.vaked",
+        "decl": "fiber transcriptMiner",
+        "span": { "file": "vaked/examples/agentfield-swe.vaked", "byteStart": 3173, "byteEnd": 3327, "line": 124, "col": 3 },
+        "emitter": "zig.daemoncfg",
+        "inputsHash": "sha256-f382c4523effe9b4f935fc6cc454d609957b21e0b4c32d39d0135afcb7c21f48"
+      }
+    ]
+  }
+}
