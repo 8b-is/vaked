@@ -5,7 +5,7 @@
 Current vakedc achieves **O(n)** per-principal POLA checking on graphs with n nodes. Analysis shows:
 - **Use Check:** For each principal, iterate `used(p)` against `granted(p)` → O(n²) worst-case
 - **Attenuation Check:** For each edge, compare grant-sets → O(n²) worst-case
-- **Bottleneck:** At 1K fibers, checking 2K+ edges with full comparisons takes ~350ms. At 10K, it exceeds practical limits.
+- **Bottleneck:** At 1K fibers, `check` takes ~395ms and `lower` ~811ms (measured). At 10K, `check` is ~4.3s and `lower` ~16.3s — the **`lower` stage dominates and grows super-linearly** (it is the primary optimization target, not `check`). See `examples/evaluation/METHODOLOGY.md`.
 
 ## Optimization Strategy
 
@@ -182,12 +182,16 @@ def check_file_incremental(vaked_file):
 
 After optimization:
 
-| Workers | Current | Target (v0.2) | Target (v1.0) |
-|---------|---------|---------------|---------------|
-| 8 | 60ms | 50ms | 40ms |
-| 64 | ~150ms | ~60ms | ~30ms |
-| 1024 | 350ms | ~100ms | ~50ms |
-| 10000 | >120s | ~5–10s | ~500ms |
+Current numbers are measured end-to-end (parse+check+lower) per
+`METHODOLOGY.md`; targets are projected. The earlier ">120s" entry was a
+generator-bug artifact and has been retracted.
+
+| Workers | Current (measured, end-to-end) | Target (v0.2) | Target (v1.0) |
+|---------|--------------------------------|---------------|---------------|
+| 8 | ~0.22s | ~0.15s | ~0.10s |
+| 64 | (not yet measured) | — | — |
+| 1024 | ~1.6s | ~0.6s | ~0.3s |
+| 10000 | ~25s (lower ~16s) | ~8s | ~2s |
 
 ---
 
@@ -230,6 +234,7 @@ diff results-v0.1.json results-v0.2-phase1.json
 
 Profile with:
 ```bash
+task loadtests   # the 1k/10k fixtures are generated, not committed
 python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-workers.vaked
 # Identify bottlenecks: use_check, attenuation checks, sorting
 ```
@@ -310,7 +315,7 @@ fiber worker_001 { ... }  # worker_001 through worker_N all identical
 
 **Requirement:** Rust rewrite (CPU intrinsics)
 
-**Reference:** Larson & Goldschmidt (2019), "SIMD Text Processing: A Survey"
+**Reference:** _[citation needed — verify against real SIMD/vectorized-parsing literature, e.g. Lemire et al. on SIMD JSON parsing. The previously cited "Larson & Goldschmidt (2019), SIMD Text Processing: A Survey, CSUR 52(2)" could not be verified and was removed as likely spurious.]_
 
 ---
 
@@ -327,7 +332,7 @@ fiber worker_001 { ... }  # worker_001 through worker_N all identical
 
 **Tradeoff:** Adds training/inference overhead; only beneficial for large codebases
 
-**Reference:** Allamanis et al. (2018), "Learning to Fix Build Failures" (similar idea for CI)
+**Reference:** _[citation needed — verify against real ML-for-code literature, e.g. Allamanis et al., "A Survey of Machine Learning for Big Code and Naturalness" (2018). The previously cited "Learning to Fix Build Failures" could not be verified and was removed as likely spurious.]_
 
 ---
 
@@ -408,15 +413,13 @@ python3 examples/evaluation/bench.py --example "swe-swarm-*.vaked" --iterations 
 
 ### SIMD & Vectorization
 
-- Larson, T. R., & Goldschmidt, B. (2019). "SIMD Text Processing: A Survey." *ACM Computing Surveys*, 52(2), 1-38.
-  - SIMD techniques; applicable to vectorized capability comparisons
+- _[citation needed — the previously listed "Larson & Goldschmidt (2019), SIMD Text Processing: A Survey, CSUR 52(2)" could not be verified and was removed as likely spurious. Replace with verifiable SIMD-parsing work, e.g. Lemire & Langdale on SIMD JSON parsing.]_
 - Polychroniou, O., & Ross, K. A. (2015). "A Comprehensive Study of SIMD Throughput Bottlenecks on Modern CPUs." *Proceedings of the 18th International Workshop on Data Management on New Hardware*, 1-5.
   - CPU bottleneck analysis for vector operations
 
 ### Machine Learning for Optimization
 
-- Allamanis, L., et al. (2018). "Learning to Fix Build Failures." *Proceedings of the 2018 26th ACM Joint Meeting on European Software Engineering Conference and Symposium on the Foundations of Software Engineering*, 152-163.
-  - ML-guided bug prediction; analogous to POLA violation prediction
+- _[citation needed — the previously listed Allamanis et al. (2018), "Learning to Fix Build Failures" could not be verified and was removed as likely spurious. Replace with verifiable ML-for-code work, e.g. Allamanis et al. (2018), "A Survey of Machine Learning for Big Code and Naturalness," ACM Computing Surveys 51(4).]_
 - Gorelick, M., & Ozsvald, I. (2020). *High Performance Python: Practical Performant Programming for Humans.* 2nd ed. O'Reilly.
   - Profiling and optimization best practices
 
@@ -446,6 +449,7 @@ Recommended for validating optimizations:
 
 Example profile command:
 ```bash
+task loadtests   # the 1k/10k fixtures are generated, not committed
 python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-workers.vaked 2>&1 | head -20
 # Identify bottleneck functions: use_check, attenuation_check, graph_traversal
 ```
