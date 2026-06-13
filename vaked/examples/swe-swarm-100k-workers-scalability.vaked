@@ -17,7 +17,7 @@ use "./engines/zig.vaked"
 # Capability model:
 #   - Coordinator: fs.repo_rw, network.egress, mcp.github_write, mem.admin
 #   - Workers: fs.repo_ro (read source), network.lan (query artifacts), mem.append (log results)
-#   - Aggregator: fs.repo_ro, mem.admin (consolidate results)
+#   - Aggregator: fs.repo_ro, mem.append (consolidate results via log accumulation)
 #
 # Determinism: All artifacts byte-identical across repeated compilations.
 # Performance target: Compile time < 60 seconds (all stages: parse + check + lower)
@@ -80,7 +80,7 @@ runtime "swe-swarm-100k" {
 
     node aggregator {
       role = "results-sink"
-      capabilities = [fs.repo_ro, mem.admin]
+      capabilities = [fs.repo_ro, mem.append]
     }
 
     # Fan-out edges: coordinator → each worker
