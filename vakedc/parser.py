@@ -745,9 +745,9 @@ class Parser:
             items.append(self._expr())
             while self._is_op(","):
                 self.i += 1
-                # tolerate a trailing comma before ']' (PEG `[ expr { , expr } ]`
-                # would reject it, so keep strict): require an expr.
-                items.append(self._expr())
+                # tolerate trailing comma before ']' (standard JSON/Nix/Python style)
+                if not self._is_op("]"):
+                    items.append(self._expr())
         self._expect_op("]")
         return ListLit(items)
 
