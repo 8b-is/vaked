@@ -85,6 +85,7 @@ exactly the 0012 §6.2 property.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import posixpath
 from dataclasses import dataclass, field as dc_field
@@ -2093,10 +2094,31 @@ def _principal_network_grant(graph, principal):
     return None
 
 
+def _host_cidr(host: str) -> "str | None":
+    """The single-host CIDR for a bare ``host`` literal, family-aware: ``/32``
+    for IPv4, ``/128`` for IPv6. A host already carrying a ``/prefix`` is kept
+    verbatim. Returns None for a host that is neither a valid IP literal nor an
+    explicit CIDR — a non-IP destination is not attestable at the packet layer
+    (decide() denies it), so it must not be widened into a subnet."""
+    if "/" in host:
+        try:
+            ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            return None
+        return host
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return "%s/%d" % (host, 128 if ip.version == 6 else 32)
+
+
 def _egress_rule(call):
     """One allow-rule from an ``egress(host, port)`` app-call → an ordered dict
-    ``{proto, host, cidr, port}``. A host with no ``/`` is a ``/32``. Returns
-    None for a malformed call (non-string host or non-numeric port)."""
+    ``{proto, host, cidr, port}``. The host is pinned to a single-address CIDR
+    (``/32`` IPv4, ``/128`` IPv6) so an allow rule never widens into a subnet.
+    Returns None for a malformed call (non-string host, non-numeric port, or a
+    host that is neither a valid IP literal nor an explicit CIDR)."""
     if call is None:
         return None
     ref, args = call
@@ -2109,7 +2131,9 @@ def _egress_rule(call):
         port = int(args[1])
     except (TypeError, ValueError):
         return None
-    cidr = host if "/" in host else host + "/32"
+    cidr = _host_cidr(host)
+    if cidr is None:
+        return None
     return {"proto": "tcp", "host": host, "cidr": cidr, "port": port}
 
 
