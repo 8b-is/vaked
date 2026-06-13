@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bin/vaked — agent-optimized Vaked compiler CLI
 #
-# Commands: parse check lower all lint bench audit grammar schema examples env help
+# Commands: parse check lower all lint bench audit grammar schema examples env
+#           verify self-auth install upgrade select-ver gateway webhook mcp man docs help
 # Exit:     0 = clean · 1 = diagnostic/semantic · 2 = usage/parse/IO error
 # I/O:      JSON → stdout  ·  human text + diagnostics → stderr
 # Audit:    JSONL appended to .vaked/audit.jsonl  (or $VAKED_AUDIT_LOG)
@@ -16,8 +17,10 @@ export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 OPT_JSON=0 OPT_QUIET=0 OPT_NO_COLOR=0
 OPT_OUT="" OPT_BUILTINS="" OPT_RUNS=10
 OPT_AUDIT_LOG="${VAKED_AUDIT_LOG:-}" OPT_VERIFY=0
+OPT_PORT="" OPT_HOST="127.0.0.1" OPT_SECRET="" OPT_EVENT="push"
+OPT_SERVE=0 OPT_SILENT=0 OPT_WRITE=0 OPT_FROM="" OPT_VERSION=""
 
-# ── colors (all vars must be set before _colors_on; default empty = no color) ─
+# ── colors ────────────────────────────────────────────────────────────────────
 CR='' CB='' CD='' CG='' CY='' CRE=''
 
 _colors_on() {
@@ -33,7 +36,7 @@ ok()   { [[ $OPT_QUIET == 1 ]] && return 0; printf >&2 "${CG}✓${CR} %s\n" "$*"
 fail() { printf >&2 "${CRE}✗${CR} %s\n" "$*"; }
 warn() { printf >&2 "${CY}warn:${CR} %s\n" "$*"; }
 
-# ── nanosecond clock (Linux date +%s%N; Python fallback for macOS dev) ────────
+# ── nanosecond clock ──────────────────────────────────────────────────────────
 if date +%s%N 2>/dev/null | grep -qE '^[0-9]{10,}$'; then
   _ns() { date +%s%N; }
 else
@@ -52,7 +55,6 @@ _audit_append() {
 }
 
 # ── pipeline stage runner ─────────────────────────────────────────────────────
-# Sets globals STAGE_MS (wall-clock ms) and STAGE_RC (exit code).
 STAGE_MS=0 STAGE_RC=0
 
 _run() {
@@ -65,7 +67,6 @@ _run() {
   STAGE_MS=$(( (t1 - t0) / 1000000 ))
 }
 
-# Like _run but swallows stdout (used for audit where we want clean JSON output)
 _run_quiet() {
   local stage="$1" file="$2"; shift 2
   local t0 t1
@@ -84,29 +85,56 @@ vaked — Vaked compiler CLI  (agent-optimized)
 USAGE
   vaked [FLAGS] <command> [args]
 
-COMMANDS
+PIPELINE COMMANDS
   parse   <file>        Parse .vaked → LPG  (.vaked/graph.json + .db)
-  check   <file>        Type-check (Goal-2 stages 3–4)
+  check   <file>        Type-check (0011 type system, stages 3–4)
   lower   <file>        Full pipeline → artifacts  (refuses on any diagnostic)
   all     <file>        parse → check → lower with per-stage timing
   lint    <file>        check --json; exits 0/1/2  (agent-safe alias)
   bench   <file>        Benchmark N runs — JSON timing stats to stdout
   audit   <file>        Full pipeline + JSONL record to stdout and audit log
+  verify  <file>        Standalone verify: provenance hash + audit chain
+
+INSPECTION COMMANDS
   grammar               Print grammar path; --ebnf dumps full EBNF text
   schema  [kind]        Dump builtins catalog; filter by kind keyword
   examples              List .vaked examples; --run <name> runs one via 'all'
   env                   Print toolchain paths, versions, repo rev
+
+LIFECYCLE COMMANDS
+  install               Install vakedc  (--from SRC --version REF)
+  upgrade               git pull + reinstall  (--version REF)
+  select-ver [REF]      Checkout ref + reinstall; --list shows tags/branches
+
+RUNTIME COMMANDS
+  gateway               HTTP API server for vakedc  (--port N --host H)
+  webhook               GitHub webhook receiver  (--port N --secret S)
+  mcp                   MCP server over stdio JSON-RPC 2.0  (--capabilities)
+
+ENVIRONMENT / DOCS
+  self-auth             Check env prerequisites; exit 0 = sys.OK  (--json --silent)
+  man                   Print groff man page  (pipe to: man -l -)  (--write)
+  docs                  Build/serve static docs  (--build --out DIR --serve)
   help                  Show this message
 
 FLAGS
   --json          Machine-readable JSON to stdout
   -q, --quiet     Suppress step headers; errors only
   --no-color      Disable ANSI color  (also: NO_COLOR=1)
-  --out DIR       Lowering output dir  (default: .vaked/lower)
+  --out DIR       Lowering / docs output dir
   --builtins PATH Override builtins catalog
   --runs N        bench: iterations  (default: 10)
   --audit-log F   Audit log path  (default: .vaked/audit.jsonl; env: VAKED_AUDIT_LOG)
-  --verify        After lower: verify provenance source hash
+  --verify        After lower/all: verify provenance source hash
+  --port N        gateway / webhook / docs --serve port
+  --host H        gateway host  (default: 127.0.0.1)
+  --secret S      webhook HMAC-SHA256 secret
+  --event E       webhook event filter  (default: push)
+  --serve         docs: build then serve; mcp: start server
+  --silent        self-auth: suppress output
+  --write         man: write to man/vaked.1 instead of stdout
+  --from SRC      install: source (path / git URL / pip:PKG)
+  --version REF   install/upgrade/select-ver: git ref or pip version
 
 EXIT CODES
   0  clean
@@ -115,18 +143,20 @@ EXIT CODES
 
 AGENT NOTES
   JSON output → stdout · human text + diagnostics → stderr
-  bench and audit always emit JSON regardless of --json
-  Latency is implicit in all/bench/audit — per-stage ms included in every result
+  bench, audit, self-auth --json always emit JSON regardless of --json
+  Latency included in all/bench/audit/gateway results (per-stage ms)
+  self-auth guard on: install upgrade select-ver gateway webhook
 
 EXAMPLES
-  vaked all examples/agentfield-swe.vaked
-  vaked check examples/types/conformant.vaked --json
-  vaked bench examples/agentfield-swe.vaked --runs 20
-  vaked audit examples/agentfield-swe.vaked --out /tmp/out
-  vaked grammar --ebnf
-  vaked schema fiber
-  vaked examples --list
-  vaked examples --run agentfield
+  vaked all vaked/examples/primitives/fiber.vaked
+  vaked check vaked/examples/types/conformant.vaked --json
+  vaked bench vaked/examples/agentfield-swe.vaked --runs 20
+  vaked verify vaked/examples/primitives/fiber.vaked
+  vaked self-auth --json
+  vaked mcp --capabilities | python3 -m json.tool
+  vaked gateway --port 3001 &
+  vaked docs --build --out /tmp/vaked-docs
+  vaked man | man -l -
 EOF
 }
 
@@ -143,7 +173,16 @@ while [[ $# -gt 0 ]]; do
     --runs)       shift; OPT_RUNS="${1:-10}" ;;
     --audit-log)  shift; OPT_AUDIT_LOG="${1:-}";  [[ -z "$OPT_AUDIT_LOG" ]] && die "--audit-log requires a path" ;;
     --verify)     OPT_VERIFY=1 ;;
-    --ebnf|--list) ARGS+=("$1") ;;
+    --port)       shift; OPT_PORT="${1:-}"    ;;
+    --host)       shift; OPT_HOST="${1:-}"    ;;
+    --secret)     shift; OPT_SECRET="${1:-}"  ;;
+    --event)      shift; OPT_EVENT="${1:-}"   ;;
+    --from)       shift; OPT_FROM="${1:-}"    ;;
+    --version)    shift; OPT_VERSION="${1:-}" ;;
+    --serve)      OPT_SERVE=1                 ;;
+    --silent)     OPT_SILENT=1               ;;
+    --write)      OPT_WRITE=1                ;;
+    --ebnf|--list|--provenance|--hash|--chain|--build|--capabilities) ARGS+=("$1") ;;
     --run)        shift; ARGS+=(--run "${1:-}") ;;
     -h|--help)    CMD=help ;;
     -*)           die "Unknown flag: $1  (vaked help)" ;;
@@ -154,7 +193,6 @@ done
 
 [[ -z "$CMD" ]] && CMD=help
 
-# Enable color when stderr is a tty and color not suppressed
 if [[ "${NO_COLOR:-0}" != "1" && "$OPT_NO_COLOR" == "0" ]] && [[ -t 2 ]]; then _colors_on; fi
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -177,7 +215,6 @@ cmd_check() {
   [[ $OPT_JSON == 1 ]] && eb+=(--json)
   _run check "$file" "${eb[@]}"
   local ms=$STAGE_MS rc=$STAGE_RC
-  # in JSON mode vakedc itself writes structured JSON; only add timing in human mode
   if [[ $OPT_JSON == 0 ]]; then
     [[ $rc -eq 0 ]] && ok "check ${ms}ms" || fail "check ${ms}ms (exit $rc)"
   fi
@@ -266,7 +303,7 @@ _all_audit_record() {
   _audit_append "$rec"
 }
 
-# ── lint: check --json, always structured, clean exit codes ───────────────────
+# ── lint ──────────────────────────────────────────────────────────────────────
 
 cmd_lint() {
   local file; file=$(_file_arg lint)
@@ -277,7 +314,7 @@ cmd_lint() {
   return $rc
 }
 
-# ── bench: N-run benchmark with per-stage stats ───────────────────────────────
+# ── bench ─────────────────────────────────────────────────────────────────────
 
 cmd_bench() {
   local file; file=$(_file_arg bench)
@@ -337,7 +374,7 @@ print(json.dumps({
 PYEOF
 }
 
-# ── audit: full pipeline + structured JSONL record ────────────────────────────
+# ── audit ─────────────────────────────────────────────────────────────────────
 
 cmd_audit() {
   local file; file=$(_file_arg audit)
@@ -401,7 +438,176 @@ print(d.get('source_hash', d.get('hash', '')))
   fi
 }
 
-# ── grammar: print path or dump EBNF ─────────────────────────────────────────
+# ── self-auth guard (---sudo:::run:panic(self-auth---silent()===sys.OK)) ──────
+
+_self_auth_check_inner() {
+  local fail=0
+  git -C "$REPO_ROOT" status >/dev/null 2>&1        || { warn "git: not accessible"; fail=1; }
+  python3 --version >/dev/null 2>&1                  || { warn "python3: not found"; fail=1; }
+  python3 -c 'import vakedc' 2>/dev/null             || { warn "vakedc: not importable (check PYTHONPATH)"; fail=1; }
+  [[ -f "$REPO_ROOT/vaked/schema/builtins.vaked" ]]  || { warn "builtins.vaked: not found at $REPO_ROOT/vaked/schema/builtins.vaked"; fail=1; }
+  nix --version >/dev/null 2>&1 || nix-shell --version >/dev/null 2>&1 \
+    || warn "nix: not available (optional)"
+  return $fail
+}
+
+_require_auth() {
+  local rc=0
+  _self_auth_check_inner || rc=$?
+  if [[ $rc -ne 0 ]]; then die "self-auth failed (run 'vaked self-auth' for details)"; fi
+}
+
+# ── verify: standalone provenance + audit chain ───────────────────────────────
+
+_verify_audit_chain() {
+  local log_path="${OPT_AUDIT_LOG:-$REPO_ROOT/.vaked/audit.jsonl}"
+  if [[ ! -f "$log_path" ]]; then
+    log "verify chain: no audit log at $log_path (skip)"; return 0
+  fi
+  local bad=0
+  python3 - "$log_path" <<'PYEOF' || bad=$?
+import sys, json
+path = sys.argv[1]
+bad = 0
+count = 0
+with open(path) as f:
+    for i, line in enumerate(f, 1):
+        line = line.strip()
+        if not line:
+            continue
+        count += 1
+        try:
+            json.loads(line)
+        except json.JSONDecodeError as e:
+            sys.stderr.write(f"audit chain: invalid JSON on line {i}: {e}\n")
+            bad += 1
+if bad:
+    sys.exit(1)
+sys.stderr.write(f"audit chain: {count} records OK\n")
+PYEOF
+  if [[ $bad -eq 0 ]]; then ok "audit chain: all records valid"
+  else fail "audit chain: $bad invalid record(s)"; fi
+}
+
+cmd_verify() {
+  local file="${ARGS[0]:-}"
+  [[ -z "$file" ]] && die "verify: file required  (vaked verify <file.vaked>)"
+  local do_prov=0 do_hash=0 do_chain=0
+  for a in "${ARGS[@]:1}"; do
+    case "$a" in
+      --provenance) do_prov=1 ;;
+      --hash)       do_hash=1 ;;
+      --chain)      do_chain=1 ;;
+    esac
+  done
+  if [[ $do_prov -eq 0 && $do_hash -eq 0 && $do_chain -eq 0 ]]; then
+    do_prov=1; do_hash=1; do_chain=1
+  fi
+
+  local overall=0
+  if [[ $do_prov -eq 1 || $do_hash -eq 1 ]]; then
+    _verify_provenance "$file" || overall=$?
+  fi
+  if [[ $do_chain -eq 1 ]]; then
+    _verify_audit_chain || true
+  fi
+
+  if [[ $OPT_JSON == 1 ]]; then
+    local out="${OPT_OUT:-.vaked/lower}"
+    local prov="$out/provenance.json"
+    if [[ -f "$prov" ]]; then
+      python3 - "$prov" "$file" "$overall" <<'PYEOF'
+import sys, json, hashlib
+prov_path, src_path, overall = sys.argv[1], sys.argv[2], int(sys.argv[3])
+d = json.load(open(prov_path))
+try:
+    actual = hashlib.sha256(open(src_path, "rb").read()).hexdigest()
+    expected = d.get("source_hash", d.get("hash", ""))
+    hash_ok = expected == actual
+except Exception:
+    hash_ok = False
+print(json.dumps({"file": src_path, "provenance": prov_path, "hash_ok": hash_ok, "exit": overall}, indent=2))
+PYEOF
+    else
+      printf '{"file":"%s","provenance":null,"hash_ok":null,"exit":%d}\n' "$file" "$overall"
+    fi
+  fi
+  return $overall
+}
+
+# ── self-auth: check env prerequisites ───────────────────────────────────────
+
+cmd_self_auth() {
+  local json_mode=$OPT_JSON silent_mode=$OPT_SILENT
+  python3 - "$REPO_ROOT" "$json_mode" "$silent_mode" <<'PYEOF'
+import sys, os, json, subprocess
+
+repo_root, json_mode, silent_mode = sys.argv[1], sys.argv[2]=="1", sys.argv[3]=="1"
+
+def run_cmd(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        raise RuntimeError(out or f"exit {r.returncode}")
+    return out.splitlines()[0] if out else "ok"
+
+checks = []
+overall_ok = True
+
+try:
+    detail = run_cmd(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"])
+    checks.append({"label": "git", "status": "ok", "detail": detail})
+except Exception as e:
+    checks.append({"label": "git", "status": "fail", "detail": str(e)})
+    overall_ok = False
+
+try:
+    detail = run_cmd([sys.executable, "--version"])
+    checks.append({"label": "python3", "status": "ok", "detail": detail})
+except Exception as e:
+    checks.append({"label": "python3", "status": "fail", "detail": str(e)})
+    overall_ok = False
+
+try:
+    detail = run_cmd([sys.executable, "-c",
+        "import vakedc; print(getattr(vakedc, '__version__', 'installed'))"])
+    checks.append({"label": "vakedc", "status": "ok", "detail": detail})
+except Exception:
+    checks.append({"label": "vakedc", "status": "fail",
+                   "detail": "not importable — check PYTHONPATH"})
+    overall_ok = False
+
+bpath = os.path.join(repo_root, "vaked/schema/builtins.vaked")
+if os.path.isfile(bpath):
+    checks.append({"label": "builtins.vaked", "status": "ok", "detail": bpath})
+else:
+    checks.append({"label": "builtins.vaked", "status": "fail",
+                   "detail": f"not found: {bpath}"})
+    overall_ok = False
+
+try:
+    detail = run_cmd(["nix", "--version"])
+    checks.append({"label": "nix", "status": "ok", "detail": detail, "optional": True})
+except Exception:
+    try:
+        detail = run_cmd(["nix-shell", "--version"])
+        checks.append({"label": "nix", "status": "ok", "detail": detail, "optional": True})
+    except Exception:
+        checks.append({"label": "nix", "status": "warn",
+                       "detail": "not available (optional)", "optional": True})
+
+if json_mode:
+    print(json.dumps({"ok": overall_ok, "checks": checks}, indent=2))
+elif not silent_mode:
+    for c in checks:
+        sym = "✓" if c["status"] == "ok" else ("~" if c["status"] == "warn" else "✗")
+        print(f"  {sym} {c['label']:<18} {c['detail']}", file=sys.stderr)
+
+sys.exit(0 if overall_ok else 1)
+PYEOF
+}
+
+# ── grammar ───────────────────────────────────────────────────────────────────
 
 cmd_grammar() {
   local ebnf=0
@@ -414,7 +620,7 @@ cmd_grammar() {
   else echo "$f"; fi
 }
 
-# ── schema: dump builtins catalog; filter by kind keyword ────────────────────
+# ── schema ────────────────────────────────────────────────────────────────────
 
 cmd_schema() {
   local kind="${ARGS[0]:-}"
@@ -425,7 +631,6 @@ cmd_schema() {
     return
   fi
 
-  # Extract blocks whose opening line matches the kind keyword
   python3 - "$cat_file" "$kind" <<'PYEOF'
 import sys, re
 
@@ -454,14 +659,13 @@ for line in src.splitlines():
 if hits:
     print('\n\n'.join(hits))
 else:
-    # fallback: grep lines containing the keyword
     for line in src.splitlines():
         if kind in line:
             print(line)
 PYEOF
 }
 
-# ── examples: list or run ─────────────────────────────────────────────────────
+# ── examples ──────────────────────────────────────────────────────────────────
 
 cmd_examples() {
   local run_name="" list=0
@@ -505,7 +709,7 @@ PYEOF
   fi
 }
 
-# ── env: toolchain paths and versions ────────────────────────────────────────
+# ── env ───────────────────────────────────────────────────────────────────────
 
 cmd_env() {
   local py rev
@@ -527,19 +731,657 @@ cmd_env() {
   fi
 }
 
+# ── install / upgrade / select-ver ───────────────────────────────────────────
+
+cmd_install() {
+  _require_auth
+  local src="${OPT_FROM:-}" prefix="${OPT_OUT:-}" ver="${OPT_VERSION:-}"
+  log "install: src=${src:-auto} ver=${ver:-latest}"
+
+  if [[ -n "$src" ]]; then
+    case "$src" in
+      *.git|https://*|http://*)
+        local _tmp; _tmp=$(mktemp -d)
+        git clone "$src" "$_tmp" >&2
+        if [[ -n "$ver" ]]; then git -C "$_tmp" checkout "$ver" >&2; fi
+        python3 -m pip install "$_tmp" >&2
+        rm -rf "$_tmp"
+        ;;
+      pip:*) python3 -m pip install "${src#pip:}${ver:+==$ver}" >&2 ;;
+      *)     python3 -m pip install "$src" >&2 ;;
+    esac
+  elif [[ -f "$REPO_ROOT/install.sh" ]]; then
+    bash "$REPO_ROOT/install.sh" \
+      ${prefix:+--prefix "$prefix"} ${ver:+--version "$ver"} >&2
+  else
+    python3 -m pip install -e "$REPO_ROOT" >&2
+  fi
+
+  if [[ $OPT_JSON == 1 ]]; then
+    printf '{"cmd":"install","rev":"%s","exit":0}\n' "$(_git_rev)"
+  else
+    ok "install complete — rev $(_git_rev)"
+  fi
+}
+
+cmd_upgrade() {
+  _require_auth
+  local ver="${OPT_VERSION:-}"
+  log "upgrade: pulling ${ver:-HEAD} …"
+  git -C "$REPO_ROOT" pull ${ver:+origin "$ver"} >&2 || warn "git pull failed (continuing)"
+  if [[ -n "$ver" ]]; then git -C "$REPO_ROOT" checkout "$ver" >&2; fi
+  python3 -m pip install -e "$REPO_ROOT" >&2
+  if [[ $OPT_JSON == 1 ]]; then
+    printf '{"cmd":"upgrade","rev":"%s","exit":0}\n' "$(_git_rev)"
+  else
+    ok "upgrade complete — rev $(_git_rev)"
+  fi
+}
+
+cmd_select_ver() {
+  _require_auth
+  local list=0 ref=""
+  for a in "${ARGS[@]}"; do
+    case "$a" in
+      --list) list=1 ;;
+      -*) ;;
+      *) [[ -z "$ref" ]] && ref="$a" ;;
+    esac
+  done
+  if [[ $list -eq 1 ]]; then
+    printf >&2 '=== tags ===\n'
+    git -C "$REPO_ROOT" tag --sort=-version:refname | head -20
+    printf >&2 '=== branches ===\n'
+    git -C "$REPO_ROOT" branch -r --format='%(refname:short)' | head -10
+    return
+  fi
+  [[ -z "$ref" ]] && die "select-ver: ref required  (vaked select-ver <tag|branch>)"
+  git -C "$REPO_ROOT" checkout "$ref" >&2
+  python3 -m pip install -e "$REPO_ROOT" >&2
+  if [[ $OPT_JSON == 1 ]]; then
+    printf '{"cmd":"select-ver","ref":"%s","rev":"%s","exit":0}\n' "$ref" "$(_git_rev)"
+  else
+    ok "selected $ref — rev $(_git_rev)"
+  fi
+}
+
+# ── gateway: stdlib HTTP REST API ─────────────────────────────────────────────
+
+cmd_gateway() {
+  _require_auth
+  local port="${OPT_PORT:-3001}" host="${OPT_HOST:-127.0.0.1}"
+  log "gateway: http://${host}:${port}"
+  python3 - "$REPO_ROOT" "$port" "$host" <<'PYEOF'
+import sys, json, os, subprocess, time, urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+REPO_ROOT, PORT, HOST = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+_env = {**os.environ,
+        "PYTHONPATH": REPO_ROOT + ((":" + os.environ["PYTHONPATH"]) if "PYTHONPATH" in os.environ else "")}
+
+def run_vc(args):
+    t0 = time.perf_counter()
+    r = subprocess.run([sys.executable, "-m", "vakedc"] + args,
+                       capture_output=True, text=True, env=_env)
+    return r.stdout, r.stderr, r.returncode, round((time.perf_counter()-t0)*1000, 2)
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *a):
+        sys.stderr.write(f"[gateway] {fmt%a}\n")
+
+    def _body(self):
+        n = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(n)) if n else {}
+
+    def _resp(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        p = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(p.query)
+        if p.path == "/health":
+            try: rev = subprocess.check_output(["git","-C",REPO_ROOT,"rev-parse","--short","HEAD"],text=True).strip()
+            except: rev = "unknown"
+            self._resp({"status": "ok", "rev": rev})
+        elif p.path == "/grammar":
+            f = os.path.join(REPO_ROOT, "vaked/grammar/vaked-v0-plus.ebnf")
+            self._resp({"ebnf": open(f).read() if os.path.isfile(f) else ""})
+        elif p.path == "/schema":
+            cat = os.path.join(REPO_ROOT, "vaked/schema/builtins.vaked")
+            self._resp({"content": open(cat).read() if os.path.isfile(cat) else "",
+                        "kind": qs.get("kind", [""])[0]})
+        elif p.path == "/env":
+            self._resp({"repo_root": REPO_ROOT, "python": sys.version, "pythonpath": REPO_ROOT})
+        else:
+            self._resp({"error": "not found"}, 404)
+
+    def do_POST(self):
+        route = urllib.parse.urlparse(self.path).path
+        try:
+            body = self._body()
+        except Exception as e:
+            self._resp({"error": f"bad JSON: {e}"}, 400)
+            return
+        routes = {
+            "/parse": lambda: run_vc(["parse", body["file"]]),
+            "/check": lambda: run_vc(["check", body["file"], "--json"]),
+            "/lower": lambda: run_vc(["lower", body["file"]] + (["--out", body["out"]] if "out" in body else [])),
+            "/lint":  lambda: run_vc(["check", body["file"], "--json"]),
+        }
+        if route not in routes:
+            self._resp({"error": "not found"}, 404)
+            return
+        try:
+            out, err, rc, ms = routes[route]()
+            result = {"output": out, "stderr": err, "exit": rc, "ms": ms}
+            if route in ("/check", "/lint"):
+                try: result["diagnostics"] = json.loads(out)
+                except: pass
+            self._resp(result)
+        except Exception as e:
+            self._resp({"error": str(e)}, 500)
+
+print(f"[vaked gateway] http://{HOST}:{PORT}")
+print(f"  POST /parse /check /lower /lint")
+print(f"  GET  /schema?kind=X /grammar /env /health")
+sys.stdout.flush()
+HTTPServer((HOST, PORT), H).serve_forever()
+PYEOF
+}
+
+# ── webhook: GitHub-compatible push receiver ──────────────────────────────────
+
+cmd_webhook() {
+  _require_auth
+  local port="${OPT_PORT:-9001}" secret="${OPT_SECRET:-}" event="${OPT_EVENT:-push}"
+  log "webhook: port=$port event=$event secret=${secret:+set}"
+  python3 - "$REPO_ROOT" "$port" "$secret" "$event" <<'PYEOF'
+import sys, json, os, subprocess, time, hmac, hashlib
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+REPO_ROOT, PORT, SECRET, EVENT = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+_env = {**os.environ,
+        "PYTHONPATH": REPO_ROOT + ((":" + os.environ["PYTHONPATH"]) if "PYTHONPATH" in os.environ else "")}
+
+def run_all(fpath):
+    t0 = time.perf_counter()
+    for stage in ("parse", "check", "lower"):
+        r = subprocess.run([sys.executable, "-m", "vakedc", stage, fpath],
+                           capture_output=True, text=True, env=_env)
+        if r.returncode not in (0, 1):
+            return {"file": fpath, "stage": stage, "exit": r.returncode,
+                    "ms": round((time.perf_counter()-t0)*1000, 2), "stderr": r.stderr}
+    return {"file": fpath, "exit": 0, "ms": round((time.perf_counter()-t0)*1000, 2)}
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *a):
+        sys.stderr.write(f"[webhook] {fmt%a}\n")
+
+    def _resp(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(n)
+        if SECRET:
+            sig = self.headers.get("X-Hub-Signature-256", "")
+            exp = "sha256=" + hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(sig, exp):
+                self._resp({"error": "signature mismatch"}, 401)
+                return
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            self._resp({"error": "invalid JSON"}, 400)
+            return
+        files = set()
+        for commit in payload.get("commits", []):
+            for f in commit.get("modified", []) + commit.get("added", []):
+                if f.endswith(".vaked"):
+                    files.add(os.path.join(REPO_ROOT, f))
+        t0 = time.perf_counter()
+        results = [run_all(f) for f in files if os.path.isfile(f)]
+        self._resp({"results": results, "total_ms": round((time.perf_counter()-t0)*1000, 2),
+                    "files_processed": len(results)})
+
+print(f"[vaked webhook] port={PORT} event={EVENT}")
+sys.stdout.flush()
+HTTPServer(("0.0.0.0", PORT), H).serve_forever()
+PYEOF
+}
+
+# ── mcp: JSON-RPC 2.0 stdio server ───────────────────────────────────────────
+
+cmd_mcp() {
+  local capabilities=0
+  for a in "${ARGS[@]}"; do [[ "$a" == "--capabilities" ]] && capabilities=1; done
+
+  # write server script to tmpfile — MCP --serve needs real stdin for JSON-RPC
+  local _mcp_tmp; _mcp_tmp=$(mktemp /tmp/vaked-mcp-XXXX.py)
+  cat > "$_mcp_tmp" <<'PYEOF'
+import sys, json, os, subprocess, time
+
+REPO_ROOT = sys.argv[1]
+MODE = sys.argv[2] if len(sys.argv) > 2 else "--serve"
+_env = {**os.environ,
+        "PYTHONPATH": REPO_ROOT + ((":" + os.environ.get("PYTHONPATH", "")) if os.environ.get("PYTHONPATH") else "")}
+
+TOOLS = [
+    {"name": "vaked/parse",   "description": "Parse a .vaked file → LPG graph",
+     "inputSchema": {"type": "object", "properties": {"file": {"type": "string"}}, "required": ["file"]}},
+    {"name": "vaked/check",   "description": "Type-check a .vaked file (0011 type system)",
+     "inputSchema": {"type": "object", "properties": {"file": {"type": "string"}}, "required": ["file"]}},
+    {"name": "vaked/lower",   "description": "Full parse→check→lower pipeline → artifacts",
+     "inputSchema": {"type": "object", "properties": {"file": {"type": "string"}, "out": {"type": "string"}}, "required": ["file"]}},
+    {"name": "vaked/lint",    "description": "check --json; exits 0/1/2 (agent-safe)",
+     "inputSchema": {"type": "object", "properties": {"file": {"type": "string"}}, "required": ["file"]}},
+    {"name": "vaked/schema",  "description": "Dump builtins catalog; optional kind filter",
+     "inputSchema": {"type": "object", "properties": {"kind": {"type": "string"}}}},
+    {"name": "vaked/grammar", "description": "Return full EBNF grammar text",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "vaked/env",     "description": "Return toolchain paths, versions, repo rev",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "vaked/bench",   "description": "Benchmark N runs; returns min/median/max per stage",
+     "inputSchema": {"type": "object",
+                     "properties": {"file": {"type": "string"}, "runs": {"type": "integer", "default": 5}},
+                     "required": ["file"]}},
+]
+
+if MODE == "--capabilities":
+    print(json.dumps({"tools": TOOLS}, indent=2))
+    sys.exit(0)
+
+def run_stage(stage, fpath, extra=None):
+    cmd = [sys.executable, "-m", "vakedc", stage, fpath] + (extra or [])
+    t0 = time.perf_counter()
+    r = subprocess.run(cmd, capture_output=True, text=True, env=_env)
+    return r.stdout, r.stderr, r.returncode, round((time.perf_counter()-t0)*1000, 2)
+
+def call_tool(name, params):
+    if name == "vaked/parse":
+        out, err, rc, ms = run_stage("parse", params["file"])
+        return {"output": out, "stderr": err, "ms": ms, "exit": rc}
+    if name == "vaked/check":
+        out, err, rc, ms = run_stage("check", params["file"], ["--json"])
+        try: diag = json.loads(out)
+        except: diag = []
+        return {"diagnostics": diag, "ms": ms, "exit": rc}
+    if name == "vaked/lower":
+        extra = ["--out", params["out"]] if "out" in params else []
+        out, err, rc, ms = run_stage("lower", params["file"], extra)
+        return {"output": out, "stderr": err, "ms": ms, "exit": rc}
+    if name == "vaked/lint":
+        out, err, rc, ms = run_stage("check", params["file"], ["--json"])
+        try: diag = json.loads(out)
+        except: diag = []
+        return {"diagnostics": diag, "ms": ms, "exit": rc}
+    if name == "vaked/schema":
+        cat = os.path.join(REPO_ROOT, "vaked/schema/builtins.vaked")
+        content = open(cat).read() if os.path.isfile(cat) else ""
+        kind = params.get("kind", "")
+        if kind:
+            content = "\n".join(l for l in content.splitlines() if kind.lower() in l.lower())
+        return {"content": content}
+    if name == "vaked/grammar":
+        f = os.path.join(REPO_ROOT, "vaked/grammar/vaked-v0-plus.ebnf")
+        return {"ebnf": open(f).read() if os.path.isfile(f) else ""}
+    if name == "vaked/env":
+        try: rev = subprocess.check_output(["git","-C",REPO_ROOT,"rev-parse","--short","HEAD"],text=True).strip()
+        except: rev = "unknown"
+        return {"repo_root": REPO_ROOT, "python": sys.version, "rev": rev}
+    if name == "vaked/bench":
+        import statistics
+        fpath, runs = params["file"], int(params.get("runs", 5))
+        stages = ["parse", "check", "lower"]
+        times = {s: [] for s in stages}
+        for _ in range(runs):
+            for s in stages:
+                t0 = time.perf_counter()
+                subprocess.run([sys.executable,"-m","vakedc",s,fpath], capture_output=True, env=_env)
+                times[s].append((time.perf_counter()-t0)*1000)
+        def st(xs):
+            s = sorted(xs)
+            return {"min_ms": round(s[0],2), "median_ms": round(statistics.median(s),2), "max_ms": round(s[-1],2)}
+        return {"file": fpath, "runs": runs, "stages": {s: st(times[s]) for s in stages}}
+    raise ValueError(f"unknown tool: {name}")
+
+def read_msg():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if line in (b"", b"\r\n", b"\n"):
+            break
+        if b":" in line:
+            k, v = line.decode("utf-8", errors="replace").split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+    n = int(headers.get("content-length", 0))
+    return json.loads(sys.stdin.buffer.read(n)) if n else None
+
+def send_msg(obj):
+    body = json.dumps(obj).encode()
+    sys.stdout.buffer.write(b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    sys.stdout.buffer.flush()
+
+while True:
+    try:
+        msg = read_msg()
+    except Exception:
+        break
+    if msg is None:
+        break
+    method = msg.get("method", "")
+    mid = msg.get("id")
+    params = msg.get("params", {})
+    if method == "initialize":
+        send_msg({"jsonrpc":"2.0","id":mid,"result":{
+            "protocolVersion":"2024-11-05",
+            "capabilities":{"tools":{}},"serverInfo":{"name":"vaked","version":"0.1"}}})
+    elif method == "tools/list":
+        send_msg({"jsonrpc":"2.0","id":mid,"result":{"tools":TOOLS}})
+    elif method == "tools/call":
+        tname = params.get("name","")
+        targs = params.get("arguments",{})
+        try:
+            result = call_tool(tname, targs)
+            send_msg({"jsonrpc":"2.0","id":mid,"result":{
+                "content":[{"type":"text","text":json.dumps(result,indent=2)}]}})
+        except Exception as e:
+            send_msg({"jsonrpc":"2.0","id":mid,"error":{"code":-32000,"message":str(e)}})
+    elif method == "notifications/initialized":
+        pass
+    elif mid is not None:
+        send_msg({"jsonrpc":"2.0","id":mid,"error":{"code":-32601,"message":f"unknown method: {method}"}})
+PYEOF
+
+  if [[ $capabilities -eq 1 ]]; then
+    python3 "$_mcp_tmp" "$REPO_ROOT" --capabilities
+    rm -f "$_mcp_tmp"
+  else
+    log "mcp: starting JSON-RPC 2.0 stdio server …"
+    exec python3 "$_mcp_tmp" "$REPO_ROOT" --serve
+  fi
+}
+
+# ── man page ──────────────────────────────────────────────────────────────────
+
+cmd_man() {
+  local write=$OPT_WRITE
+  for a in "${ARGS[@]}"; do [[ "$a" == "--write" ]] && write=1; done
+
+  local content
+  content=$(cat <<'GROFF'
+.TH VAKED 1 "June 2026" "vaked-base" "Vaked Compiler Tools"
+.SH NAME
+vaked \- agent-optimized Vaked compiler CLI
+.SH SYNOPSIS
+.B vaked
+[\fIFLAGS\fR] \fICOMMAND\fR [\fIargs\fR]
+.SH DESCRIPTION
+.B vaked
+is the single-entry CLI for the Vaked capability-graph language toolchain.
+It exposes the vakedc pipeline (parse/check/lower) with per-stage timing,
+structured JSON output, JSONL audit logging, lifecycle management, an HTTP
+gateway, a GitHub webhook receiver, and an MCP server over stdio.
+.SH PIPELINE COMMANDS
+.TP
+.B parse \fIfile\fR
+Parse a .vaked file into a Labeled Property Graph (.vaked/graph.json + .db).
+.TP
+.B check \fIfile\fR
+Type-check the file (0011 type system, stages 3\(en4).
+.TP
+.B lower \fIfile\fR
+Run the full pipeline and emit artifacts. Refuses on any diagnostic.
+.TP
+.B all \fIfile\fR
+Run parse\(rapcheck\(raplower with per-stage timing and structured JSON result.
+.TP
+.B lint \fIfile\fR
+Alias for check --json; exits 0/1/2 (agent-safe).
+.TP
+.B bench \fIfile\fR
+Benchmark N runs (--runs N, default 10). Emits JSON min/median/p95/p99/max.
+.TP
+.B audit \fIfile\fR
+Full pipeline + append JSONL record to the audit log.
+.TP
+.B verify \fIfile\fR [\-\-provenance] [\-\-hash] [\-\-chain]
+Standalone verify: provenance source hash + audit JSONL chain integrity.
+.SH LIFECYCLE COMMANDS
+.TP
+.B install [\-\-from SRC] [\-\-version REF]
+Install vakedc. --from accepts a path, git URL, or pip:PKG spec.
+.TP
+.B upgrade [\-\-version REF]
+git pull + reinstall.
+.TP
+.B select-ver [\-\-list] [REF]
+Checkout a git ref and reinstall. --list shows available tags/branches.
+.SH RUNTIME COMMANDS
+.TP
+.B gateway [\-\-port N] [\-\-host H]
+Start a stdlib HTTP API server (POST /parse /check /lower /lint; GET /schema /grammar /env /health).
+.TP
+.B webhook [\-\-port N] [\-\-secret S] [\-\-event E]
+Start a GitHub-compatible webhook receiver. Runs all on changed .vaked files on push events.
+.TP
+.B mcp [\-\-capabilities] [\-\-serve]
+Start the vaked MCP server over stdio (JSON-RPC 2.0). --capabilities prints the tool manifest.
+.SH ENVIRONMENT / DOCS COMMANDS
+.TP
+.B self-auth [\-\-silent] [\-\-json]
+Check environment prerequisites (git, python3, vakedc, builtins.vaked, nix). Exit 0 = sys.OK.
+.TP
+.B grammar [\-\-ebnf]
+Print the grammar file path, or dump the full EBNF with --ebnf.
+.TP
+.B schema [kind]
+Dump the builtins catalog, optionally filtered by kind keyword.
+.TP
+.B examples [\-\-list] [\-\-run name]
+List .vaked examples or run one through the full pipeline.
+.TP
+.B docs [\-\-build] [\-\-out DIR] [\-\-serve]
+Build or serve self-hosted static docs (grammar + schema + examples gallery).
+.TP
+.B env
+Print toolchain paths, versions, and repo revision.
+.TP
+.B man [\-\-write]
+Print this man page. Pipe to \fBman -l -\fR to render. --write saves to man/vaked.1.
+.SH FLAGS
+.TP
+.B \-\-json
+Machine-readable JSON to stdout.
+.TP
+.B \-q, \-\-quiet
+Suppress step headers; errors only.
+.TP
+.B \-\-no-color
+Disable ANSI color.
+.TP
+.B \-\-out DIR
+Lowering / docs output directory.
+.TP
+.B \-\-runs N
+Benchmark iterations (default: 10).
+.TP
+.B \-\-audit-log F
+Audit log path (default: .vaked/audit.jsonl; env: VAKED_AUDIT_LOG).
+.TP
+.B \-\-verify
+After lower/all: verify provenance source hash.
+.TP
+.B \-\-port N
+Port for gateway / webhook / docs --serve.
+.TP
+.B \-\-host H
+Host for gateway (default: 127.0.0.1).
+.TP
+.B \-\-secret S
+HMAC-SHA256 secret for webhook signature validation.
+.TP
+.B \-\-from SRC
+install: source path, git URL, or pip:PKG.
+.TP
+.B \-\-version REF
+install/upgrade/select-ver: git ref or pip version.
+.SH EXIT CODES
+0 clean \(bu 1 diagnostic/semantic \(bu 2 usage/IO error
+.SH ENVIRONMENT
+.TP
+.B VAKED_AUDIT_LOG
+Override the audit log path.
+.TP
+.B NO_COLOR
+Disable ANSI color when set to 1.
+.SH EXAMPLES
+.nf
+vaked all vaked/examples/primitives/fiber.vaked
+vaked verify vaked/examples/primitives/fiber.vaked
+vaked self-auth --json
+vaked mcp --capabilities | python3 -m json.tool
+vaked gateway --port 3001 &
+vaked docs --build --out /tmp/vaked-docs
+vaked man | man -l -
+.fi
+.SH SEE ALSO
+.BR vakedc (1),
+.BR nix (1)
+GROFF
+)
+
+  if [[ $write -eq 1 ]]; then
+    mkdir -p "$REPO_ROOT/man"
+    printf '%s\n' "$content" > "$REPO_ROOT/man/vaked.1"
+    ok "wrote $REPO_ROOT/man/vaked.1"
+  else
+    printf '%s\n' "$content"
+  fi
+}
+
+# ── docs: build/serve static documentation ───────────────────────────────────
+
+cmd_docs() {
+  local build=0 serve=0 port="${OPT_PORT:-8080}" out="${OPT_OUT:-.vaked/docs}"
+  for a in "${ARGS[@]}"; do
+    case "$a" in
+      --build) build=1 ;;
+      --serve) serve=1; build=1 ;;
+    esac
+  done
+  if [[ $OPT_SERVE -eq 1 ]]; then serve=1; build=1; fi
+  if [[ $build -eq 0 && $serve -eq 0 ]]; then build=1; fi
+
+  log "docs: building → $out"
+  python3 - "$REPO_ROOT" "$out" <<'PYEOF'
+import sys, os, html
+
+repo_root, out_dir = sys.argv[1], sys.argv[2]
+os.makedirs(out_dir, exist_ok=True)
+
+def read_file(path):
+    try: return open(path).read()
+    except: return ""
+
+grammar  = read_file(os.path.join(repo_root, "vaked/grammar/vaked-v0-plus.ebnf"))
+builtins = read_file(os.path.join(repo_root, "vaked/schema/builtins.vaked"))
+
+examples = []
+ex_root = os.path.join(repo_root, "vaked/examples")
+for dirpath, _, fns in os.walk(ex_root):
+    for fn in sorted(fns):
+        if fn.endswith(".vaked"):
+            fpath = os.path.join(dirpath, fn)
+            examples.append((os.path.relpath(fpath, repo_root), open(fpath).read()))
+
+specdash_section = ""
+specdash = os.path.join(repo_root, "tools/specdash/build.py")
+if os.path.isfile(specdash):
+    import subprocess, tempfile
+    try:
+        tmp = tempfile.mkdtemp()
+        subprocess.run([sys.executable, specdash, "--out", tmp],
+                       capture_output=True, cwd=repo_root)
+        idx = os.path.join(tmp, "index.html")
+        if os.path.isfile(idx):
+            specdash_section = (
+                '<section id="ci"><h2>CI Dashboard</h2>'
+                + open(idx).read() + '</section>')
+    except Exception:
+        pass
+
+ex_html = "".join(
+    f'<details><summary><code>{html.escape(p)}</code></summary>'
+    f'<pre><code>{html.escape(src)}</code></pre></details>\n'
+    for p, src in examples
+)
+
+page = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Vaked Docs</title>
+<style>
+body{{font-family:monospace;max-width:960px;margin:2rem auto;padding:0 1rem;line-height:1.6}}
+pre{{background:#f6f6f6;padding:1rem;overflow-x:auto;border-radius:4px}}
+code{{background:#f0f0f0;padding:0 .2em;border-radius:2px}}
+details{{margin:.5em 0}} summary{{cursor:pointer;font-weight:bold}}
+nav a{{margin-right:1.2rem;text-decoration:none;color:#0066cc}}
+h1,h2{{border-bottom:1px solid #ddd;padding-bottom:.3em}}
+</style></head>
+<body>
+<h1>Vaked Docs</h1>
+<nav><a href="#grammar">Grammar</a><a href="#schema">Schema</a><a href="#examples">Examples</a></nav>
+{specdash_section}
+<section id="grammar"><h2>Grammar (EBNF)</h2><pre><code>{html.escape(grammar)}</code></pre></section>
+<section id="schema"><h2>Schema / Builtins</h2><pre><code>{html.escape(builtins)}</code></pre></section>
+<section id="examples"><h2>Examples ({len(examples)})</h2>{ex_html}</section>
+</body></html>"""
+
+open(os.path.join(out_dir, "index.html"), "w").write(page)
+print(f"[vaked docs] {out_dir}/index.html  ({len(examples)} examples)")
+PYEOF
+
+  ok "docs built → $out/index.html"
+
+  if [[ $serve -eq 1 ]]; then
+    log "docs: serving on http://localhost:${port} (Ctrl-C to stop)"
+    exec python3 -m http.server "$port" --directory "$out"
+  fi
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────
 case "$CMD" in
-  parse)    cmd_parse ;;
-  check)    cmd_check ;;
-  lower)    cmd_lower ;;
-  all)      cmd_all ;;
-  lint)     cmd_lint ;;
-  bench)    cmd_bench ;;
-  audit)    cmd_audit ;;
-  grammar)  cmd_grammar ;;
-  schema)   cmd_schema ;;
-  examples) cmd_examples ;;
-  env)      cmd_env ;;
+  parse)      cmd_parse ;;
+  check)      cmd_check ;;
+  lower)      cmd_lower ;;
+  all)        cmd_all ;;
+  lint)       cmd_lint ;;
+  bench)      cmd_bench ;;
+  audit)      cmd_audit ;;
+  verify)     cmd_verify ;;
+  grammar)    cmd_grammar ;;
+  schema)     cmd_schema ;;
+  examples)   cmd_examples ;;
+  env)        cmd_env ;;
+  self-auth)  cmd_self_auth ;;
+  install)    cmd_install ;;
+  upgrade)    cmd_upgrade ;;
+  select-ver) cmd_select_ver ;;
+  gateway)    cmd_gateway ;;
+  webhook)    cmd_webhook ;;
+  mcp)        cmd_mcp ;;
+  man)        cmd_man ;;
+  docs)       cmd_docs ;;
   help|-h|--help) _usage ;;
   *) die "Unknown command: $CMD  (vaked help)" ;;
 esac
