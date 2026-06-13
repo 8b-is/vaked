@@ -311,7 +311,7 @@ fiber worker_001 { ... }  # worker_001 through worker_N all identical
 
 **Requirement:** Rust rewrite (CPU intrinsics)
 
-**Reference:** Larson & Goldschmidt (2019), "SIMD Text Processing: A Survey"
+**Reference:** _[citation needed — verify against real SIMD/vectorized-parsing literature, e.g. Lemire et al. on SIMD JSON parsing. The previously cited "Larson & Goldschmidt (2019), SIMD Text Processing: A Survey, CSUR 52(2)" could not be verified and was removed as likely spurious.]_
 
 ---
 
@@ -328,7 +328,7 @@ fiber worker_001 { ... }  # worker_001 through worker_N all identical
 
 **Tradeoff:** Adds training/inference overhead; only beneficial for large codebases
 
-**Reference:** Allamanis et al. (2018), "Learning to Fix Build Failures" (similar idea for CI)
+**Reference:** _[citation needed — verify against real ML-for-code literature, e.g. Allamanis et al., "A Survey of Machine Learning for Big Code and Naturalness" (2018). The previously cited "Learning to Fix Build Failures" could not be verified and was removed as likely spurious.]_
 
 ---
 
@@ -409,15 +409,13 @@ python3 examples/evaluation/bench.py --example "swe-swarm-*.vaked" --iterations 
 
 ### SIMD & Vectorization
 
-- Larson, T. R., & Goldschmidt, B. (2019). "SIMD Text Processing: A Survey." *ACM Computing Surveys*, 52(2), 1-38.
-  - SIMD techniques; applicable to vectorized capability comparisons
+- _[citation needed — the previously listed "Larson & Goldschmidt (2019), SIMD Text Processing: A Survey, CSUR 52(2)" could not be verified and was removed as likely spurious. Replace with verifiable SIMD-parsing work, e.g. Lemire & Langdale on SIMD JSON parsing.]_
 - Polychroniou, O., & Ross, K. A. (2015). "A Comprehensive Study of SIMD Throughput Bottlenecks on Modern CPUs." *Proceedings of the 18th International Workshop on Data Management on New Hardware*, 1-5.
   - CPU bottleneck analysis for vector operations
 
 ### Machine Learning for Optimization
 
-- Allamanis, L., et al. (2018). "Learning to Fix Build Failures." *Proceedings of the 2018 26th ACM Joint Meeting on European Software Engineering Conference and Symposium on the Foundations of Software Engineering*, 152-163.
-  - ML-guided bug prediction; analogous to POLA violation prediction
+- _[citation needed — the previously listed Allamanis et al. (2018), "Learning to Fix Build Failures" could not be verified and was removed as likely spurious. Replace with verifiable ML-for-code work, e.g. Allamanis et al. (2018), "A Survey of Machine Learning for Big Code and Naturalness," ACM Computing Surveys 51(4).]_
 - Gorelick, M., & Ozsvald, I. (2020). *High Performance Python: Practical Performant Programming for Humans.* 2nd ed. O'Reilly.
   - Profiling and optimization best practices
 
