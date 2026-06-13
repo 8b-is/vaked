@@ -49,11 +49,11 @@ pub const Lexer = struct {
     line: usize = 1,
     col: usize = 1,
     group_depth: usize = 0,
-    tokens: std.ArrayList(Token),
+    tokens: std.array_list.Managed(Token),
     err: ?LexError = null,
 
     pub fn init(allocator: std.mem.Allocator, src: []const u8) Lexer {
-        return .{ .src = src, .tokens = std.ArrayList(Token).init(allocator) };
+        return .{ .src = src, .tokens = std.array_list.Managed(Token).init(allocator) };
     }
 
     pub fn deinit(self: *Lexer) void {
@@ -332,7 +332,7 @@ fn isDigit(c: u8) bool {
 
 // ---- tests ---------------------------------------------------------------
 
-fn lexAll(a: std.mem.Allocator, src: []const u8) !std.ArrayList(Token) {
+fn lexAll(a: std.mem.Allocator, src: []const u8) !std.array_list.Managed(Token) {
     var lx = Lexer.init(a, src);
     errdefer lx.deinit();
     try lx.run();

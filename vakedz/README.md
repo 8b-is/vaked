@@ -45,7 +45,7 @@ cd vakedz && zig build && zig build test
 ./zig-out/bin/vakedz cache verify
 ```
 
-CI (`.github/workflows/vakedz-ci.yml`) pins Zig 0.14.0 (the `build.zig.zon`
+CI (`.github/workflows/vakedz-ci.yml`) pins Zig 0.16.0 (the `build.zig.zon`
 floor), builds, runs the unit tests, and runs the **cross-verify gate** — the
 single source of truth that the port is faithful.
 
@@ -53,7 +53,7 @@ single source of truth that the port is faithful.
 
 ```
 vakedz/
-├── build.zig / build.zig.zon   # Zig 0.14 build; pinned floor
+├── build.zig / build.zig.zon   # Zig 0.16 build; pinned floor
 ├── src/
 │   ├── main.zig                # CLI: parse | check | lower | all | cache
 │   ├── json.zig                # canonical JSON (byte-parity with vakedc/emit.py)

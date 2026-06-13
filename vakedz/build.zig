@@ -1,6 +1,6 @@
 //! vakedz build — the Zig front-end for the Vaked capability-graph language.
 //!
-//! Targets Zig 0.14 (std.Build API). Produces a single `vakedz` binary whose
+//! Targets Zig 0.16 (std.Build API). Produces a single `vakedz` binary whose
 //! subcommands mirror `vakedc`: parse | check | lower | all | cache.
 //!
 //!   zig build                 # build the binary into zig-out/bin/vakedz
@@ -15,9 +15,11 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "vakedz",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     b.installArtifact(exe);
 
@@ -30,9 +32,11 @@ pub fn build(b: *std.Build) void {
 
     // `zig build test` — in-source unit tests across the modules.
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run vakedz unit tests");

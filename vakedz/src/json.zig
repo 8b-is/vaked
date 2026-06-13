@@ -88,9 +88,10 @@ pub const Value = union(enum) {
 
     /// Serialize to an owned, arena-allocated byte slice (no trailing newline).
     pub fn toOwned(self: Value, allocator: std.mem.Allocator) ![]u8 {
-        var list = std.ArrayList(u8).init(allocator);
-        try self.writeCanonical(list.writer());
-        return list.toOwnedSlice();
+        var aw = std.Io.Writer.Allocating.init(allocator);
+        errdefer aw.deinit();
+        try self.writeCanonical(&aw.writer);
+        return aw.toOwnedSlice();
     }
 };
 

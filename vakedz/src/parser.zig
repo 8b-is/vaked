@@ -175,7 +175,7 @@ pub const Parser = struct {
     }
 
     pub fn parseFile(self: *Parser) error{ Parse, OutOfMemory }![]const Item {
-        var items = std.ArrayList(Item).init(self.a);
+        var items = std.array_list.Managed(Item).init(self.a);
         self.skipNl();
         while (!self.atEof()) {
             try items.append(try self.item());
@@ -196,7 +196,7 @@ pub const Parser = struct {
     }
 
     fn decl(self: *Parser) error{ Parse, OutOfMemory }!*const Decl {
-        var anns = std.ArrayList(Annotation).init(self.a);
+        var anns = std.array_list.Managed(Annotation).init(self.a);
         while (self.isOp("@")) try anns.append(try self.annotation());
 
         const start_tok = self.cur();
@@ -246,7 +246,7 @@ pub const Parser = struct {
 
     fn signature(self: *Parser) !Signature {
         _ = try self.expectOp("(");
-        var params = std.ArrayList(Param).init(self.a);
+        var params = std.array_list.Managed(Param).init(self.a);
         if (!self.isOp(")")) {
             while (true) {
                 const pn = try self.expectIdent();
@@ -278,7 +278,7 @@ pub const Parser = struct {
 
     fn block(self: *Parser) error{ Parse, OutOfMemory }!BlockResult {
         _ = try self.expectOp("{");
-        var stmts = std.ArrayList(Stmt).init(self.a);
+        var stmts = std.array_list.Managed(Stmt).init(self.a);
         self.skipNl();
         while (!self.isOp("}")) {
             if (self.atEof()) return self.fail("unterminated block");
@@ -343,7 +343,7 @@ pub const Parser = struct {
         const fn_ = try self.expectIdent();
         _ = try self.expectOp(":");
         const ty = try self.typeText();
-        var refs = std.ArrayList(Refinement).init(self.a);
+        var refs = std.array_list.Managed(Refinement).init(self.a);
         if (self.isOp("{")) {
             self.i += 1;
             self.skipNl();
@@ -412,7 +412,7 @@ pub const Parser = struct {
 
     fn grantDecl(self: *Parser) ![]const []const u8 {
         self.i += 1; // 'grant'
-        var names = std.ArrayList([]const u8).init(self.a);
+        var names = std.array_list.Managed([]const u8).init(self.a);
         // line-bounded: stop at NEWLINE (do not skipNl)
         while (self.cur().kind == .ident) {
             try names.append(self.cur().value);
@@ -423,7 +423,7 @@ pub const Parser = struct {
 
     fn orderDecl(self: *Parser) ![]const []const []const u8 {
         self.i += 1; // 'order'
-        var chains = std.ArrayList([]const []const u8).init(self.a);
+        var chains = std.array_list.Managed([]const []const u8).init(self.a);
         try chains.append(try self.orderChain());
         while (true) {
             // ';' separates chains and may continue across newlines on EITHER
@@ -441,7 +441,7 @@ pub const Parser = struct {
     }
 
     fn orderChain(self: *Parser) ![]const []const u8 {
-        var names = std.ArrayList([]const u8).init(self.a);
+        var names = std.array_list.Managed([]const u8).init(self.a);
         const first = try self.expectIdent();
         try names.append(first.value);
         while (self.isOp("<")) {
@@ -454,7 +454,7 @@ pub const Parser = struct {
 
     fn inheritStmt(self: *Parser) ![]const []const u8 {
         self.i += 1; // 'inherit'
-        var names = std.ArrayList([]const u8).init(self.a);
+        var names = std.array_list.Managed([]const u8).init(self.a);
         while (self.cur().kind == .ident) {
             try names.append(self.cur().value);
             self.i += 1;
@@ -481,7 +481,7 @@ pub const Parser = struct {
     }
 
     fn edge(self: *Parser) !Edge {
-        var refs = std.ArrayList(Ref).init(self.a);
+        var refs = std.array_list.Managed(Ref).init(self.a);
         try refs.append(try self.ref());
         _ = try self.expectOp("->");
         try refs.append(try self.ref());
@@ -560,7 +560,7 @@ pub const Parser = struct {
 
     fn parenArgs(self: *Parser) ![]const Expr {
         _ = try self.expectOp("(");
-        var args = std.ArrayList(Expr).init(self.a);
+        var args = std.array_list.Managed(Expr).init(self.a);
         if (!self.isOp(")")) {
             while (true) {
                 try args.append(try self.expr());
@@ -577,7 +577,7 @@ pub const Parser = struct {
 
     fn ref(self: *Parser) !Ref {
         const first = try self.expectIdent();
-        var parts = std.ArrayList([]const u8).init(self.a);
+        var parts = std.array_list.Managed([]const u8).init(self.a);
         try parts.append(first.value);
         var last = first;
         while (self.isOp(".") and self.at(1).kind == .ident) {
@@ -591,7 +591,7 @@ pub const Parser = struct {
 
     fn list(self: *Parser) ![]const Expr {
         _ = try self.expectOp("[");
-        var items = std.ArrayList(Expr).init(self.a);
+        var items = std.array_list.Managed(Expr).init(self.a);
         self.skipNl();
         if (!self.isOp("]")) {
             while (true) {
@@ -611,7 +611,7 @@ pub const Parser = struct {
 
     fn record(self: *Parser) ![]const RecordEntry {
         _ = try self.expectOp("{");
-        var entries = std.ArrayList(RecordEntry).init(self.a);
+        var entries = std.array_list.Managed(RecordEntry).init(self.a);
         self.skipNl();
         while (!self.isOp("}")) {
             if (self.atEof()) return self.fail("unterminated record");
@@ -628,7 +628,7 @@ pub const Parser = struct {
 
     fn typeText(self: *Parser) ![]const u8 {
         // type = type_atom { "|" type_atom } ; captured as flat text.
-        var out = std.ArrayList(u8).init(self.a);
+        var out = std.array_list.Managed(u8).init(self.a);
         try self.typeAtom(&out);
         while (self.isOp("|")) {
             self.i += 1;
@@ -638,7 +638,7 @@ pub const Parser = struct {
         return out.toOwnedSlice();
     }
 
-    fn typeAtom(self: *Parser, out: *std.ArrayList(u8)) !void {
+    fn typeAtom(self: *Parser, out: *std.array_list.Managed(u8)) !void {
         // qualname [ "<" type {"," type} ">" ]  (function-type form not emitted
         // by the goldens; supported shallowly).
         const id = try self.expectIdent();
@@ -669,7 +669,7 @@ pub const Parser = struct {
 pub fn unquote(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
     if (raw.len < 2) return a.dupe(u8, "");
     const inner = raw[1 .. raw.len - 1];
-    var out = std.ArrayList(u8).init(a);
+    var out = std.array_list.Managed(u8).init(a);
     var i: usize = 0;
     while (i < inner.len) : (i += 1) {
         if (inner[i] == '\\' and i + 1 < inner.len) {

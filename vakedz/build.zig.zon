@@ -10,7 +10,7 @@
     // from nixpkgs; this floor is the API we target (std.Build, std.crypto).
     // Drift signal: a build error about std.Build/ArrayList signatures means
     // the devshell Zig moved ahead — bump this and adapt (tracked as an issue).
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.16.0",
 
     .dependencies = .{},
 

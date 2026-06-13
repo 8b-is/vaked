@@ -11,7 +11,7 @@
 //!
 //!   one JSON object per line, append-only:
 //!     {"seq":N,"prev":<hex sha256 of prev entry, GENESIS="0"*64>,
-//!      "payload":<canonical-json event body>,
+//!      "payload":<canonical-json event body, sorted keys>,
 //!      "hash":sha256(prev_hex ++ canonical_json(payload))}
 //!
 //! Layout on disk (gitignored, ephemeral — rebuildable from sources):
@@ -21,22 +21,25 @@
 //! A cache *hit* is deterministic: hash the source, scan the ledger for the
 //! latest matching {event,file,source_sha256,grammar_version}, fetch the cached
 //! output from the CAS by its content hash. Same source ⇒ same key ⇒ replay,
-//! never recompute. Tamper-evidence and rewind come for free from the chain.
+//! never recompute.
+//!
+//! Zig 0.16: all file I/O goes through the `std.Io` interface (Dir/File take an
+//! `io`). The ledger is small, so appends are done as a whole-file rewrite.
 
 const std = @import("std");
 const json = @import("json.zig");
+const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const GENESIS: [64]u8 = "0000000000000000000000000000000000000000000000000000000000000000".*;
 pub const GRAMMAR_VERSION = "v0.3";
-
 pub const CACHE_DIR = ".vakedz-cache";
 
 /// Hex sha256 of `bytes` into a caller-supplied 64-byte buffer.
 pub fn sha256Hex(bytes: []const u8, out: *[64]u8) void {
     var digest: [Sha256.digest_length]u8 = undefined;
     Sha256.hash(bytes, &digest, .{});
-    _ = std.fmt.bufPrint(out, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+    out.* = std.fmt.bytesToHex(digest, .lower);
 }
 
 /// chain_hash(prev_hex, payload) = sha256(prev_hex ++ canonical_json(payload)).
@@ -47,7 +50,7 @@ pub fn chainHex(prev_hex: []const u8, payload_canonical: []const u8, out: *[64]u
     h.update(payload_canonical);
     var digest: [Sha256.digest_length]u8 = undefined;
     h.final(&digest);
-    _ = std.fmt.bufPrint(out, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+    out.* = std.fmt.bytesToHex(digest, .lower);
 }
 
 pub const Phase = enum {
@@ -60,18 +63,21 @@ pub const Phase = enum {
     }
 };
 
+const MAX_LEDGER = 64 * 1024 * 1024;
+
 pub const Cache = struct {
     allocator: std.mem.Allocator,
-    root: []const u8, // directory containing CACHE_DIR
+    io: Io,
     dir: []const u8, // root/CACHE_DIR
 
-    pub fn open(allocator: std.mem.Allocator, root: []const u8) !Cache {
+    pub fn open(allocator: std.mem.Allocator, io: Io, root: []const u8) !Cache {
         const dir = try std.fs.path.join(allocator, &.{ root, CACHE_DIR });
-        std.fs.cwd().makePath(dir) catch {};
+        const cwd = Io.Dir.cwd();
+        cwd.createDirPath(io, dir) catch {};
         const cas = try std.fs.path.join(allocator, &.{ dir, "cas" });
         defer allocator.free(cas);
-        std.fs.cwd().makePath(cas) catch {};
-        return .{ .allocator = allocator, .root = root, .dir = dir };
+        cwd.createDirPath(io, cas) catch {};
+        return .{ .allocator = allocator, .io = io, .dir = dir };
     }
 
     fn ledgerPath(self: Cache) ![]u8 {
@@ -86,14 +92,13 @@ pub const Cache = struct {
     fn readLedger(self: Cache) ![]u8 {
         const path = try self.ledgerPath();
         defer self.allocator.free(path);
-        const f = std.fs.cwd().openFile(path, .{}) catch return try self.allocator.dupe(u8, "");
-        defer f.close();
-        return try f.readToEndAlloc(self.allocator, 64 * 1024 * 1024);
+        return Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .unlimited) catch
+            try self.allocator.dupe(u8, "");
     }
 
     /// Look up a cached output for (file, source, phase). Returns the cached
-    /// bytes (arena-owned) on a hit, or null on a miss. Deterministic: the key
-    /// is the source content hash + grammar version + phase.
+    /// bytes on a hit, or null on a miss. Deterministic: the key is the source
+    /// content hash + grammar version + phase.
     pub fn lookup(self: Cache, file: []const u8, source: []const u8, phase: Phase) !?[]u8 {
         var src_hex: [64]u8 = undefined;
         sha256Hex(source, &src_hex);
@@ -101,14 +106,16 @@ pub const Cache = struct {
         const body = try self.readLedger();
         defer self.allocator.free(body);
 
-        // Scan forward; remember the latest matching entry's output hash.
         var found: ?[64]u8 = null;
         var it = std.mem.splitScalar(u8, body, '\n');
         while (it.next()) |line| {
             if (line.len == 0) continue;
             const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch continue;
             defer parsed.deinit();
-            const payload = (parsed.value.object.get("payload") orelse continue).object;
+            if (parsed.value != .object) continue;
+            const payload_v = parsed.value.object.get("payload") orelse continue;
+            if (payload_v != .object) continue;
+            const payload = payload_v.object;
             if (!eqStr(payload.get("event"), phase.str())) continue;
             if (!eqStr(payload.get("file"), file)) continue;
             if (!eqStr(payload.get("source_sha256"), &src_hex)) continue;
@@ -123,15 +130,14 @@ pub const Cache = struct {
         const out_hex = found orelse return null;
         const cas = try self.casPath(&out_hex);
         defer self.allocator.free(cas);
-        const f = std.fs.cwd().openFile(cas, .{}) catch return null;
-        defer f.close();
-        return try f.readToEndAlloc(self.allocator, 64 * 1024 * 1024);
+        return Io.Dir.cwd().readFileAlloc(self.io, cas, self.allocator, .unlimited) catch null;
     }
 
-    /// Record (file, source, phase) -> output. Writes the output blob to the
-    /// CAS (keyed by its own content hash) and appends one hash-chained ledger
-    /// entry binding the source key to the output hash.
+    /// Record (file, source, phase) -> output. Writes the output blob to the CAS
+    /// (keyed by its own content hash) and appends one hash-chained ledger entry
+    /// binding the source key to the output hash.
     pub fn put(self: Cache, file: []const u8, source: []const u8, phase: Phase, output: []const u8) !void {
+        const cwd = Io.Dir.cwd();
         var src_hex: [64]u8 = undefined;
         sha256Hex(source, &src_hex);
         var out_hex: [64]u8 = undefined;
@@ -140,10 +146,8 @@ pub const Cache = struct {
         // CAS write (idempotent: same content ⇒ same path).
         const cas = try self.casPath(&out_hex);
         defer self.allocator.free(cas);
-        if (std.fs.cwd().access(cas, .{})) |_| {} else |_| {
-            const f = try std.fs.cwd().createFile(cas, .{});
-            defer f.close();
-            try f.writeAll(output);
+        if (cwd.access(self.io, cas, .{})) |_| {} else |_| {
+            try cwd.writeFile(self.io, .{ .sub_path = cas, .data = output });
         }
 
         // Determine prev hash + next seq from the ledger tail.
@@ -157,6 +161,7 @@ pub const Cache = struct {
                 if (line.len == 0) continue;
                 const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch continue;
                 defer parsed.deinit();
+                if (parsed.value != .object) continue;
                 if (parsed.value.object.get("hash")) |h| {
                     if (h == .string and h.string.len == 64) @memcpy(&prev, h.string[0..64]);
                 }
@@ -166,11 +171,9 @@ pub const Cache = struct {
             }
         }
 
-        // Canonical payload (deterministic — no clock, so identical source ⇒
-        // identical entry, which is what makes the loop content-addressed). Built
-        // on the heap (not a const literal) so sortRecursive may reorder keys in
-        // place — sorted canonical JSON is what makes the hash byte-compatible
-        // with the ralph/eventd ledgers.
+        // Canonical payload (deterministic — no clock — and key-sorted so the
+        // chain hash is byte-compatible with the ralph/eventd ledgers). Built on
+        // the heap so sortRecursive may reorder keys in place.
         const payload_entries = try self.allocator.dupe(json.Value.Entry, &.{
             .{ .key = "event", .value = .{ .string = phase.str() } },
             .{ .key = "file", .value = .{ .string = file } },
@@ -186,7 +189,6 @@ pub const Cache = struct {
         var hash_hex: [64]u8 = undefined;
         chainHex(&prev, payload_json, &hash_hex);
 
-        // Entry object (seq, prev, payload, hash) — same shape as ralph/eventd.
         const entry = json.Value{ .object = &.{
             .{ .key = "seq", .value = .{ .int = seq } },
             .{ .key = "prev", .value = .{ .string = &prev } },
@@ -196,13 +198,12 @@ pub const Cache = struct {
         const entry_json = try entry.toOwned(self.allocator);
         defer self.allocator.free(entry_json);
 
+        // Append by whole-file rewrite (the ledger is small).
+        const full = try std.mem.concat(self.allocator, u8, &.{ body, entry_json, "\n" });
+        defer self.allocator.free(full);
         const path = try self.ledgerPath();
         defer self.allocator.free(path);
-        const lf = try std.fs.cwd().createFile(path, .{ .truncate = false });
-        defer lf.close();
-        try lf.seekFromEnd(0);
-        try lf.writeAll(entry_json);
-        try lf.writeAll("\n");
+        try cwd.writeFile(self.io, .{ .sub_path = path, .data = full });
     }
 
     pub const VerifyResult = struct { entries: usize, valid_prefix: usize, ok: bool };
@@ -222,14 +223,13 @@ pub const Cache = struct {
             total += 1;
             const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch break :outer;
             defer parsed.deinit();
+            if (parsed.value != .object) break :outer;
             const obj = parsed.value.object;
             const seq = obj.get("seq") orelse break :outer;
             const ent_prev = obj.get("prev") orelse break :outer;
             const ent_hash = obj.get("hash") orelse break :outer;
             if (seq != .integer or seq.integer != expect_seq) break :outer;
             if (ent_prev != .string or !std.mem.eql(u8, ent_prev.string, &prev)) break :outer;
-            // Hash the RAW payload bytes from the line (already canonical), so we
-            // never have to re-serialize a std.json.Value.
             const payload_raw = rawPayload(line) orelse break :outer;
             var computed: [64]u8 = undefined;
             chainHex(&prev, payload_raw, &computed);

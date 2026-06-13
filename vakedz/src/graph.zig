@@ -37,8 +37,8 @@ pub const Builder = struct {
     a: std.mem.Allocator,
     source: []const u8, // full path (provenance.file)
     base: []const u8, // basename for ids
-    nodes: std.ArrayList(NodeRec),
-    edges: std.ArrayList(EdgeRec),
+    nodes: std.array_list.Managed(NodeRec),
+    edges: std.array_list.Managed(EdgeRec),
     by_name: std.StringHashMap([]const u8),
     by_kind_name: std.StringHashMap([]const u8),
     externals: std.StringHashMap(void),
@@ -48,8 +48,8 @@ pub const Builder = struct {
             .a = a,
             .source = source,
             .base = basename(source),
-            .nodes = std.ArrayList(NodeRec).init(a),
-            .edges = std.ArrayList(EdgeRec).init(a),
+            .nodes = std.array_list.Managed(NodeRec).init(a),
+            .edges = std.array_list.Managed(EdgeRec).init(a),
             .by_name = std.StringHashMap([]const u8).init(a),
             .by_kind_name = std.StringHashMap([]const u8).init(a),
             .externals = std.StringHashMap(void).init(a),
@@ -63,14 +63,14 @@ pub const Builder = struct {
 
     /// Pass 1: assign ids and index every decl by name and kind/name.
     fn index(self: *Builder, items: []const p.Item) !void {
-        var chain = std.ArrayList([]const u8).init(self.a);
+        var chain = std.array_list.Managed([]const u8).init(self.a);
         defer chain.deinit();
         for (items) |it| {
             if (it == .decl) try self.indexDecl(it.decl, &chain);
         }
     }
 
-    fn indexDecl(self: *Builder, d: *const p.Decl, chain: *std.ArrayList([]const u8)) !void {
+    fn indexDecl(self: *Builder, d: *const p.Decl, chain: *std.array_list.Managed([]const u8)) !void {
         try chain.append(d.name);
         const id = try self.nodeId(chain.items);
         if (!self.by_name.contains(d.name)) try self.by_name.put(d.name, id); // keep-first
@@ -109,26 +109,26 @@ pub const Builder = struct {
             }
         }
 
-        var chain = std.ArrayList([]const u8).init(self.a);
+        var chain = std.array_list.Managed([]const u8).init(self.a);
         defer chain.deinit();
         for (items) |it| {
             if (it == .decl) try self.buildDecl(it.decl, &chain, null);
         }
     }
 
-    fn buildDecl(self: *Builder, d: *const p.Decl, chain: *std.ArrayList([]const u8), parent_id: ?[]const u8) !void {
+    fn buildDecl(self: *Builder, d: *const p.Decl, chain: *std.array_list.Managed([]const u8), parent_id: ?[]const u8) !void {
         try chain.append(d.name);
         const id = try self.nodeId(chain.items);
 
         if (parent_id) |pid| try self.addEdge(pid, "contains", id);
 
         // props
-        var props = std.ArrayList(V.Entry).init(self.a);
+        var props = std.array_list.Managed(V.Entry).init(self.a);
         if (d.signature) |sig| try props.append(.{ .key = "signature", .value = try self.encodeSig(sig) });
         if (d.annotations.len > 0) {
-            var anns = std.ArrayList(V).init(self.a);
+            var anns = std.array_list.Managed(V).init(self.a);
             for (d.annotations) |an| {
-                var e = std.ArrayList(V.Entry).init(self.a);
+                var e = std.array_list.Managed(V.Entry).init(self.a);
                 try e.append(.{ .key = "name", .value = .{ .string = an.name } });
                 if (an.args) |args| {
                     try e.append(.{ .key = "args", .value = .{ .array = try self.encodeExprs(args) } });
@@ -156,7 +156,7 @@ pub const Builder = struct {
                 },
                 .grant => |names| try props.append(.{ .key = "grants", .value = .{ .array = try self.strArray(names) } }),
                 .order => |chains| {
-                    var outer = std.ArrayList(V).init(self.a);
+                    var outer = std.array_list.Managed(V).init(self.a);
                     for (chains) |c| try outer.append(.{ .array = try self.strArray(c) });
                     try props.append(.{ .key = "order", .value = .{ .array = try outer.toOwnedSlice() } });
                 },
@@ -279,7 +279,7 @@ pub const Builder = struct {
                 .{ .key = "record", .value = .{ .array = try self.encodeEntries(entries) } },
             }) },
             .app => |app| {
-                var out = std.ArrayList(V.Entry).init(self.a);
+                var out = std.array_list.Managed(V.Entry).init(self.a);
                 try out.append(.{ .key = "ref", .value = .{ .string = try ref_dotted(self.a, app.ref) } });
                 if (app.args) |args| try out.append(.{ .key = "args", .value = .{ .array = try self.encodeExprs(args) } });
                 if (app.record) |rec| try out.append(.{ .key = "record", .value = .{ .array = try self.encodeEntries(rec) } });
@@ -289,13 +289,13 @@ pub const Builder = struct {
     }
 
     fn encodeExprs(self: *Builder, items: []const p.Expr) ![]const V {
-        var out = std.ArrayList(V).init(self.a);
+        var out = std.array_list.Managed(V).init(self.a);
         for (items) |it| try out.append(try self.encodeExpr(it));
         return out.toOwnedSlice();
     }
 
     fn encodeEntries(self: *Builder, entries: []const p.RecordEntry) ![]const V {
-        var out = std.ArrayList(V).init(self.a);
+        var out = std.array_list.Managed(V).init(self.a);
         for (entries) |e| {
             switch (e) {
                 .assign => |asn| try out.append(V{ .object = try self.dupEntries(&.{
@@ -312,7 +312,7 @@ pub const Builder = struct {
     }
 
     fn encodeSig(self: *Builder, sig: p.Signature) !V {
-        var params = std.ArrayList(V).init(self.a);
+        var params = std.array_list.Managed(V).init(self.a);
         for (sig.params) |param| {
             const def: V = if (param.default) |dptr| try self.encodeExpr(dptr.*) else .null;
             try params.append(V{ .object = try self.dupEntries(&.{
@@ -341,7 +341,7 @@ pub const Builder = struct {
     }
 
     fn strArray(self: *Builder, items: []const []const u8) ![]const V {
-        var out = std.ArrayList(V).init(self.a);
+        var out = std.array_list.Managed(V).init(self.a);
         for (items) |s| try out.append(.{ .string = s });
         return out.toOwnedSlice();
     }
@@ -351,8 +351,9 @@ pub const Builder = struct {
         std.sort.pdq(NodeRec, self.nodes.items, {}, lessNode);
         std.sort.pdq(EdgeRec, self.edges.items, {}, lessEdge);
 
-        var list = std.ArrayList(u8).init(self.a);
-        const w = list.writer();
+        var aw = std.Io.Writer.Allocating.init(self.a);
+        errdefer aw.deinit();
+        const w = &aw.writer;
         try w.writeAll("{\"version\":1,\"source\":");
         try (V{ .string = self.source }).writeCanonical(w);
         try w.writeAll(",\"nodes\":[");
@@ -372,7 +373,7 @@ pub const Builder = struct {
             try ev.writeCanonical(w);
         }
         try w.writeAll("]}\n");
-        return list.toOwnedSlice();
+        return aw.toOwnedSlice();
     }
 
     fn lessNode(_: void, a: NodeRec, b: NodeRec) bool {
