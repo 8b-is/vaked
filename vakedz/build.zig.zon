@@ -1,0 +1,24 @@
+.{
+    // vakedz — the Zig front-end for the Vaked capability-graph language.
+    // A faithful, content-addressed-cache-native port of the `vakedc` pipeline
+    // (parse → check → lower).  See ../docs/superpowers/specs for the design.
+    .name = .vakedz,
+    .version = "0.1.0",
+    .fingerprint = 0xdb915eca17e33294,
+
+    // Pinned to keep the devshell reproducible. The repo flake provides Zig
+    // from nixpkgs; this floor is the API we target (std.Build, std.crypto).
+    // Drift signal: a build error about std.Build/ArrayList signatures means
+    // the devshell Zig moved ahead — bump this and adapt (tracked as an issue).
+    .minimum_zig_version = "0.14.0",
+
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "test",
+        "README.md",
+    },
+}
