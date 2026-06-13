@@ -323,7 +323,7 @@ fn transitiveClosureFill(a: std.mem.Allocator, cap: *CapabilitySpec) !?[2][]cons
             if (succ.get(k.*)) |sl| for (sl.items) |x| try stack.append(x);
             const r = reach.getPtr(k.*).?;
             while (stack.items.len > 0) {
-                const x = stack.pop();
+                const x = stack.pop().?;
                 if (!r.contains(x)) {
                     try r.put(x, {});
                     if (succ.get(x)) |sl| for (sl.items) |y| try stack.append(y);
