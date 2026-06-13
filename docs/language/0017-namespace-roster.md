@@ -80,6 +80,23 @@ different semantics — conflating them would muddy both. `open` already exists 
 the grammar (schemas use it), so the only new surface is the `namespace` keyword
 and a `member <name>` body statement.
 
+Proposed grammar delta (EBNF sketch, for the implementation step — not yet
+landed; `vaked/grammar/vaked-v0-plus.ebnf` is the normative source):
+
+```ebnf
+kind        = "runtime" | … | "memory" | "namespace" ;   (* +1: 28 → 29 *)
+
+(* a namespace block is either `open` (any member) or a set of `member`s;
+   reuses the existing open_decl, adds one line-terminated member_decl *)
+member_decl = "member" ident ;
+```
+
+`member_decl` joins the ordered `stmt` alternatives next to `grant_decl` /
+`order_decl` (it begins with the reserved leading keyword `member`, so it is a
+non-breaking soft-keyword addition, same discipline as the v0.3 type-layer
+statements). A `namespace` body is `open_decl` **xor** `{ member_decl }`; mixing
+them (an `open` namespace that also enumerates members) is a load-time error.
+
 This keeps the language "small enough to implement and remember" (CLAUDE.md):
 **one** new kind, reusing `open` and the builtins-loading path.
 
