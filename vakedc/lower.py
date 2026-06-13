@@ -85,6 +85,7 @@ exactly the 0012 §6.2 property.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import posixpath
 from dataclasses import dataclass, field as dc_field
@@ -290,6 +291,8 @@ class _RuntimeView:
     # Runtime plane (#18/#24/#27).
     memories: list = dc_field(default_factory=list)
     workflows: list = dc_field(default_factory=list)
+    # Network membranes (the ebpf.policy slice; 0012 §7).
+    networks: list = dc_field(default_factory=list)
     # Deployment targets (#28 slice 3 / #51).
     hosts: list = dc_field(default_factory=list)
 
@@ -314,6 +317,7 @@ def _runtime_view(graph) -> "_RuntimeView | None":
         containers=_by_kind(children, "container"),
         memories=_by_kind(children, "memory"),
         workflows=_by_kind(children, "workflow"),
+        networks=_by_kind(children, "network"),
         hosts=_by_kind(children, "host"),
     )
 
@@ -2061,6 +2065,125 @@ def emit_colmena_hive(graph, nodes):
 
 
 # --------------------------------------------------------------------------- #
+# Emitter: ebpf.policy (per network membrane) — gen/ebpf.policy.json.
+#
+# Realizes the 0012 §7 deferred slot: compiles each `network` egress-membrane
+# decl into the per-principal allow/deny egress policy that agent-guardd loads
+# and enforces ("per-principal allow/deny sets for network egress … compiled
+# from the capability grant-sets, consumable by agent-guardd"). Deny-by-default
+# posture + an explicit host:port allow-set; the principal's `network.<grant>`
+# lattice position (from the mesh) is recorded for traceability. Pure (a read of
+# the graph), deterministic (sorted-key JSON). Selected on presence of a
+# `network` decl — runtimes without one emit nothing (the slot stays inert).
+# --------------------------------------------------------------------------- #
+
+def _principal_network_grant(graph, principal):
+    """The `network.<grant>` a mesh ``node <principal>`` holds, if any — its
+    position in the builtin `network` lattice (none < loopback < lan < egress).
+    Best effort: returns e.g. ``"network.loopback"`` or None."""
+    if not principal:
+        return None
+    for n in graph.nodes_sorted():
+        if n.kind == "node" and n.name == principal:
+            caps = n.props.get("capabilities")
+            if isinstance(caps, list):
+                for c in caps:
+                    r = _ref(c)
+                    if r is not None and r.split(".", 1)[0] == "network":
+                        return r
+    return None
+
+
+def _host_cidr(host: str) -> "str | None":
+    """The single-host CIDR for a bare ``host`` literal, family-aware: ``/32``
+    for IPv4, ``/128`` for IPv6. A host already carrying a ``/prefix`` is kept
+    verbatim. Returns None for a host that is neither a valid IP literal nor an
+    explicit CIDR — a non-IP destination is not attestable at the packet layer
+    (decide() denies it), so it must not be widened into a subnet."""
+    if "/" in host:
+        try:
+            ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            return None
+        return host
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return "%s/%d" % (host, 128 if ip.version == 6 else 32)
+
+
+def _egress_rule(call):
+    """One allow-rule from an ``egress(host, port)`` app-call → an ordered dict
+    ``{proto, host, cidr, port}``. The host is pinned to a single-address CIDR
+    (``/32`` IPv4, ``/128`` IPv6) so an allow rule never widens into a subnet.
+    Returns None for a malformed call (non-string host, non-numeric port, or a
+    host that is neither a valid IP literal nor an explicit CIDR)."""
+    if call is None:
+        return None
+    ref, args = call
+    if ref != "egress" or len(args) < 2:
+        return None
+    host = args[0]
+    if not isinstance(host, str):
+        return None
+    try:
+        port = int(args[1])
+    except (TypeError, ValueError):
+        return None
+    cidr = _host_cidr(host)
+    if cidr is None:
+        return None
+    return {"proto": "tcp", "host": host, "cidr": cidr, "port": port}
+
+
+def emit_ebpf_policy(graph, nodes):
+    """Emit ``gen/ebpf.policy.json`` — the compiled egress policy agent-guardd
+    loads (0012 §7, now realized). One ``membranes[]`` entry per ``network``
+    decl: deny-by-default posture + the host:port allow-set, tagged with the
+    principal and its ``network.<grant>`` lattice position. One provenance entry
+    per membrane (``region`` = the membrane name)."""
+    sf = graph.source_file
+    rv = _runtime_view(graph)
+    rt_name = rv.runtime.name if rv is not None else ""
+    membranes = []
+    entries = []
+    for net in nodes:
+        principal = _lit(net.props.get("principal"))
+        default = _lit(net.props.get("default")) or "deny"
+        allow = []
+        allow_prop = net.props.get("allow")
+        if isinstance(allow_prop, list):
+            for item in allow_prop:
+                rule = _egress_rule(_app_call(item))
+                if rule is not None:
+                    allow.append(rule)
+        membrane = {
+            "membrane": net.name,
+            "principal": principal,
+            "grant": _principal_network_grant(graph, principal),
+            "default": default,
+            "allow": allow,
+        }
+        observe = _ref(net.props.get("observe"))
+        if observe is not None:
+            membrane["observe"] = observe
+        membranes.append(membrane)
+        entries.append(ProvEntry(
+            artifact="gen/ebpf.policy.json", region=net.name, source_file=sf,
+            decl="network " + net.name, span=net.provenance.span,
+            emitter="ebpf.policy", inputs_projection=_node_projection(net)))
+    doc = {
+        "_generated": _header(sf, "runtime " + rt_name),
+        "version": 1,
+        "runtime": rt_name,
+        "membranes": membranes,
+    }
+    text = json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    return {"gen/ebpf.policy.json": text}, entries
+
+
+# --------------------------------------------------------------------------- #
 # Registry + selection + the lowering driver.
 # --------------------------------------------------------------------------- #
 
@@ -2097,8 +2220,9 @@ REGISTRY = {
     "otp.supervision": _Registered("otp.supervision", emit_otp_supervision),
     # Deployment (#51) — colmena hive over host decls.
     "colmena.hive":   _Registered("colmena.hive", emit_colmena_hive),
+    # Network membrane (§7, realized) — compiled egress policy for agent-guardd.
+    "ebpf.policy":      _Registered("ebpf.policy", emit_ebpf_policy),
     # DEFERRED (interface slots, §7) — inert no-ops
-    "ebpf.policy":      _Registered("ebpf.policy", emit_deferred, deferred=True),
     "otel.config":      _Registered("otel.config", emit_deferred, deferred=True),
     "systemd.units":    _Registered("systemd.units", emit_deferred, deferred=True),
     "surface.launcher": _Registered("surface.launcher", emit_deferred, deferred=True),
@@ -2194,6 +2318,11 @@ def lower(graph, items=None) -> LowerResult:
         _run("memory.store", rv.memories)
     if rv.memories or rv.workflows:
         _run("eventd.config", [rv.runtime])
+
+    # Network membrane (0012 §7): the compiled egress policy agent-guardd loads,
+    # one per `network` decl. Inert when no membrane is declared.
+    if rv.networks:
+        _run("ebpf.policy", rv.networks)
 
     # Deployment (#51): one colmena node per declared host.
     if rv.hosts:

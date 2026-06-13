@@ -27,11 +27,12 @@ REPO = ps.REPO
 VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/primitives/*.vaked",   # 10 (memory.vaked: #24)
     "vaked/examples/types/*.vaked",        # 4
+    "vaked/examples/membrane/*.vaked",     # 1 (network-membrane slice: agent-egress)
     "vaked/examples/operator-field.vaked",  # 1
     "vaked/examples/engines/zig.vaked",     # 1
     "vaked/examples/agentfield-swe.vaked",  # 1 (#27 dogfood: swe_af workflow)
 ]
-EXPECTED_VAKED_COUNT = 17
+EXPECTED_VAKED_COUNT = 18
 
 HCP_EXAMPLE = "protocol/hcplang/examples/hcp-core.hcplang"
 
