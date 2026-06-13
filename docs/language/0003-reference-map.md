@@ -13,9 +13,11 @@
 - Zig: explicit native systems posture.
 - MLIR: dialects, SSA use-def graphs, progressive lowering, pass infrastructure.
 - MemPalace: mined, replayable session memory (the `memory` primitive's shape).
-- Wasmtime/Component Model: snapshotable, instruction-metered worker sandboxes.
+- Wasmtime/Component Model: snapshotable, instruction-metered worker sandboxes
+  (designed: `docs/superpowers/specs/2026-06-13-wasm-worker-isolation-design.md`).
 - Colmena: purely functional fleet deployment (`host.deploy` consumer).
-- SPIFFE/SPIRE + NATS: transport identity and subject-mapped event fan-out.
+- SPIFFE/SPIRE + NATS: transport identity and subject-mapped event fan-out
+  (designed: RFC 0006).
 - Temporal: durable-execution framing (we realize it as the eventd fold + the
   supervisord workflow_engine).
 - crane/dream2nix, CA-Nix: granular + content-addressed build caching.

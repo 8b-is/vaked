@@ -435,6 +435,7 @@ schema budget {
   field wallClock : Duration { optional }         # 2h
   field toolCalls : Int      { optional > 0 }     # brokered MCP call ceiling
   field approvals : String   { optional oneof ["never", "destructive", "always"] }
+  field fuel      : Int      { optional > 0 }     # Wasmtime instruction units (#50)
 }
 ```
 
@@ -443,6 +444,10 @@ schema budget {
   `budget = budget.swe`).
 - `approvals` gates the broker: `"never"` (fully autonomous), `"destructive"`
   (approval on destructive calls only), `"always"`.
+- `fuel` (#50) is the Wasmtime instruction ceiling a wasm-backed worker runs
+  under — a substrate-enforced compute bound (the "flat-cost economic bound"),
+  distinct axis from `tokens`/`toolCalls` (which meter model/tool calls). See
+  the WASM worker-isolation design (`docs/superpowers/specs/2026-06-13-wasm-worker-isolation-design.md`).
 - `runclass` and the remaining schema-less kinds stay open under #28.
 
 ---
