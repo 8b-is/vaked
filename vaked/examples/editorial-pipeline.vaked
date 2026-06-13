@@ -1,0 +1,142 @@
+use "./engines/zig.vaked"
+
+# editorial-pipeline.vaked — a retrieval-augmented content pipeline that shows
+# Vaked is not security-only: it is an authority model for any agent system.
+#
+# Case study: an editorial desk where research / drafting / fact-checking agents
+# work over a source corpus, but only ONE agent may publish. The type checker
+# proves, before the desk runs, that:
+#
+#   * the researcher, drafter, and factChecker all hold fs.repo_ro — they can
+#     read the corpus but can NEVER write to it (no repo_rw);
+#   * only the PUBLISHER holds mcp.github_write — no draft can ship without
+#     passing through the one principal authorized to publish;
+#   * the drafter has no network grant — it cannot pull unreviewed material from
+#     outside the curated corpus (no hallucinated sources via web egress).
+#
+# The result is an editorial guarantee expressed as a capability graph:
+# "nothing reaches publication that did not go through review", checked
+# statically rather than enforced by process discipline.
+
+runtime "editorial-desk" {
+  systems = ["x86_64-linux"]
+
+  index corpus {
+    source = [
+      github("example-press/style-guide"),
+      github("example-press/source-library")
+    ]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  memory deskMemory {
+    source = stream.drafts
+    mine = mempalace.convos
+    scope = "agent"
+    retention = 90d
+    emit = [catalog.sqlite]
+  }
+
+  stream drafts {
+    source = agentpipe.transcripts
+    type = Agent.Transcript
+    retention = 30d
+  }
+
+  budget desk {
+    tokens = 1200000
+    wallClock = 3h
+    toolCalls = 300
+    approvals = "destructive"
+    fuel = 2500000000
+  }
+
+  # The editorial field. The editor holds the strongest grants; each desk role
+  # receives an attenuated subset (0011 §4.4). Read-only roles cannot publish.
+  mesh field {
+    node editor {
+      role = "editor-in-chief"
+      capabilities = [fs.repo_rw, network.egress, mcp.github_write, mem.admin]
+    }
+    # Researcher: reads the corpus + queries internal sources on the LAN, recalls
+    # prior context. Read-only on the repo; cannot draft into it or publish.
+    node researcher {
+      role = "research"
+      capabilities = [fs.repo_ro, network.lan, mem.recall]
+    }
+    # Drafter: reads sources, appends drafts to desk memory. NO network ⇒ cannot
+    # introduce un-curated material; NO repo_rw ⇒ cannot write into the corpus.
+    node drafter {
+      role = "drafting"
+      capabilities = [fs.repo_ro, mem.append]
+    }
+    # Fact-checker: reads sources + the LAN to verify claims, recalls context.
+    # Read-only — it can flag, never publish.
+    node factChecker {
+      role = "fact-check"
+      capabilities = [fs.repo_ro, network.lan, mem.recall]
+    }
+    # Publisher: the ONLY holder of mcp.github_write. Every shipped piece passes
+    # through this principal — the single publication chokepoint.
+    node publisher {
+      role = "publish"
+      capabilities = [fs.repo_rw, mcp.github_write, mem.recall]
+    }
+
+    editor -> researcher
+    editor -> drafter
+    editor -> factChecker
+    editor -> publisher
+  }
+
+  # The editorial workflow as a checked DAG: research feeds drafting feeds
+  # fact-checking feeds publication. The DAG ordering plus the capability split
+  # guarantees nothing ships un-reviewed.
+  workflow pipeline {
+    on = "desk.assignment:created"
+    budget = budget.desk
+    maxDepth = 5
+
+    node research {
+      agent = field.researcher
+      output = artifacts.brief
+    }
+    node draft {
+      agent = field.drafter
+      input = artifacts.brief
+      output = artifacts.manuscript
+      retries = 2
+    }
+    node verify {
+      agent = field.factChecker
+      input = artifacts.manuscript
+      output = artifacts.checkedManuscript
+    }
+    node publish {
+      agent = field.publisher
+      input = artifacts.checkedManuscript
+    }
+
+    research -> draft -> verify -> publish
+  }
+
+  fiber draftMiner {
+    engine = zigDaemon
+    input = stream.drafts
+    output = artifacts.deskEntries
+  }
+
+  surface deskView {
+    mode = raylib
+    fps = 30
+    input = [stream.drafts, graph.pipeline, graph.field]
+    views = ["workflow-dag", "mesh-topology", "memory-recall"]
+  }
+
+  parallel "editorial-runtime" {
+    fibers = [draftMiner, deskView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}
