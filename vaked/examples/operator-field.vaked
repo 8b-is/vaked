@@ -3,6 +3,10 @@ use "./engines/zig.vaked"
 runtime "operator-field" {
   systems = ["x86_64-linux", "aarch64-linux"]
 
+  # Daemon-channel namespaces declared for this runtime (RFC 0017, D3: runtime-scoped).
+  namespace agentGuardd { member ringbuf }
+  namespace agentpipe   { member transcripts  member screenrec }
+
   index zigCorpus {
     source = [
       github("Sobeston/zig.guide"),

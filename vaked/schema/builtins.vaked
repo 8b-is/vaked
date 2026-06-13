@@ -278,6 +278,41 @@ schema host {
 }
 
 # --------------------------------------------------------------------------- #
+# Built-in namespace catalog (RFC 0017, v0.4)
+#
+# A `namespace <head> { … }` block registers one value-namespace head in the
+# global catalog loaded at check time.  Capability-domain heads (fs, network,
+# mcp, ebpf, process, mem) are handled by the capability checker, NOT here.
+#
+# Decision D3 (RFC 0017): daemon-channel namespaces (agentGuardd, agentpipe,
+# eventd) are runtime-scoped; a runtime only gets a daemon's channels by
+# declaring a `namespace <daemon> { member … }` block inside its body.  Those
+# blocks are validated against the closed sets defined here (the checker consults
+# the global catalog as the *canonical* source for the closed member set when a
+# runtime re-declares a daemon namespace).
+#
+# Decision D1: `artifacts.*` / `graph.*` belong to closed-world resolution of
+# in-runtime productions, NOT to this namespace roster.
+# --------------------------------------------------------------------------- #
+
+# Open value-namespaces — head approved, members unbounded (e.g. nixpkgs attrsets).
+namespace pkgs { open }            # nixpkgs attrset — any member (e.g. pkgs.umami)
+namespace nix  { open }            # nix builtins / stdlib — any member (e.g. nix.derivation)
+
+# Daemon channels — closed member sets sourced from docs/runtime/README.md.
+# These are the CANONICAL definitions; runtime `namespace` blocks restrict to a
+# subset of these (but must not introduce members not listed here — checked by
+# the conformance arm if the runtime declares extra members).
+namespace agentGuardd { member ringbuf }
+namespace agentpipe   { member transcripts  member screenrec }
+namespace eventd      { member log }
+
+# External services / tools — closed member sets.
+namespace crabcc      { member markdown  member semantic }
+namespace github      { member issue }
+namespace mempalace   { member convos }
+
+# --------------------------------------------------------------------------- #
 # Built-in capability taxonomy (one `capability <domain>` per built-in domain)
 # `a < b` ⇒ a is the WEAKER (more attenuated) grant; delegation may only go to ≤.
 # Each order is acyclic ⇒ a partial order (0011 §4.2).
