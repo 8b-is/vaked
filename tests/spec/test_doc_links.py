@@ -27,7 +27,7 @@ SCOPE_GLOBS = [
     "vaked/**/*.md",
     "protocol/**/*.md",
 ]
-SCOPE_FILES = ["README.md", "CLAUDE.md"]
+SCOPE_FILES = ["README.md", "CLAUDE.md", "VAKED_AGENTS.md"]
 
 # Inline-style markdown links: [text](target). We intentionally do not chase
 # reference-style links or autolinks; the repo uses inline links throughout.
