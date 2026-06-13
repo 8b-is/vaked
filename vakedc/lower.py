@@ -428,7 +428,8 @@ def emit_nix_spine(graph, nodes):
     lines.append("    {")
     lines.append("      # nixosModules.<runtime> — wires the OTP/Zig daemons and references the")
     lines.append("      # gen/ artifacts as installed files (0012 §4.3).")
-    lines.append("      nixosModules.%s = import ./nixos/%s.nix {" % (rt_name, rt_name))
+    lines.append("      nixosModules.%s = import ./nixos/%s.nix {"
+                 % (_nix_attr_key(rt_name), rt_name))
     lines.append("        # NixOS module fixture is described in 0012 §4.3; not emitted as a")
     lines.append("        # separate file in this fixture set (interface only).")
     lines.append("        inherit self;")
@@ -447,7 +448,8 @@ def emit_nix_spine(graph, nodes):
         seen_engines.add(eng)
         lines.append("          # engine %s (fiber %s: engine = %s) — built Zig pkg."
                      % (eng, fib.name, eng))
-        lines.append("          %s = pkgs.callPackage ./pkgs/%s.nix { };" % (eng, eng))
+        lines.append("          %s = pkgs.callPackage ./pkgs/%s.nix { };"
+                     % (_nix_attr_key(eng), eng))
         lines.append("")
 
     for idx in rv.indexes:
@@ -460,7 +462,8 @@ def emit_nix_spine(graph, nodes):
         lines.append("          # index %s, emit ∋ nix.derivation (0012 §5.3a) — CrabCC index" % idx.name)
         lines.append("          # derivation; runs crabcc at build time over the pinned sources with")
         lines.append("          # normalize = %s." % normalize)
-        lines.append("          %s-crabcc-index = pkgs.stdenv.mkDerivation {" % idx.name)
+        lines.append("          %s = pkgs.stdenv.mkDerivation {"
+                     % _nix_attr_key(idx.name + "-crabcc-index"))
         lines.append('            pname = "%s-crabcc-index";' % idx.name)
         lines.append('            version = "0";')
         lines.append("            srcs = [")
@@ -499,7 +502,7 @@ def emit_nix_spine(graph, nodes):
         lines.append("          # from NOTHING but the surface decl name: a stub that exits non-zero")
         lines.append("          # with the standard deferral message — no real launcher is wired, and")
         lines.append("          # it does not route through any engine/fiber package.")
-        lines.append("          %s = {" % surf.name)
+        lines.append("          %s = {" % _nix_attr_key(surf.name))
         lines.append('            type = "app";')
         lines.append('            program = "${pkgs.writeShellScript "%s-launcher-deferred" \'\''
                      % surf.name)
@@ -1964,6 +1967,31 @@ def _nix_str(s: str) -> str:
     return '"' + (s.replace("\\", "\\\\")
                    .replace('"', '\\"')
                    .replace("${", "\\${")) + '"'
+
+
+def _is_nix_bare_ident(s: str) -> bool:
+    """True iff ``s`` is a Nix *bare* attribute identifier
+    (``[A-Za-z_][A-Za-z0-9_'-]*``) — emittable as an attrpath segment with no
+    quoting and no nesting."""
+    if not s:
+        return False
+    c0 = s[0]
+    if not (c0.isascii() and (c0.isalpha() or c0 == "_")):
+        return False
+    return all(c.isascii() and (c.isalnum() or c in "_'-") for c in s[1:])
+
+
+def _nix_attr_key(name: str) -> str:
+    """Render ``name`` as a SINGLE Nix attribute key (0012; #7 lowering half).
+
+    A bare Nix identifier is emitted verbatim; anything else — most importantly a
+    dotted ref like ``pkgs.umami`` that would otherwise splice into a NESTED
+    attrpath (`pkgs.umami = …` ≡ `pkgs = { umami = …; }`, the #7 worked-example
+    bug) — is emitted as a quoted string key, so it stays exactly one attribute
+    and the emitted Nix is structurally well-formed regardless of the name. The
+    checker (#8/branch-B) is the place a dangling/dotted ref should be rejected;
+    this keeps the lowerer from minting invalid Nix in the meantime."""
+    return name if _is_nix_bare_ident(name) else _nix_str(name)
 
 
 def emit_colmena_hive(graph, nodes):

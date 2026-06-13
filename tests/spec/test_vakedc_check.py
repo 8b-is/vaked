@@ -468,6 +468,72 @@ def _test_import_binding(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 5c-bis. Top-level name collisions (#25)
+# --------------------------------------------------------------------------- #
+# Two top-level decls sharing a name produce one kind-agnostic LPG node id
+# (keep-first), silently dropping the later decl.  The checker flags it with
+# E-DECL-NAME-COLLISION (the conservative fix — no id re-scheme, no golden churn).
+
+_COLLIDE = "E-DECL-NAME-COLLISION"
+
+# Different kinds, same name (the #24 dogfood case that forced the `mem`/`memory`
+# workaround in builtins.vaked).
+_NC_DIFF_KIND = '''schema memory { field topic : String { nonempty } }
+capability memory { grant none recall
+                    order none < recall }
+'''
+
+# Three top-level decls sharing a name: two collisions reported (2nd and 3rd).
+_NC_TRIPLE = '''engine dup { package = nix.derivation }
+schema dup { field x : Int { optional } }
+capability dup { grant none a
+                 order none < a }
+'''
+
+# Distinct names: no collision.
+_NC_CLEAN = '''schema memory { field topic : String { nonempty } }
+capability mem { grant none recall
+                 order none < recall }
+'''
+
+
+def _test_name_collision(lines):
+    cache = _builtins_cache()
+
+    def diags(src, name):
+        return vakedc.check_source(src, name, builtins_cache=cache)
+
+    ok = True
+
+    diff = [d for d in diags(_NC_DIFF_KIND, "nc-diff.vaked") if d.code == _COLLIDE]
+    if len(diff) != 1:
+        ok = False
+        lines.append(f"  FAIL name-collision: `schema memory` + `capability memory` "
+                     f"should yield exactly one {_COLLIDE}, got {[d.code for d in diff]}")
+    elif not diff[0].related:
+        ok = False
+        lines.append("  FAIL name-collision: collision diagnostic should carry a "
+                     "`related` span pointing at the first declaration")
+
+    triple = [d for d in diags(_NC_TRIPLE, "nc-triple.vaked") if d.code == _COLLIDE]
+    if len(triple) != 2:
+        ok = False
+        lines.append(f"  FAIL name-collision: three same-name decls should yield two "
+                     f"{_COLLIDE} (2nd + 3rd), got {len(triple)}")
+
+    clean = [d for d in diags(_NC_CLEAN, "nc-clean.vaked") if d.code == _COLLIDE]
+    if clean:
+        ok = False
+        lines.append(f"  FAIL name-collision: distinct names (`memory`/`mem`) must "
+                     f"not collide, got {len(clean)}")
+
+    if ok:
+        lines.append("  name-collision: same-name top-level decls flagged "
+                     "(E-DECL-NAME-COLLISION); distinct names clean")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # 5d. Workflow step-DAG checks (#27 — 0015)
 # --------------------------------------------------------------------------- #
 # A `workflow` is a typed agent-step DAG: step bodies conform to workflowStep,
@@ -598,7 +664,7 @@ def run():
     ok = True
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
                _test_all_examples, _test_ref_resolution, _test_import_binding,
-               _test_workflow, _test_determinism):
+               _test_name_collision, _test_workflow, _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:

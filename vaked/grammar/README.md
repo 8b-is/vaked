@@ -47,7 +47,7 @@ discarded by the lexer.
 decl = { annotation } kind name [ signature ] block ;
 ```
 
-`kind` is one of the 29 keywords (`runtime`, `engine`, `index`, `mesh`,
+`kind` is one of the 28 keywords (`runtime`, `engine`, `index`, `mesh`,
 `schema`, `capability`, `memory`, …).  `name` is a plain identifier or a quoted string.
 The optional `signature` is a typed parameter list with an optional return
 type.  In v0.3 the signature is still **parsed and stored in the AST**; the

@@ -1195,6 +1195,14 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None,
 
     smap = smaps[filename]
 
+    # Stage 4 (pre-walk) — top-level name collisions (#25).  LPG node ids are
+    # path-derived and kind-agnostic, so two top-level decls sharing a name
+    # collapse to one node (keep-first) and the later one silently vanishes from
+    # the graph.  The checker sees both (it walks `items`, not the deduped
+    # graph), so it is the right place to make the collision an explicit error
+    # before `lower` runs on a lossy graph.
+    _check_name_collisions(items, filename, smap, diags)
+
     # Stage 4b/4c/4d — walk every in-file declaration.  Top-level decls are
     # sibling-scope for top-level workflows (agent-target validation, #27).
     top_meshes = _mesh_node_index(items)
@@ -1357,6 +1365,58 @@ def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
             _emit(diags, "E-REF-UNRESOLVED", file, span, runtime_decl,
                   f"`{ref.dotted}` references `{kind} {parts[1]}` but no such "
                   f"declaration is in scope of runtime `{runtime_decl.name}`")
+
+
+def _check_name_collisions(items, file, smap, diags):
+    """Emit ``E-DECL-NAME-COLLISION`` for top-level decls that share a name (#25).
+
+    Node ids are ``<filename>#<name-chain>`` with no kind (``graph.node_id``) and
+    ``Graph.add_node`` is keep-first, so two top-level decls with the same name —
+    most commonly different kinds, e.g. ``schema memory`` + ``capability memory``
+    — produce one node and the later decl is dropped from the graph with no
+    diagnostic.  We flag every decl after the first that reuses a name, landing on
+    its leading keyword and pointing back at the first via ``related``.
+
+    Top-level only: nested-sibling collisions are a possible follow-up, but the
+    issue (#25) and the live workaround (``builtins.vaked`` naming a capability
+    domain ``mem`` to dodge ``schema memory``) are about top-level decls.
+    """
+    first_seen = {}     # name -> the first P.Decl declaring it
+    for it in items:
+        if not isinstance(it, P.Decl):
+            continue
+        prior = first_seen.get(it.name)
+        if prior is None:
+            first_seen[it.name] = it
+            continue
+        span = _span_of_decl_kw(smap, it) or (it.byteStart, it.byteEnd, it.line, it.col)
+        related = [{
+            "file": file,
+            "decl": f"{prior.kind} {prior.name}",
+            "span": {"byteStart": prior.byteStart, "byteEnd": prior.byteEnd,
+                     "line": prior.line, "col": prior.col},
+            "message": f"first declared here as `{prior.kind} {prior.name}`",
+        }]
+        kindnote = ("a different kind" if it.kind != prior.kind
+                    else "the same kind")
+        _emit(diags, "E-DECL-NAME-COLLISION", file, span, it,
+              f"`{it.kind} {it.name}` collides with `{prior.kind} {prior.name}` "
+              f"({kindnote}, same name): top-level declarations share a "
+              f"kind-agnostic graph id, so the later one is silently dropped — "
+              f"rename one", related=related)
+
+
+def _span_of_decl_kw(smap, decl):
+    """Span of ``decl``'s leading keyword token (the ``<kind>`` ident), so the
+    collision diagnostic lands on the offending declaration rather than its whole
+    body.  Falls back to the decl's recorded span when the token is not found."""
+    if smap is None:
+        return None
+    toks = smap._toks_in(decl.byteStart, decl.byteEnd)
+    for t in toks:
+        if t.kind == "IDENT" and t.value == decl.kind:
+            return _span_of(t)
+    return None
 
 
 def _mesh_node_index(stmts):

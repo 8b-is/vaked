@@ -124,7 +124,7 @@ decl        = { annotation } kind name [ signature ] block ;
 name        = ident | string ;
 signature   = "(" [ param { "," param } ] ")" [ "->" type ] ;
 param       = ident ":" type [ "=" expr ] ;
-kind        = "runtime" | "input"   | "engine"        | "host"
+kind        = "runtime" | "engine"  | "host"
             | "network" | "filesystem" | "mcp"        | "ebpf"
             | "budget"  | "observability" | "runclass" | "workflow"
             | "index"   | "catalog" | "stream"         | "fiber"

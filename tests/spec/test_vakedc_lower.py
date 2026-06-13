@@ -276,6 +276,47 @@ def _find_hash(artifacts, ap, region):
 
 
 # --------------------------------------------------------------------------- #
+# 5. Attrpath-key sanitization (#7 lowering half).
+# --------------------------------------------------------------------------- #
+# A dotted name reaching a Nix attrpath KEY position (e.g. a fiber whose
+# `engine` is the branch-B ref `pkgs.umami`, which the checker does not yet
+# reject — #8) must lower to a single QUOTED attr key, never a nested attrpath
+# (`pkgs.umami =` ≡ `pkgs = { umami = …; }`). Otherwise `lower` mints invalid Nix.
+
+_DOTKEY_SRC = '''runtime "dotkey" {
+  systems = ["x86_64-linux"]
+  stream s { source = guardd.ringbuf  type = Event.X }
+  fiber f {
+    engine = pkgs.umami
+    input  = stream.s
+    output = artifacts.x
+  }
+}
+'''
+
+
+def _test_attrpath_sanitization(lines):
+    items = parse_source(_DOTKEY_SRC, "dotkey.vaked")
+    graph = build_graph(items, "dotkey.vaked")
+    flake = lower_mod.lower(graph, items).files["flake.nix"]
+
+    ok = True
+    if '"pkgs.umami" = pkgs.callPackage' not in flake:
+        ok = False
+        lines.append("  FAIL attrpath: dotted engine name should emit a quoted "
+                     "single attr key (`\"pkgs.umami\" = …`)")
+    # The malformed nested form (bare `pkgs.umami =` in key position) must be gone.
+    if re.search(r'^\s*pkgs\.umami\s*=\s*pkgs\.callPackage', flake, re.M):
+        ok = False
+        lines.append("  FAIL attrpath: bare nested `pkgs.umami =` attrpath key "
+                     "still emitted (the #7 lowering bug)")
+    if ok:
+        lines.append("  PASS attrpath: dotted name → quoted single attr key, "
+                     "no nested attrpath (#7 lowering half)")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
 
@@ -290,6 +331,8 @@ def run():
     ok &= _test_determinism(lines)
     lines.append("manifest integrity:")
     ok &= _test_manifest_integrity(lines)
+    lines.append("attrpath sanitization:")
+    ok &= _test_attrpath_sanitization(lines)
     return bool(ok), lines
 
 

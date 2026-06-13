@@ -30,9 +30,10 @@ from __future__ import annotations
 
 from .lexer import Token, tokenize, VakedLexError
 
-# The 29 declaration kinds (grammar `kind`).
+# The 28 declaration kinds (grammar `kind`).  (`input` removed in #48 — its
+# niche is covered by `index` (build-time corpus) and `stream` (runtime flow).)
 KINDS = (
-    "runtime", "input", "engine", "host",
+    "runtime", "engine", "host",
     "network", "filesystem", "mcp", "ebpf",
     "budget", "observability", "runclass", "workflow",
     "index", "catalog", "stream", "fiber",

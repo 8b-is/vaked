@@ -23,7 +23,6 @@ It compiles to:
 
 ```text
 runtime
-input
 system
 engine
 host
