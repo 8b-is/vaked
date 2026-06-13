@@ -1,0 +1,545 @@
+#!/usr/bin/env bash
+# bin/vaked — agent-optimized Vaked compiler CLI
+#
+# Commands: parse check lower all lint bench audit grammar schema examples env help
+# Exit:     0 = clean · 1 = diagnostic/semantic · 2 = usage/parse/IO error
+# I/O:      JSON → stdout  ·  human text + diagnostics → stderr
+# Audit:    JSONL appended to .vaked/audit.jsonl  (or $VAKED_AUDIT_LOG)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+# ── option state ──────────────────────────────────────────────────────────────
+OPT_JSON=0 OPT_QUIET=0 OPT_NO_COLOR=0
+OPT_OUT="" OPT_BUILTINS="" OPT_RUNS=10
+OPT_AUDIT_LOG="${VAKED_AUDIT_LOG:-}" OPT_VERIFY=0
+
+# ── colors (all vars must be set before _colors_on; default empty = no color) ─
+CR='' CB='' CD='' CG='' CY='' CRE=''
+
+_colors_on() {
+  CR=$'\033[0m' CB=$'\033[1m' CD=$'\033[2m'
+  CG=$'\033[32m' CY=$'\033[33m' CRE=$'\033[31m'
+}
+
+# ── logging helpers ───────────────────────────────────────────────────────────
+die()  { printf >&2 'vaked: error: %s\n' "$*"; exit 2; }
+log()  { [[ $OPT_QUIET == 1 ]] && return 0; printf >&2 "${CD}%s${CR}\n" "$*"; }
+step() { [[ $OPT_QUIET == 1 ]] && return 0; printf >&2 "${CD}=> %s${CR}\n" "$*"; }
+ok()   { [[ $OPT_QUIET == 1 ]] && return 0; printf >&2 "${CG}✓${CR} %s\n" "$*"; }
+fail() { printf >&2 "${CRE}✗${CR} %s\n" "$*"; }
+warn() { printf >&2 "${CY}warn:${CR} %s\n" "$*"; }
+
+# ── nanosecond clock (Linux date +%s%N; Python fallback for macOS dev) ────────
+if date +%s%N 2>/dev/null | grep -qE '^[0-9]{10,}$'; then
+  _ns() { date +%s%N; }
+else
+  _ns() { python3 -c 'import time; print(int(time.perf_counter()*1e9))'; }
+fi
+
+# ── misc utilities ────────────────────────────────────────────────────────────
+_git_rev()  { git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown; }
+_utc_ts()   { date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ; }
+_file_arg() { local f="${ARGS[0]:-}"; [[ -z "$f" ]] && die "$1: file required  (vaked $1 <file.vaked>)"; printf '%s' "$f"; }
+
+_audit_append() {
+  local rec="$1" path="${OPT_AUDIT_LOG:-$REPO_ROOT/.vaked/audit.jsonl}"
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' "$rec" >> "$path"
+}
+
+# ── pipeline stage runner ─────────────────────────────────────────────────────
+# Sets globals STAGE_MS (wall-clock ms) and STAGE_RC (exit code).
+STAGE_MS=0 STAGE_RC=0
+
+_run() {
+  local stage="$1" file="$2"; shift 2
+  local t0 t1
+  STAGE_RC=0
+  t0=$(_ns)
+  python3 -m vakedc "$stage" "$file" "$@" || STAGE_RC=$?
+  t1=$(_ns)
+  STAGE_MS=$(( (t1 - t0) / 1000000 ))
+}
+
+# Like _run but swallows stdout (used for audit where we want clean JSON output)
+_run_quiet() {
+  local stage="$1" file="$2"; shift 2
+  local t0 t1
+  STAGE_RC=0
+  t0=$(_ns)
+  python3 -m vakedc "$stage" "$file" "$@" >/dev/null || STAGE_RC=$?
+  t1=$(_ns)
+  STAGE_MS=$(( (t1 - t0) / 1000000 ))
+}
+
+# ── usage ─────────────────────────────────────────────────────────────────────
+_usage() {
+  cat <<'EOF'
+vaked — Vaked compiler CLI  (agent-optimized)
+
+USAGE
+  vaked [FLAGS] <command> [args]
+
+COMMANDS
+  parse   <file>        Parse .vaked → LPG  (.vaked/graph.json + .db)
+  check   <file>        Type-check (Goal-2 stages 3–4)
+  lower   <file>        Full pipeline → artifacts  (refuses on any diagnostic)
+  all     <file>        parse → check → lower with per-stage timing
+  lint    <file>        check --json; exits 0/1/2  (agent-safe alias)
+  bench   <file>        Benchmark N runs — JSON timing stats to stdout
+  audit   <file>        Full pipeline + JSONL record to stdout and audit log
+  grammar               Print grammar path; --ebnf dumps full EBNF text
+  schema  [kind]        Dump builtins catalog; filter by kind keyword
+  examples              List .vaked examples; --run <name> runs one via 'all'
+  env                   Print toolchain paths, versions, repo rev
+  help                  Show this message
+
+FLAGS
+  --json          Machine-readable JSON to stdout
+  -q, --quiet     Suppress step headers; errors only
+  --no-color      Disable ANSI color  (also: NO_COLOR=1)
+  --out DIR       Lowering output dir  (default: .vaked/lower)
+  --builtins PATH Override builtins catalog
+  --runs N        bench: iterations  (default: 10)
+  --audit-log F   Audit log path  (default: .vaked/audit.jsonl; env: VAKED_AUDIT_LOG)
+  --verify        After lower: verify provenance source hash
+
+EXIT CODES
+  0  clean
+  1  diagnostic / semantic error
+  2  usage / parse / IO error
+
+AGENT NOTES
+  JSON output → stdout · human text + diagnostics → stderr
+  bench and audit always emit JSON regardless of --json
+  Latency is implicit in all/bench/audit — per-stage ms included in every result
+
+EXAMPLES
+  vaked all examples/agentfield-swe.vaked
+  vaked check examples/types/conformant.vaked --json
+  vaked bench examples/agentfield-swe.vaked --runs 20
+  vaked audit examples/agentfield-swe.vaked --out /tmp/out
+  vaked grammar --ebnf
+  vaked schema fiber
+  vaked examples --list
+  vaked examples --run agentfield
+EOF
+}
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+CMD="" ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --json)       OPT_JSON=1 ;;
+    -q|--quiet)   OPT_QUIET=1 ;;
+    --no-color)   OPT_NO_COLOR=1 ;;
+    --out)        shift; OPT_OUT="${1:-}";        [[ -z "$OPT_OUT" ]]      && die "--out requires a directory" ;;
+    --builtins)   shift; OPT_BUILTINS="${1:-}";   [[ -z "$OPT_BUILTINS" ]] && die "--builtins requires a path" ;;
+    --runs)       shift; OPT_RUNS="${1:-10}" ;;
+    --audit-log)  shift; OPT_AUDIT_LOG="${1:-}";  [[ -z "$OPT_AUDIT_LOG" ]] && die "--audit-log requires a path" ;;
+    --verify)     OPT_VERIFY=1 ;;
+    --ebnf|--list) ARGS+=("$1") ;;
+    --run)        shift; ARGS+=(--run "${1:-}") ;;
+    -h|--help)    CMD=help ;;
+    -*)           die "Unknown flag: $1  (vaked help)" ;;
+    *)            [[ -z "$CMD" ]] && CMD="$1" || ARGS+=("$1") ;;
+  esac
+  shift
+done
+
+[[ -z "$CMD" ]] && CMD=help
+
+# Enable color when stderr is a tty and color not suppressed
+if [[ "${NO_COLOR:-0}" != "1" && "$OPT_NO_COLOR" == "0" ]] && [[ -t 2 ]]; then _colors_on; fi
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+cmd_parse() {
+  local file; file=$(_file_arg parse)
+  local -a eb=(); [[ -n "$OPT_BUILTINS" ]] && eb=(--builtins "$OPT_BUILTINS")
+  _run parse "$file" "${eb[@]}"
+  local ms=$STAGE_MS rc=$STAGE_RC
+  if [[ $OPT_JSON == 1 ]]; then
+    printf '{"stage":"parse","file":"%s","ms":%d,"exit":%d}\n' "$file" "$ms" "$rc"
+  elif [[ $rc -eq 0 ]]; then ok "parse ${ms}ms"
+  else fail "parse ${ms}ms (exit $rc)"; fi
+  return $rc
+}
+
+cmd_check() {
+  local file; file=$(_file_arg check)
+  local -a eb=(); [[ -n "$OPT_BUILTINS" ]] && eb=(--builtins "$OPT_BUILTINS")
+  [[ $OPT_JSON == 1 ]] && eb+=(--json)
+  _run check "$file" "${eb[@]}"
+  local ms=$STAGE_MS rc=$STAGE_RC
+  # in JSON mode vakedc itself writes structured JSON; only add timing in human mode
+  if [[ $OPT_JSON == 0 ]]; then
+    [[ $rc -eq 0 ]] && ok "check ${ms}ms" || fail "check ${ms}ms (exit $rc)"
+  fi
+  return $rc
+}
+
+cmd_lower() {
+  local file; file=$(_file_arg lower)
+  local -a el=()
+  [[ -n "$OPT_BUILTINS" ]] && el+=(--builtins "$OPT_BUILTINS")
+  [[ -n "$OPT_OUT" ]]      && el+=(--out "$OPT_OUT")
+  _run lower "$file" "${el[@]}"
+  local ms=$STAGE_MS rc=$STAGE_RC
+  if [[ $OPT_JSON == 1 ]]; then
+    printf '{"stage":"lower","file":"%s","ms":%d,"exit":%d}\n' "$file" "$ms" "$rc"
+  elif [[ $rc -eq 0 ]]; then ok "lower ${ms}ms"
+  else fail "lower ${ms}ms (exit $rc)"; fi
+  if [[ $rc -eq 0 && $OPT_VERIFY == 1 ]]; then _verify_provenance "$file"; fi
+  return $rc
+}
+
+# ── all: parse → check → lower with per-stage timing ─────────────────────────
+
+cmd_all() {
+  local file; file=$(_file_arg all)
+  local -a eb=() el=()
+  [[ -n "$OPT_BUILTINS" ]] && eb=(--builtins "$OPT_BUILTINS")
+  el=("${eb[@]}"); [[ -n "$OPT_OUT" ]] && el+=(--out "$OPT_OUT")
+
+  [[ $OPT_QUIET == 0 ]] && printf >&2 "${CB}[+] vaked → %s${CR}\n" "$file"
+
+  local t_start; t_start=$(_ns)
+  local parse_ms=0 check_ms=0 lower_ms=0 rc=0
+
+  step "[1/3] parse"
+  _run parse "$file" "${eb[@]}"; parse_ms=$STAGE_MS
+  if [[ $STAGE_RC -ne 0 ]]; then
+    rc=$STAGE_RC; fail "parse ${parse_ms}ms (exit $rc)"
+    _all_emit "$file" $parse_ms $check_ms $lower_ms $rc; return $rc
+  fi
+  ok "parse ${parse_ms}ms"
+
+  step "[2/3] check"
+  _run check "$file" "${eb[@]}"; check_ms=$STAGE_MS
+  if [[ $STAGE_RC -ne 0 ]]; then
+    rc=$STAGE_RC; fail "check ${check_ms}ms (exit $rc)"
+    _all_emit "$file" $parse_ms $check_ms $lower_ms $rc; return $rc
+  fi
+  ok "check ${check_ms}ms"
+
+  step "[3/3] lower"
+  _run lower "$file" "${el[@]}"; lower_ms=$STAGE_MS
+  if [[ $STAGE_RC -ne 0 ]]; then
+    rc=$STAGE_RC; fail "lower ${lower_ms}ms (exit $rc)"
+    _all_emit "$file" $parse_ms $check_ms $lower_ms $rc; return $rc
+  fi
+  ok "lower ${lower_ms}ms"
+
+  local elapsed_ms=$(( ($(_ns) - t_start) / 1000000 ))
+  [[ $OPT_QUIET == 0 ]] && printf >&2 "${CB}${CG}[+] DONE${CR} ${CD}%dms${CR}\n" "$elapsed_ms"
+
+  _all_emit "$file" $parse_ms $check_ms $lower_ms 0
+  _all_maybe_audit all "$file" $parse_ms $check_ms $lower_ms 0
+  if [[ $OPT_VERIFY == 1 ]]; then _verify_provenance "$file"; fi
+}
+
+_all_emit() {
+  local file="$1" p="$2" c="$3" l="$4" rc="$5"
+  [[ $OPT_JSON == 0 ]] && return 0
+  printf '{"cmd":"all","file":"%s","stages":{"parse":{"ms":%d},"check":{"ms":%d},"lower":{"ms":%d}},"total_ms":%d,"exit":%d}\n' \
+    "$file" "$p" "$c" "$l" "$(( p + c + l ))" "$rc"
+}
+
+_all_maybe_audit() {
+  [[ -z "$OPT_AUDIT_LOG" ]] && return 0
+  _all_audit_record "$@"
+}
+
+_all_audit_record() {
+  local cmd="$1" file="$2" p="$3" c="$4" l="$5" rc="$6"
+  local out="${OPT_OUT:-.vaked/lower}"
+  local rec
+  rec=$(printf \
+    '{"ts":"%s","cmd":"%s","file":"%s","rev":"%s","stages":{"parse":{"ms":%d},"check":{"ms":%d},"lower":{"ms":%d}},"total_ms":%d,"exit":%d,"out":"%s"}' \
+    "$(_utc_ts)" "$cmd" "$file" "$(_git_rev)" "$p" "$c" "$l" "$(( p + c + l ))" "$rc" "$out")
+  _audit_append "$rec"
+}
+
+# ── lint: check --json, always structured, clean exit codes ───────────────────
+
+cmd_lint() {
+  local file; file=$(_file_arg lint)
+  local -a eb=(--json); [[ -n "$OPT_BUILTINS" ]] && eb+=(--builtins "$OPT_BUILTINS")
+  _run check "$file" "${eb[@]}"
+  local ms=$STAGE_MS rc=$STAGE_RC
+  [[ $OPT_QUIET == 0 ]] && log "lint ${ms}ms  exit=$rc" >&2
+  return $rc
+}
+
+# ── bench: N-run benchmark with per-stage stats ───────────────────────────────
+
+cmd_bench() {
+  local file; file=$(_file_arg bench)
+  [[ ! -f "$file" ]] && die "bench: file not found: $file"
+  local n="$OPT_RUNS"
+  [[ $OPT_QUIET == 0 ]] && log "bench $file × $n runs …"
+
+  python3 - "$file" "$n" "${OPT_BUILTINS:-}" "$REPO_ROOT" <<'PYEOF'
+import sys, time, subprocess, json, statistics, os
+
+file, runs, builtins, repo_root = sys.argv[1], int(sys.argv[2]), sys.argv[3] or None, sys.argv[4]
+env = {**os.environ,
+       "PYTHONPATH": repo_root + ((":" + os.environ["PYTHONPATH"]) if "PYTHONPATH" in os.environ else "")}
+
+stages  = ["parse", "check", "lower"]
+times   = {s: [] for s in stages}
+totals  = []
+cold_ms = None
+
+for i in range(runs):
+    run_ms = 0.0
+    for s in stages:
+        cmd = [sys.executable, "-m", "vakedc", s, file]
+        if builtins:
+            cmd += ["--builtins", builtins]
+        t0 = time.perf_counter()
+        r  = subprocess.run(cmd, capture_output=True, env=env)
+        ms = (time.perf_counter() - t0) * 1000
+        times[s].append(ms)
+        run_ms += ms
+        if r.returncode not in (0, 1):
+            sys.stderr.write(f"bench: {s} failed on run {i+1}  exit={r.returncode}\n")
+            sys.exit(1)
+    totals.append(run_ms)
+    if i == 0:
+        cold_ms = run_ms
+
+def stats(xs):
+    s = sorted(xs)
+    n = len(s)
+    def p(pct): return s[max(0, min(int(n * pct / 100), n - 1))]
+    return {
+        "min_ms":    round(s[0], 2),
+        "median_ms": round(statistics.median(s), 2),
+        "p95_ms":    round(p(95), 2),
+        "p99_ms":    round(p(99), 2),
+        "max_ms":    round(s[-1], 2),
+    }
+
+print(json.dumps({
+    "file":     file,
+    "runs":     runs,
+    "cold_ms":  round(cold_ms, 2),
+    "stages":   {s: stats(times[s]) for s in stages},
+    "total":    stats(totals),
+}, indent=2))
+PYEOF
+}
+
+# ── audit: full pipeline + structured JSONL record ────────────────────────────
+
+cmd_audit() {
+  local file; file=$(_file_arg audit)
+  local -a eb=() el=()
+  [[ -n "$OPT_BUILTINS" ]] && eb=(--builtins "$OPT_BUILTINS")
+  el=("${eb[@]}"); [[ -n "$OPT_OUT" ]] && el+=(--out "$OPT_OUT")
+
+  local parse_ms=0 check_ms=0 lower_ms=0 rc=0
+
+  _run_quiet parse "$file" "${eb[@]}"; parse_ms=$STAGE_MS
+  if [[ $STAGE_RC -ne 0 ]]; then
+    rc=$STAGE_RC
+  else
+    _run_quiet check "$file" "${eb[@]}"; check_ms=$STAGE_MS
+    if [[ $STAGE_RC -ne 0 ]]; then
+      rc=$STAGE_RC
+    else
+      _run_quiet lower "$file" "${el[@]}"; lower_ms=$STAGE_MS
+      [[ $STAGE_RC -ne 0 ]] && rc=$STAGE_RC
+    fi
+  fi
+
+  local out="${OPT_OUT:-.vaked/lower}"
+  local rec
+  rec=$(printf \
+    '{"ts":"%s","cmd":"audit","file":"%s","rev":"%s","stages":{"parse":{"ms":%d},"check":{"ms":%d},"lower":{"ms":%d}},"total_ms":%d,"exit":%d,"out":"%s"}' \
+    "$(_utc_ts)" "$file" "$(_git_rev)" "$parse_ms" "$check_ms" "$lower_ms" \
+    "$(( parse_ms + check_ms + lower_ms ))" "$rc" "$out")
+
+  printf '%s\n' "$rec"
+  _audit_append "$rec"
+  log "audit record → ${OPT_AUDIT_LOG:-$REPO_ROOT/.vaked/audit.jsonl}"
+
+  if [[ $rc -eq 0 && $OPT_VERIFY == 1 ]]; then _verify_provenance "$file"; fi
+  return $rc
+}
+
+# ── correctness hook: verify provenance source hash ──────────────────────────
+
+_verify_provenance() {
+  local file="$1" out="${OPT_OUT:-.vaked/lower}"
+  local prov="$out/provenance.json"
+  if [[ ! -f "$prov" ]]; then
+    warn "provenance.json not found at $prov"
+    return 0
+  fi
+  local expected actual
+  expected=$(python3 -c "
+import json, sys
+d = json.load(open('$prov'))
+print(d.get('source_hash', d.get('hash', '')))
+" 2>/dev/null || true)
+  [[ -z "$expected" ]] && { log "verify: no source_hash in provenance.json (skip)"; return 0; }
+  actual=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1 \
+           || shasum -a256 "$file" 2>/dev/null | cut -d' ' -f1 || echo "")
+  if [[ "$expected" == "$actual" ]]; then
+    ok "verify: provenance hash OK"
+  else
+    fail "verify: hash mismatch — provenance may be stale"
+    printf >&2 '  expected: %s\n  actual:   %s\n' "$expected" "$actual"
+  fi
+}
+
+# ── grammar: print path or dump EBNF ─────────────────────────────────────────
+
+cmd_grammar() {
+  local ebnf=0
+  if [[ ${#ARGS[@]} -gt 0 ]]; then
+    for a in "${ARGS[@]}"; do [[ "$a" == "--ebnf" ]] && ebnf=1; done
+  fi
+  local f="$REPO_ROOT/vaked/grammar/vaked-v0-plus.ebnf"
+  if [[ $ebnf == 1 ]]; then cat "$f"
+  elif [[ $OPT_JSON == 1 ]]; then printf '{"grammar":"%s"}\n' "$f"
+  else echo "$f"; fi
+}
+
+# ── schema: dump builtins catalog; filter by kind keyword ────────────────────
+
+cmd_schema() {
+  local kind="${ARGS[0]:-}"
+  local cat_file="${OPT_BUILTINS:-$REPO_ROOT/vaked/schema/builtins.vaked}"
+
+  if [[ -z "$kind" ]]; then
+    [[ $OPT_JSON == 1 ]] && printf '{"catalog":"%s"}\n' "$cat_file" || cat "$cat_file"
+    return
+  fi
+
+  # Extract blocks whose opening line matches the kind keyword
+  python3 - "$cat_file" "$kind" <<'PYEOF'
+import sys, re
+
+path, kind = sys.argv[1], sys.argv[2]
+src  = open(path).read()
+hits = []
+depth = 0
+capturing = False
+buf = []
+
+for line in src.splitlines():
+    stripped = line.strip()
+    if not capturing:
+        if re.match(rf'^(schema\s+{re.escape(kind)}|{re.escape(kind)}\s+\w)\b', stripped):
+            capturing = True
+            buf = [line]
+            depth = line.count('{') - line.count('}')
+    else:
+        buf.append(line)
+        depth += line.count('{') - line.count('}')
+        if depth <= 0:
+            hits.append('\n'.join(buf))
+            capturing = False
+            buf = []
+
+if hits:
+    print('\n\n'.join(hits))
+else:
+    # fallback: grep lines containing the keyword
+    for line in src.splitlines():
+        if kind in line:
+            print(line)
+PYEOF
+}
+
+# ── examples: list or run ─────────────────────────────────────────────────────
+
+cmd_examples() {
+  local run_name="" list=0
+  if [[ ${#ARGS[@]} -gt 0 ]]; then
+    local i=0
+    while [[ $i -lt ${#ARGS[@]} ]]; do
+      case "${ARGS[$i]}" in
+        --list) list=1 ;;
+        --run)
+          (( i++ )) || true
+          run_name="${ARGS[$i]:-}"
+          ;;
+      esac
+      (( i++ )) || true
+    done
+  fi
+
+  local ex="$REPO_ROOT/vaked/examples"
+
+  if [[ -n "$run_name" ]]; then
+    local f
+    f=$(find "$ex" -name "*.vaked" | grep -i "$run_name" | head -1 || true)
+    [[ -z "$f" ]] && die "examples: no .vaked file matching '$run_name'"
+    ARGS=("$f"); cmd_all
+    return
+  fi
+
+  if [[ $OPT_JSON == 1 ]]; then
+    python3 - "$ex" "$REPO_ROOT" <<'PYEOF'
+import sys, os, json
+ex, root = sys.argv[1], sys.argv[2]
+files = []
+for dirpath, _, fns in os.walk(ex):
+    for fn in sorted(fns):
+        if fn.endswith('.vaked'):
+            files.append(os.path.relpath(os.path.join(dirpath, fn), root))
+print(json.dumps(sorted(files), indent=2))
+PYEOF
+  else
+    find "$ex" -name "*.vaked" | sed "s|$REPO_ROOT/||" | sort
+  fi
+}
+
+# ── env: toolchain paths and versions ────────────────────────────────────────
+
+cmd_env() {
+  local py rev
+  py=$(python3 --version 2>&1)
+  rev=$(_git_rev)
+  if [[ $OPT_JSON == 1 ]]; then
+    printf '{\n  "repo_root":  "%s",\n  "python":     "%s",\n  "rev":        "%s",\n  "grammar":    "%s",\n  "builtins":   "%s",\n  "audit_log":  "%s",\n  "pythonpath": "%s"\n}\n' \
+      "$REPO_ROOT" "$py" "$rev" \
+      "$REPO_ROOT/vaked/grammar/vaked-v0-plus.ebnf" \
+      "${OPT_BUILTINS:-$REPO_ROOT/vaked/schema/builtins.vaked}" \
+      "${OPT_AUDIT_LOG:-$REPO_ROOT/.vaked/audit.jsonl}" \
+      "$REPO_ROOT"
+  else
+    printf 'repo_root   %s\npython      %s\nrev         %s\ngrammar     %s\nbuiltins    %s\naudit_log   %s\n' \
+      "$REPO_ROOT" "$py" "$rev" \
+      "$REPO_ROOT/vaked/grammar/vaked-v0-plus.ebnf" \
+      "${OPT_BUILTINS:-$REPO_ROOT/vaked/schema/builtins.vaked}" \
+      "${OPT_AUDIT_LOG:-$REPO_ROOT/.vaked/audit.jsonl}"
+  fi
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+case "$CMD" in
+  parse)    cmd_parse ;;
+  check)    cmd_check ;;
+  lower)    cmd_lower ;;
+  all)      cmd_all ;;
+  lint)     cmd_lint ;;
+  bench)    cmd_bench ;;
+  audit)    cmd_audit ;;
+  grammar)  cmd_grammar ;;
+  schema)   cmd_schema ;;
+  examples) cmd_examples ;;
+  env)      cmd_env ;;
+  help|-h|--help) _usage ;;
+  *) die "Unknown command: $CMD  (vaked help)" ;;
+esac
