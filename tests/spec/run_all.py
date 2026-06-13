@@ -29,6 +29,7 @@ import test_agentfield_load as t_af_load  # noqa: E402
 import test_eventd as t_eventd  # noqa: E402
 import test_otp_lowering as t_otp  # noqa: E402
 import test_agentfield_lowering as t_af_lower  # noqa: E402
+import test_agent_guardd as t_guardd  # noqa: E402
 
 MODULES = [
     ("grammar_selfcontained", t_grammar),
@@ -42,6 +43,7 @@ MODULES = [
     ("eventd", t_eventd),
     ("otp_lowering", t_otp),
     ("agentfield_lowering", t_af_lower),
+    ("agent_guardd", t_guardd),
 ]
 
 

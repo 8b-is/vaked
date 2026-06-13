@@ -1,0 +1,53 @@
+# agent-egress — the network-membrane vertical slice (deny-by-default egress).
+#
+# This is the FULL slice my critique asked for: one .vaked declaring a network
+# membrane that lowers to a policy artifact, is enforced by agent-guardd, and is
+# testified to over the eventd hash chain — closing Vaked declares → eBPF
+# testifies → operator surfaces for the `network` membrane.
+#
+#   network agentEgress       → gen/ebpf.policy  (compiled allow/deny egress set)
+#   default = "deny"          → deny-by-default posture (0012 §7; agent-guardd)
+#   allow = [ egress(h, p) ]  → per-destination allow rules (host:port)
+#   stream ebpfEvents         → agent-guardd's ringbuf testimony channel
+#
+# `network` is a top-level kind (grammar §kind) AND a builtin capability domain;
+# here we use the kind form to declare a concrete egress membrane. The mesh ties
+# the membrane to a named principal whose grant lattice (network.loopback) the
+# allow-set refines into host:port rules — exactly the "per-principal allow/deny
+# sets for network egress … compiled from the capability grant-sets" of 0012 §7.
+
+runtime "agent-egress" {
+  systems = ["x86_64-linux"]
+
+  # eBPF testimony channel: agent-guardd publishes one event per egress decision
+  # (allow/deny) onto this stream; the events land on the eventd hash chain.
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 24h
+  }
+
+  # The guarded principal and the grant it holds in the builtin `network` domain
+  # (none < loopback < lan < egress). `network.loopback` = "egress to loopback
+  # only" — the allow-set below is its host:port refinement.
+  mesh agentfield {
+    node worker {
+      role = "worker"
+      capabilities = [network.loopback]
+    }
+  }
+
+  # The egress membrane for `worker`: deny-by-default, with an explicit loopback
+  # allow-set. agent-guardd compiles this to gen/ebpf.policy, loads it as a real
+  # cgroup/skb BPF program, and enforces it (attaching in-kernel on a capable
+  # host; a userspace reference datapath with the identical decision elsewhere).
+  network agentEgress {
+    principal = "worker"
+    default   = "deny"
+    allow = [
+      egress("127.0.0.1", 9),
+      egress("127.0.0.1", 7)
+    ]
+    observe = stream.ebpfEvents
+  }
+}
