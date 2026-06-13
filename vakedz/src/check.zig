@@ -830,7 +830,7 @@ fn checkMatches(a: std.mem.Allocator, vprop: VProp, rx: []const u8, fname: []con
             var body = rx;
             if (body.len >= 2 and body[0] == '/' and body[body.len - 1] == '/') body = body[1 .. body.len - 1];
             const script = try std.fmt.allocPrint(a, "import re,sys; sys.exit(0 if re.fullmatch(r\"{s}\", sys.argv[1]) else 1)", .{body});
-            var child = std.process.Child.init(&.{ "python3", "-c", script, lv.value }, a);
+            var child = std.process.Child{ .argv = &.{ "python3", "-c", script, lv.value }, .allocator = a };
             child.stdout_behavior = .Ignore;
             child.stderr_behavior = .Ignore;
             const term = child.spawnAndWait() catch return;
@@ -1462,7 +1462,7 @@ fn walkAccessorRefs(a: std.mem.Allocator, decl: *const p.Decl, out: *std.array_l
     }
 }
 
-fn scanApp(a: std.mem.Allocator, app: p.App, out: *std.array_list.Managed(p.Ref)) !void {
+fn scanApp(a: std.mem.Allocator, app: p.App, out: *std.array_list.Managed(p.Ref)) std.mem.Allocator.Error!void {
     if (app.args == null and app.record == null and app.ref.parts.len == 3) try out.append(app.ref);
     if (app.record) |rec| for (rec) |ent| {
         switch (ent) {
@@ -1473,7 +1473,7 @@ fn scanApp(a: std.mem.Allocator, app: p.App, out: *std.array_list.Managed(p.Ref)
     if (app.args) |args| for (args) |arg| try scanValue(a, arg, out);
 }
 
-fn scanValue(a: std.mem.Allocator, e: p.Expr, out: *std.array_list.Managed(p.Ref)) !void {
+fn scanValue(a: std.mem.Allocator, e: p.Expr, out: *std.array_list.Managed(p.Ref)) std.mem.Allocator.Error!void {
     switch (e) {
         .app => |app| try scanApp(a, app, out),
         .list => |items| for (items) |item| try scanValue(a, item, out),
