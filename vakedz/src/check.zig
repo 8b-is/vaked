@@ -195,11 +195,13 @@ fn splitUnion(a: std.mem.Allocator, text: []const u8) ![][]const u8 {
 // Schema / Capability registry
 // --------------------------------------------------------------------------- //
 
+const Presence = enum { required, optional };
+
 const FieldSpec = struct {
     name: []const u8,
     type_text: []const u8,
     refinements: []const p.Refinement,
-    presence: enum { required, optional },
+    presence: Presence,
     has_default: bool,
 };
 
@@ -220,7 +222,7 @@ const CapabilitySpec = struct {
     decl_span: Span,
 };
 
-fn presenceOf(refs: []const p.Refinement) struct { presence: enum { required, optional }, has_default: bool } {
+fn presenceOf(refs: []const p.Refinement) struct { presence: Presence, has_default: bool } {
     var has_default = false;
     var has_optional = false;
     for (refs) |r| {
