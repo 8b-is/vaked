@@ -230,6 +230,11 @@ def _test_all_examples(lines):
                                     base_dir=os.path.dirname(f))
         if os.path.basename(f) == "rejected.vaked":
             continue   # intentionally invalid (covered by group 4)
+        # error-unknown-namespace.vaked is the RFC 0017 negative example (intentionally
+        # invalid — the branch-B error pair, mirroring rejected.vaked for the type
+        # checker). It is verified separately (group 5c-ns below) and excluded here.
+        if os.path.basename(f) == "error-unknown-namespace.vaked":
+            continue
         if diags:
             ok = False
             lines.append(f"  FAIL examples: {rel} expected clean, "
@@ -238,8 +243,9 @@ def _test_all_examples(lines):
                 lines.append(f"      {d.code} @ {d.line}:{d.col} :: {d.message}")
         else:
             n_clean += 1
-    lines.append(f"  examples: {n_clean}/{len(files) - 1} non-rejected examples "
-                 f"check clean (+ rejected.vaked covered separately)")
+    lines.append(f"  examples: {n_clean}/{len(files) - 2} non-error examples "
+                 f"check clean (+ rejected.vaked + error-unknown-namespace.vaked "
+                 f"covered separately)")
     return ok
 
 
@@ -635,6 +641,140 @@ def _test_workflow(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 5e. Namespace checker (RFC 0017, branch B, v0.4)
+# --------------------------------------------------------------------------- #
+# Validates `_check_ref_resolution` branch-B:
+#   * open namespace (pkgs): head approved, any member accepted.
+#   * known closed namespace (agentGuardd): head approved, member must be declared.
+#   * unknown head: E-REF-UNRESOLVED (decision D2 — hard error).
+#   * artifacts.* / graph.*: deferred (decision D1), always silently pass.
+#   * error-unknown-namespace.vaked: exactly 2 E-REF-UNRESOLVED (one per error case).
+
+_NS_OPEN = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  # pkgs is open in the global catalog — any member accepted.
+  stream s { source = pkgs.anyMemberAtAll  type = T }
+}
+'''
+
+_NS_CLOSED_OK = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  namespace agentGuardd { member ringbuf }
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+}
+'''
+
+_NS_CLOSED_BAD = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  namespace agentGuardd { member ringbuf }
+  stream s { source = agentGuardd.ringbufff  type = Event.Ebpf }
+}
+'''
+
+_NS_UNKNOWN_HEAD = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  stream s { source = totallymadeup.thing  type = T }
+}
+'''
+
+_NS_ARTIFACTS_PASS = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  engine e { package = nix.derivation }
+  stream s { source = agentGuardd.ringbuf  type = T }
+  fiber f {
+    engine = e
+    input  = stream.s
+    output = artifacts.plan
+  }
+}
+'''
+
+_NS_GLOBAL_FALLBACK = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  # No local `namespace agentGuardd` block — falls back to global catalog.
+  stream s { source = agentGuardd.ringbuf  type = Event.Ebpf }
+}
+'''
+
+_NS_ERROR_FILE = os.path.join(REPO, "vaked", "examples", "namespace",
+                              "error-unknown-namespace.vaked")
+
+
+def _test_namespace_checker(lines):
+    cache = _builtins_cache()
+    ok = True
+
+    def codes(src, name):
+        return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
+
+    # open namespace: pkgs.anything is always accepted.
+    got = [c for c in codes(_NS_OPEN, "ns-open.vaked") if c == _REF_UNRESOLVED]
+    if got:
+        ok = False
+        lines.append(f"  FAIL ns: open namespace (pkgs) should accept any member, "
+                     f"got {got}")
+
+    # closed namespace, correct member: no error.
+    got = [c for c in codes(_NS_CLOSED_OK, "ns-closed-ok.vaked") if c == _REF_UNRESOLVED]
+    if got:
+        ok = False
+        lines.append(f"  FAIL ns: declared member of closed namespace should resolve, "
+                     f"got {got}")
+
+    # closed namespace, wrong member: one E-REF-UNRESOLVED.
+    got = [c for c in codes(_NS_CLOSED_BAD, "ns-closed-bad.vaked") if c == _REF_UNRESOLVED]
+    if got != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ns: unknown member of closed namespace should yield one "
+                     f"{_REF_UNRESOLVED}, got {got}")
+
+    # unknown head: one E-REF-UNRESOLVED.
+    got = [c for c in codes(_NS_UNKNOWN_HEAD, "ns-unknown-head.vaked") if c == _REF_UNRESOLVED]
+    if got != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ns: unknown namespace head should yield one "
+                     f"{_REF_UNRESOLVED}, got {got}")
+
+    # artifacts.* — deferred (D1), must pass silently.
+    got = [c for c in codes(_NS_ARTIFACTS_PASS, "ns-artifacts.vaked") if c == _REF_UNRESOLVED]
+    if got:
+        ok = False
+        lines.append(f"  FAIL ns: artifacts.* (D1-deferred) should pass silently, "
+                     f"got {got}")
+
+    # global catalog fallback: daemon channel without explicit runtime declaration.
+    got = [c for c in codes(_NS_GLOBAL_FALLBACK, "ns-global-fallback.vaked") if c == _REF_UNRESOLVED]
+    if got:
+        ok = False
+        lines.append(f"  FAIL ns: global catalog fallback for daemon channel should "
+                     f"pass, got {got}")
+
+    # error-unknown-namespace.vaked: exactly 2 E-REF-UNRESOLVED (the two error cases).
+    if os.path.exists(_NS_ERROR_FILE):
+        err_diags = vakedc.check_source(
+            open(_NS_ERROR_FILE, encoding="utf-8").read(),
+            os.path.relpath(_NS_ERROR_FILE, REPO),
+            builtins_cache=cache,
+            base_dir=os.path.dirname(_NS_ERROR_FILE),
+        )
+        err_codes = [d.code for d in err_diags if d.code == _REF_UNRESOLVED]
+        if len(err_codes) != 2:
+            ok = False
+            lines.append(f"  FAIL ns: error-unknown-namespace.vaked should yield exactly "
+                         f"2 {_REF_UNRESOLVED}, got {err_codes}")
+    else:
+        ok = False
+        lines.append(f"  FAIL ns: error-unknown-namespace.vaked not found at "
+                     f"{_NS_ERROR_FILE}")
+
+    if ok:
+        lines.append("  namespace checker (RFC 0017): open/closed/unknown-head/D1-deferred "
+                     "all correct; error-unknown-namespace.vaked yields exactly 2 "
+                     "E-REF-UNRESOLVED")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # 6. Determinism
 # --------------------------------------------------------------------------- #
 
@@ -664,7 +804,8 @@ def run():
     ok = True
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
                _test_all_examples, _test_ref_resolution, _test_import_binding,
-               _test_name_collision, _test_workflow, _test_determinism):
+               _test_name_collision, _test_workflow, _test_namespace_checker,
+               _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:
