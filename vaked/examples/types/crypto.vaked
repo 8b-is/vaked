@@ -1,0 +1,93 @@
+# v0.3 example — `crypto` kind + `capability crypto` domain
+#
+# Demonstrates: a crypto kind declaration binding a named algorithm suite to a
+# votive-seal signing authority; a network membrane referencing it; a mesh
+# delegating the crypto.seal grant with attenuation from the spine.
+#
+# Grammar:  capability decl, grant_decl, order_decl (v0.3, vaked-v0-plus.ebnf)
+#           crypto kind (proposed — see docs/language/0018-crypto-seal-capability-domain.md)
+#           network kind, mesh, node_decl, edge (v0.2+)
+# Rules:    0011 §4 (attenuation, POLA); E-CRYPTO-SUITE-UNKNOWN,
+#           E-CRYPTO-SEAL-UNKNOWN, E-CRYPTO-NONE-CROSS-HOST (0018)
+# RFC:      protocol/rfcs/0007-post-quantum-litany-sealed-image.md §3, §4
+
+# ---- Capability domain -------------------------------------------------------
+#
+# The built-in `crypto` domain lives in vaked/schema/parallel-types.md once
+# 0018 is accepted. Shown here for self-contained readability.
+#
+# Attenuation order (weakest to strongest):
+#   none < sign < seal < admin
+#
+#   none   — no cryptographic authority; held implicitly by any membrane that
+#            does not declare a crypto grant. Causes E-CRYPTO-NONE-CROSS-HOST
+#            when paired with network.egress.
+#   sign   — may sign its own output artifacts (fibers, streams).
+#   seal   — may issue votive seals over images it admits (deployment plane).
+#   admin  — may retire suite tokens and record crypto_suite_bump to eventd.
+
+capability crypto {
+  grant none sign seal admin
+  order none < sign < seal < admin
+}
+
+# ---- Crypto posture declaration ----------------------------------------------
+#
+# `crypto pq-default` names the suite and seal algorithm for any membrane that
+# references it. A single declaration can be shared across a runtime; a membrane
+# may also declare its own per-membrane posture.
+#
+# suite  = the KEM+AEAD+transcript-signature bundle (RFC 0007 §3).
+#          "hybrid-ml-kem-768" = X25519+ML-KEM-768 / ChaCha20-Poly1305 /
+#          hybrid Ed25519+ML-DSA-65 — the default PQC-migration suite.
+# seal   = the votive-seal signing algorithm (RFC 0007 §4).
+#          "ml-dsa-65" = ML-DSA-65 (FIPS 204, Dilithium 3).
+#
+# Lowered to:
+#   gen/crypto/pq-default.json      — spine config consumed by agent-supervisord
+#   gen/crypto/pq-default.seal.json — seal authority record (SPIFFE ID + epoch)
+#   gen/eventd.json (extended)      — crypto_suite_bump contract entry
+
+crypto pq-default {
+  suite = "hybrid-ml-kem-768"
+  seal  = "ml-dsa-65"
+}
+
+# ---- Network membrane that references the crypto posture ---------------------
+#
+# `crypto = crypto.pq-default` binds this membrane to the pq-default posture.
+# The checker (0018 E-CRYPTO-NONE-CROSS-HOST) requires that any membrane with
+# network.egress holds at least crypto.sign. Here we hold crypto.seal (which
+# dominates sign in the order), so the rule is satisfied.
+
+network edge-membrane {
+  crypto = crypto.pq-default
+  capabilities = [crypto.seal, network.egress]
+}
+
+# ---- Mesh delegating crypto grants with attenuation -------------------------
+#
+# spine holds crypto.admin (the control plane).
+# edge holds crypto.seal  (the deployment / votive-seal issuer).
+#
+# Attenuation check (0011 §4.4, E-CAP-ATTENUATION):
+#   crypto:   seal <= admin   ✓   (seal is weaker — delegation ok)
+#   network:  egress <= egress ✓  (same grant — trivially ok)
+#
+# The spine -> edge delegation edge is ACCEPTED.
+
+mesh spineField {
+  node spine {
+    role = "control-plane"
+    capabilities = [crypto.admin, network.egress, fs.host_rw]
+  }
+
+  node edge {
+    role = "deployment-plane"
+    # Holds crypto.seal (may issue votive seals, not retire suites)
+    # and network.egress (may reach cross-host peers).
+    capabilities = [crypto.seal, network.egress]
+  }
+
+  spine -> edge : "delegate"
+}
