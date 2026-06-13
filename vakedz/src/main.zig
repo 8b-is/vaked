@@ -184,7 +184,11 @@ fn cmdCheck(a: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
         var buf: [4096]u8 = undefined;
         var fw = Io.File.stdout().writer(io, &buf);
         const builtins_path = flagValue(args, "--builtins") orelse "vaked/schema/builtins.vaked";
-        const clean = try check.runJson(a, file, src, builtins_path, fw.interface);
+        const builtins_src = readFile(a, io, builtins_path) catch |e| {
+            std.debug.print("check: cannot read builtins {s}: {s}\n", .{ builtins_path, @errorName(e) });
+            return 1;
+        };
+        const clean = try check.runJson(a, file, src, builtins_path, builtins_src, fw.interface);
         try fw.interface.flush();
         return if (clean) 0 else 1;
     }

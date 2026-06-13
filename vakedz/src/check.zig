@@ -1701,7 +1701,7 @@ pub fn run(a: std.mem.Allocator, source_path: []const u8, src: []const u8) !Resu
 
 /// Full checker: parse source + builtins, run all stages, write JSON to writer.
 /// Returns true if 0 diagnostics (exit 0), false otherwise (exit 1).
-pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, builtins_path: []const u8, out_writer: anytype) !bool {
+pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, builtins_path: []const u8, builtins_src: []const u8, out_writer: anytype) !bool {
     const lex_mod = @import("lexer.zig");
     const parser_mod = @import("parser.zig");
 
@@ -1718,7 +1718,7 @@ pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, b
         return false;
     };
 
-    const b_src = try std.fs.cwd().readFileAlloc(a, builtins_path, 10 * 1024 * 1024);
+    const b_src = builtins_src;
     var lx_b = lex_mod.Lexer.init(a, b_src);
     lx_b.run() catch {
         std.debug.print("check: cannot lex builtins: {s}\n", .{builtins_path});
