@@ -61,7 +61,7 @@ const SourceMap = struct {
     fn init(a: std.mem.Allocator, src: []const u8, filename: []const u8) !SourceMap {
         var lx = lex.Lexer.init(a, src);
         lx.run() catch {};
-        var toks = std.ArrayList(lex.Token).init(a);
+        var toks = std.ArrayList(lex.Token){ .allocator = a };
         for (lx.tokens.items) |t| {
             if (t.kind != .newline and t.kind != .eof) try toks.append(t);
         }
@@ -173,16 +173,16 @@ fn baseType(type_text: []const u8) []const u8 {
 }
 
 fn splitUnion(a: std.mem.Allocator, text: []const u8) ![][]const u8 {
-    var parts = std.ArrayList([]const u8).init(a);
+    var parts = std.ArrayList([]const u8){ .allocator = a };
     var depth: usize = 0;
-    var cur = std.ArrayList(u8).init(a);
+    var cur = std.ArrayList(u8){ .allocator = a };
     for (text) |ch| {
         switch (ch) {
             '<' => { depth += 1; try cur.append(ch); },
             '>' => { if (depth > 0) depth -= 1; try cur.append(ch); },
             '|' => if (depth == 0) {
                 try parts.append(std.mem.trim(u8, try cur.toOwnedSlice(), " \t"));
-                cur = std.ArrayList(u8).init(a);
+                cur = std.ArrayList(u8){ .allocator = a };
             } else try cur.append(ch),
             else => try cur.append(ch),
         }
@@ -237,7 +237,7 @@ fn presenceOf(refs: []const p.Refinement) struct { presence: Presence, has_defau
 }
 
 fn schemaFromDecl(a: std.mem.Allocator, d: *const p.Decl, filename: []const u8) !SchemaSpec {
-    var fields = std.StringHashMap(FieldSpec).init(a);
+    var fields = std.StringHashMap(FieldSpec){ .allocator = a };
     var is_open = false;
     for (d.body) |st| {
         switch (st) {
@@ -265,8 +265,8 @@ fn schemaFromDecl(a: std.mem.Allocator, d: *const p.Decl, filename: []const u8) 
 }
 
 fn capabilityFromDecl(a: std.mem.Allocator, d: *const p.Decl, filename: []const u8) !CapabilitySpec {
-    var grants = std.StringHashMap(void).init(a);
-    var chains = std.ArrayList([]const []const u8).init(a);
+    var grants = std.StringHashMap(void){ .allocator = a };
+    var chains = std.ArrayList([]const []const u8){ .allocator = a };
     for (d.body) |st| {
         switch (st) {
             .grant => |names| for (names) |n| try grants.put(n, {}),
@@ -278,7 +278,7 @@ fn capabilityFromDecl(a: std.mem.Allocator, d: *const p.Decl, filename: []const 
         .domain = d.name,
         .grants = grants,
         .order_chains = try chains.toOwnedSlice(),
-        .leq = std.StringHashMap(std.StringHashMap(void)).init(a),
+        .leq = std.StringHashMap(std.StringHashMap(void)){ .allocator = a },
         .origin_file = filename,
         .decl_span = .{ .byte_start = d.byte_start, .byte_end = d.byte_end, .line = d.line, .col = d.col },
     };
@@ -286,10 +286,10 @@ fn capabilityFromDecl(a: std.mem.Allocator, d: *const p.Decl, filename: []const 
 
 /// Floyd-style reflexive-transitive closure; fills cap.leq. Returns cycle pair if found.
 fn transitiveClosureFill(a: std.mem.Allocator, cap: *CapabilitySpec) !?[2][]const u8 {
-    var succ = std.StringHashMap(std.ArrayList([]const u8)).init(a);
+    var succ = std.StringHashMap(std.ArrayList([]const u8)){ .allocator = a };
     {
         var git = cap.grants.keyIterator();
-        while (git.next()) |k| try succ.put(k.*, std.ArrayList([]const u8).init(a));
+        while (git.next()) |k| try succ.put(k.*, std.ArrayList([]const u8){ .allocator = a });
     }
     for (cap.order_chains) |ch| {
         var i: usize = 0;
@@ -298,20 +298,20 @@ fn transitiveClosureFill(a: std.mem.Allocator, cap: *CapabilitySpec) !?[2][]cons
             const bb = ch[i + 1];
             {
                 const entry = try succ.getOrPut(aa);
-                if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(a);
+                if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8){ .allocator = a };
                 try entry.value_ptr.append(bb);
             }
             {
                 const entry = try succ.getOrPut(bb);
-                if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(a);
+                if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8){ .allocator = a };
             }
         }
     }
-    var reach = std.StringHashMap(std.StringHashMap(void)).init(a);
+    var reach = std.StringHashMap(std.StringHashMap(void)){ .allocator = a };
     {
         var kit = succ.keyIterator();
         while (kit.next()) |k| {
-            var s = std.StringHashMap(void).init(a);
+            var s = std.StringHashMap(void){ .allocator = a };
             try s.put(k.*, {});
             try reach.put(k.*, s);
         }
@@ -319,7 +319,7 @@ fn transitiveClosureFill(a: std.mem.Allocator, cap: *CapabilitySpec) !?[2][]cons
     {
         var kit = succ.keyIterator();
         while (kit.next()) |k| {
-            var stack = std.ArrayList([]const u8).init(a);
+            var stack = std.ArrayList([]const u8){ .allocator = a };
             if (succ.get(k.*)) |sl| for (sl.items) |x| try stack.append(x);
             const r = reach.getPtr(k.*).?;
             while (stack.items.len > 0) {
@@ -364,7 +364,7 @@ const Registry = struct {
     schemas: std.StringHashMap(SchemaSpec),
     caps: std.StringHashMap(CapabilitySpec),
     fn init(a: std.mem.Allocator) Registry {
-        return .{ .schemas = std.StringHashMap(SchemaSpec).init(a), .caps = std.StringHashMap(CapabilitySpec).init(a) };
+        return .{ .schemas = std.StringHashMap(SchemaSpec){ .allocator = a }, .caps = std.StringHashMap(CapabilitySpec){ .allocator = a } };
     }
 };
 
@@ -459,7 +459,7 @@ fn exprToVProp(a: std.mem.Allocator, e: p.Expr) error{OutOfMemory}!VProp {
             return .{ .list = out };
         },
         .record => |entries| {
-            var out = std.ArrayList(VProp.VRecordEntry).init(a);
+            var out = std.ArrayList(VProp.VRecordEntry){ .allocator = a };
             for (entries) |ent| {
                 switch (ent) {
                     .assign => |asn| {
@@ -538,7 +538,7 @@ fn vpropMatchesAtom(a: std.mem.Allocator, vprop: VProp, atom: []const u8, reg: ?
 }
 
 fn recordConforms(a: std.mem.Allocator, entries: []const VProp.VRecordEntry, schema: SchemaSpec, reg: *Registry) bool {
-    var present = std.StringHashMap(VProp).init(a);
+    var present = std.StringHashMap(VProp){ .allocator = a };
     defer present.deinit();
     for (entries) |e| {
         if (e.key) |k| if (e.value) |v| present.put(k, v) catch {};
@@ -731,7 +731,7 @@ fn checkCapabilityWellformed(a: std.mem.Allocator, spec: *CapabilitySpec, smap_o
         try emit(a, diags, "E-CAP-ORDER-CYCLE", spec.origin_file, span, label, msg);
         var git = spec.grants.keyIterator();
         while (git.next()) |k| {
-            var s = std.StringHashMap(void).init(a);
+            var s = std.StringHashMap(void){ .allocator = a };
             try s.put(k.*, {});
             try spec.leq.put(k.*, s);
         }
@@ -775,7 +775,7 @@ fn checkFieldConstraints(a: std.mem.Allocator, vprop: VProp, fspec: FieldSpec, s
                         }
                         if (!found) {
                             const rv = try renderVProp(a, vprop);
-                            var parts = std.ArrayList(u8).init(a);
+                            var parts = std.ArrayList(u8){ .allocator = a };
                             try parts.append('[');
                             for (items, 0..) |item, idx| {
                                 if (idx != 0) try parts.appendSlice(", ");
@@ -856,7 +856,7 @@ const Bindings = struct {
     map: std.StringHashMap(VProp),
     order: std.ArrayList([]const u8),
     fn init(a: std.mem.Allocator) Bindings {
-        return .{ .map = std.StringHashMap(VProp).init(a), .order = std.ArrayList([]const u8).init(a) };
+        return .{ .map = std.StringHashMap(VProp){ .allocator = a }, .order = std.ArrayList([]const u8){ .allocator = a } };
     }
 };
 
@@ -871,7 +871,7 @@ fn declFieldBindings(a: std.mem.Allocator, d: *const p.Decl) !Bindings {
             .app => |app| {
                 if (app.args == null and app.record != null and app.ref.parts.len == 1) {
                     const name_ = app.ref.parts[0];
-                    var rec_entries = std.ArrayList(VProp.VRecordEntry).init(a);
+                    var rec_entries = std.ArrayList(VProp.VRecordEntry){ .allocator = a };
                     for (app.record.?) |ent| {
                         switch (ent) {
                             .assign => |asn| {
@@ -979,7 +979,7 @@ fn conformDecl(a: std.mem.Allocator, d: *const p.Decl, schema: SchemaSpec, reg: 
 }
 
 fn conformNestedRecord(a: std.mem.Allocator, entries: []const VProp.VRecordEntry, schema: SchemaSpec, reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.ArrayList(Diagnostic), owner_lbl: []const u8, owner_field: []const u8, decl_span: Span, ds: usize, de: usize) !void {
-    var present = std.StringHashMap(VProp).init(a);
+    var present = std.StringHashMap(VProp){ .allocator = a };
     for (entries) |e| {
         if (e.key) |k| if (e.value) |v| try present.put(k, v);
     }
@@ -1087,7 +1087,7 @@ fn leqGrant(cap: CapabilitySpec, aa: []const u8, bb: []const u8) bool {
 fn checkMesh(a: std.mem.Allocator, mesh_decl: *const p.Decl, reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.ArrayList(Diagnostic)) !void {
     const mesh_schema = reg.schemas.get("meshNode");
     const mesh_lbl = try std.fmt.allocPrint(a, "mesh {s}", .{mesh_decl.name});
-    var node_grants = std.StringHashMap(std.ArrayList(struct { domain: []const u8, grant: []const u8 })).init(a);
+    var node_grants = std.StringHashMap(std.ArrayList(struct { domain: []const u8, grant: []const u8 })){ .allocator = a };
 
     for (mesh_decl.body) |st| {
         switch (st) {
@@ -1096,7 +1096,7 @@ fn checkMesh(a: std.mem.Allocator, mesh_decl: *const p.Decl, reg: *Registry, sma
                 if (mesh_schema) |ms| try conformNode(a, nd, ms, reg, smap_opt, file, diags, nspan);
 
                 const b = try nodeBindings(a, nd);
-                var grants_list = std.ArrayList(struct { domain: []const u8, grant: []const u8 }).init(a);
+                var grants_list = std.ArrayList(struct { domain: []const u8, grant: []const u8 }){ .allocator = a };
                 if (b.map.get("capabilities")) |caps_vprop| {
                     switch (caps_vprop) {
                         .list => |items| {
@@ -1131,10 +1131,10 @@ fn checkMesh(a: std.mem.Allocator, mesh_decl: *const p.Decl, reg: *Registry, sma
                     const r_grants = node_grants.get(receiver) orelse continue;
                     const edge_span = Span{ .byte_start = a_ref.byte_start, .byte_end = b_ref.byte_end, .line = a_ref.line, .col = a_ref.col };
 
-                    var s_by_dom = std.StringHashMap(std.ArrayList([]const u8)).init(a);
+                    var s_by_dom = std.StringHashMap(std.ArrayList([]const u8)){ .allocator = a };
                     for (s_grants.items) |dg| {
                         const entry = try s_by_dom.getOrPut(dg.domain);
-                        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(a);
+                        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8){ .allocator = a };
                         try entry.value_ptr.append(dg.grant);
                     }
 
@@ -1144,7 +1144,7 @@ fn checkMesh(a: std.mem.Allocator, mesh_decl: *const p.Decl, reg: *Registry, sma
                         var ok = false;
                         for (sender_gs) |sg| if (leqGrant(cap, dg.grant, sg)) { ok = true; break; };
                         if (!ok) {
-                            var held = std.ArrayList(u8).init(a);
+                            var held = std.ArrayList(u8){ .allocator = a };
                             if (sender_gs.len == 0) {
                                 try held.appendSlice("(none)");
                             } else {
@@ -1177,7 +1177,7 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
     const wf_lbl = try std.fmt.allocPrint(a, "workflow {s}", .{wf.name});
     const dspan = Span{ .byte_start = wf.byte_start, .byte_end = wf.byte_end, .line = wf.line, .col = wf.col };
 
-    var steps = std.ArrayList([]const u8).init(a);
+    var steps = std.ArrayList([]const u8){ .allocator = a };
     for (wf.body) |st| {
         switch (st) {
             .node => |nd| {
@@ -1217,11 +1217,11 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
         }
     }
     const step_arr = try steps.toOwnedSlice();
-    var step_set = std.StringHashMap(void).init(a);
+    var step_set = std.StringHashMap(void){ .allocator = a };
     for (step_arr) |s| try step_set.put(s, {});
 
-    var succ = std.StringHashMap(std.ArrayList([]const u8)).init(a);
-    for (step_arr) |s| try succ.put(s, std.ArrayList([]const u8).init(a));
+    var succ = std.StringHashMap(std.ArrayList([]const u8)){ .allocator = a };
+    for (step_arr) |s| try succ.put(s, std.ArrayList([]const u8){ .allocator = a });
 
     for (wf.body) |st| {
         switch (st) {
@@ -1232,7 +1232,7 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
                     const bb = if (edge.refs[i + 1].parts.len == 1) edge.refs[i + 1].parts[0] else continue;
                     if (step_set.contains(aa) and step_set.contains(bb)) {
                         const entry = try succ.getOrPut(aa);
-                        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(a);
+                        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8){ .allocator = a };
                         try entry.value_ptr.append(bb);
                     }
                 }
@@ -1244,15 +1244,15 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
     const WHITE: u8 = 0;
     const GREY: u8 = 1;
     const BLACK: u8 = 2;
-    var colour = std.StringHashMap(u8).init(a);
+    var colour = std.StringHashMap(u8){ .allocator = a };
     for (step_arr) |s| try colour.put(s, WHITE);
     var cycle_found: ?[]const []const u8 = null;
 
     for (step_arr) |root| {
         if (cycle_found != null) break;
         if ((colour.get(root) orelse WHITE) != WHITE) continue;
-        var stack = std.ArrayList(struct { node: []const u8, idx: usize }).init(a);
-        var path = std.ArrayList([]const u8).init(a);
+        var stack = std.ArrayList(struct { node: []const u8, idx: usize }){ .allocator = a };
+        var path = std.ArrayList([]const u8){ .allocator = a };
         try colour.put(root, GREY);
         try stack.append(.{ .node = root, .idx = 0 });
         try path.append(root);
@@ -1264,7 +1264,7 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
                 top.idx += 1;
                 const nc = colour.get(nxt) orelse WHITE;
                 if (nc == GREY) {
-                    var cyc = std.ArrayList([]const u8).init(a);
+                    var cyc = std.ArrayList([]const u8){ .allocator = a };
                     var found_start = false;
                     for (path.items) |pp| {
                         if (std.mem.eql(u8, pp, nxt)) found_start = true;
@@ -1288,7 +1288,7 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
     }
 
     if (cycle_found) |cyc| {
-        var parts = std.ArrayList(u8).init(a);
+        var parts = std.ArrayList(u8){ .allocator = a };
         for (cyc, 0..) |s, i| {
             if (i != 0) try parts.appendSlice(" -> ");
             try parts.appendSlice(s);
@@ -1300,10 +1300,10 @@ fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_o
         return;
     }
 
-    var depth_of = std.StringHashMap(usize).init(a);
+    var depth_of = std.StringHashMap(usize){ .allocator = a };
     var max_depth: usize = 0;
     for (step_arr) |root| {
-        var stk = std.ArrayList(struct { node: []const u8, processed: bool }).init(a);
+        var stk = std.ArrayList(struct { node: []const u8, processed: bool }){ .allocator = a };
         try stk.append(.{ .node = root, .processed = false });
         while (stk.items.len > 0) {
             const top = &stk.items[stk.items.len - 1];
@@ -1379,7 +1379,7 @@ fn checkGenerics(a: std.mem.Allocator, d: *const p.Decl, reg: *Registry, by_name
 // --------------------------------------------------------------------------- //
 
 fn checkNameCollisions(a: std.mem.Allocator, items: []const p.Item, file: []const u8, smap_opt: ?*const SourceMap, diags: *std.ArrayList(Diagnostic)) !void {
-    var first_seen = std.StringHashMap(*const p.Decl).init(a);
+    var first_seen = std.StringHashMap(*const p.Decl){ .allocator = a };
     for (items) |it| {
         if (it != .decl) continue;
         const d = it.decl;
@@ -1488,19 +1488,19 @@ fn scanValue(a: std.mem.Allocator, e: p.Expr, out: *std.ArrayList(p.Ref)) !void 
 }
 
 fn checkRefResolution(a: std.mem.Allocator, runtime_decl: *const p.Decl, file: []const u8, diags: *std.ArrayList(Diagnostic), imported: std.StringHashMap(void)) !void {
-    var declared = std.StringHashMap(void).init(a);
+    var declared = std.StringHashMap(void){ .allocator = a };
     try collectRuntimeDecls(a, runtime_decl, &declared);
     var iit = imported.keyIterator();
     while (iit.next()) |k| try declared.put(k.*, {});
 
-    var declared_names = std.StringHashMap(void).init(a);
+    var declared_names = std.StringHashMap(void){ .allocator = a };
     var dit = declared.keyIterator();
     while (dit.next()) |k| {
         if (std.mem.indexOfScalar(u8, k.*, '/')) |slash| try declared_names.put(k.*[slash + 1 ..], {});
     }
 
     const runtime_lbl = try std.fmt.allocPrint(a, "runtime {s}", .{runtime_decl.name});
-    var refs = std.ArrayList(RefItem).init(a);
+    var refs = std.ArrayList(RefItem){ .allocator = a };
     try walkDependsRefs(a, runtime_decl, &refs);
 
     for (refs.items) |item| {
@@ -1528,9 +1528,9 @@ fn checkRefResolution(a: std.mem.Allocator, runtime_decl: *const p.Decl, file: [
         }
     }
 
-    var accessor_refs = std.ArrayList(p.Ref).init(a);
+    var accessor_refs = std.ArrayList(p.Ref){ .allocator = a };
     try walkAccessorRefs(a, runtime_decl, &accessor_refs);
-    var seen = std.StringHashMap(void).init(a);
+    var seen = std.StringHashMap(void){ .allocator = a };
     for (accessor_refs.items) |ref| {
         if (ref.parts.len != 3) continue;
         const head = ref.parts[0];
@@ -1561,12 +1561,12 @@ fn checkRefResolution(a: std.mem.Allocator, runtime_decl: *const p.Decl, file: [
 // --------------------------------------------------------------------------- //
 
 fn meshNodeIndex(a: std.mem.Allocator, stmts: []const p.Stmt) !std.StringHashMap(std.StringHashMap(void)) {
-    var result = std.StringHashMap(std.StringHashMap(void)).init(a);
+    var result = std.StringHashMap(std.StringHashMap(void)){ .allocator = a };
     for (stmts) |st| {
         if (st != .decl) continue;
         const d = st.decl;
         if (!std.mem.eql(u8, d.kind, "mesh")) continue;
-        var nodes = std.StringHashMap(void).init(a);
+        var nodes = std.StringHashMap(void){ .allocator = a };
         for (d.body) |bst| {
             switch (bst) { .node => |nd| try nodes.put(nd.name, {}), else => {} }
         }
@@ -1576,7 +1576,7 @@ fn meshNodeIndex(a: std.mem.Allocator, stmts: []const p.Stmt) !std.StringHashMap
 }
 
 fn declKindIndex(a: std.mem.Allocator, stmts: []const p.Stmt) !std.StringHashMap([]const u8) {
-    var result = std.StringHashMap([]const u8).init(a);
+    var result = std.StringHashMap([]const u8){ .allocator = a };
     for (stmts) |st| {
         if (st != .decl) continue;
         try result.put(st.decl.name, st.decl.kind);
@@ -1585,12 +1585,12 @@ fn declKindIndex(a: std.mem.Allocator, stmts: []const p.Stmt) !std.StringHashMap
 }
 
 fn itemsMeshNodeIndex(a: std.mem.Allocator, items: []const p.Item) !std.StringHashMap(std.StringHashMap(void)) {
-    var result = std.StringHashMap(std.StringHashMap(void)).init(a);
+    var result = std.StringHashMap(std.StringHashMap(void)){ .allocator = a };
     for (items) |it| {
         if (it != .decl) continue;
         const d = it.decl;
         if (!std.mem.eql(u8, d.kind, "mesh")) continue;
-        var nodes = std.StringHashMap(void).init(a);
+        var nodes = std.StringHashMap(void){ .allocator = a };
         for (d.body) |bst| {
             switch (bst) { .node => |nd| try nodes.put(nd.name, {}), else => {} }
         }
@@ -1600,7 +1600,7 @@ fn itemsMeshNodeIndex(a: std.mem.Allocator, items: []const p.Item) !std.StringHa
 }
 
 fn itemsDeclKindIndex(a: std.mem.Allocator, items: []const p.Item) !std.StringHashMap([]const u8) {
-    var result = std.StringHashMap([]const u8).init(a);
+    var result = std.StringHashMap([]const u8){ .allocator = a };
     for (items) |it| {
         if (it != .decl) continue;
         try result.put(it.decl.name, it.decl.kind);
@@ -1738,7 +1738,7 @@ pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, b
 
     const smap_src = try SourceMap.init(a, src, source_path);
 
-    var schema_list = std.ArrayList(SchemaSpec).init(a);
+    var schema_list = std.ArrayList(SchemaSpec){ .allocator = a };
     {
         var sit = reg.schemas.valueIterator();
         while (sit.next()) |s| try schema_list.append(s.*);
@@ -1751,13 +1751,13 @@ pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, b
         }
     }.lt);
 
-    var diags = std.ArrayList(Diagnostic).init(a);
+    var diags = std.ArrayList(Diagnostic){ .allocator = a };
     for (schema_list.items) |spec| {
         const smap_opt: ?*const SourceMap = if (std.mem.eql(u8, spec.origin_file, source_path)) &smap_src else null;
         try checkSchemaWellformed(a, spec, smap_opt, &diags);
     }
 
-    var cap_list = std.ArrayList(*CapabilitySpec).init(a);
+    var cap_list = std.ArrayList(*CapabilitySpec){ .allocator = a };
     {
         var cit = reg.caps.valueIterator();
         while (cit.next()) |c| try cap_list.append(c);
@@ -1774,7 +1774,7 @@ pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, b
         try checkCapabilityWellformed(a, spec, smap_opt, &diags);
     }
 
-    var by_name_kind = std.StringHashMap(*const p.Decl).init(a);
+    var by_name_kind = std.StringHashMap(*const p.Decl){ .allocator = a };
     for (items) |it| {
         if (it != .decl) continue;
         const kn = try std.fmt.allocPrint(a, "{s}/{s}", .{ it.decl.kind, it.decl.name });
@@ -1790,7 +1790,7 @@ pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, b
         const d = it.decl;
         try checkDeclTree(a, d, &reg, &by_name_kind, &smap_src, source_path, &diags, &top_meshes, &top_kinds);
         if (std.mem.eql(u8, d.kind, "runtime")) {
-            try checkRefResolution(a, d, source_path, &diags, std.StringHashMap(void).init(a));
+            try checkRefResolution(a, d, source_path, &diags, std.StringHashMap(void){ .allocator = a });
         }
     }
 
