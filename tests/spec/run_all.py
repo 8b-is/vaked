@@ -31,6 +31,7 @@ import test_otp_lowering as t_otp  # noqa: E402
 import test_agentfield_lowering as t_af_lower  # noqa: E402
 import test_agent_guardd as t_guardd  # noqa: E402
 import test_yardmaster as t_yardmaster  # noqa: E402
+import test_telebot as t_telebot  # noqa: E402
 
 MODULES = [
     ("grammar_selfcontained", t_grammar),
@@ -46,6 +47,7 @@ MODULES = [
     ("agentfield_lowering", t_af_lower),
     ("agent_guardd", t_guardd),
     ("yardmaster", t_yardmaster),
+    ("telebot", t_telebot),
 ]
 
 
