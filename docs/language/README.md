@@ -118,6 +118,16 @@ pass, automatic write-ahead dependency-registration insertion, and AOT
 is designed in
 [`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md) (#23).
 
+## Namespace & daemon-channel roster (0017)
+
+Closing **branch-B** reference resolution — the checker half of
+[#7](https://github.com/peterlodri-sec/vaked-base/issues/7): a built-in
+`namespace` catalog (open value-namespaces like `pkgs`/`nix`, closed
+daemon-channel and external-service heads) so the Goal-2 checker can reject a
+dangling `engine = pkgs.doesNotExist` instead of waving it through. Designed in
+[`0017-namespace-roster.md`](./0017-namespace-roster.md) (#8); the lowering half
+(`_nix_attr_key`) already shipped.
+
 ## Golden commands
 
 ```bash
