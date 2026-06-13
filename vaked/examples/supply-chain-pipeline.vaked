@@ -1,0 +1,130 @@
+use "./engines/zig.vaked"
+
+# supply-chain-pipeline.vaked — a signed-release build pipeline with
+# statically-enforced separation of duties.
+#
+# Case study: the post-SolarWinds problem. A compromised build step must not be
+# able to sign and ship artifacts on its own. Vaked encodes the two-person rule
+# as a capability graph the type checker verifies before anything runs:
+#
+#   * the BUILDER holds fs.repo_rw + a SANDBOXED executor, but NO release
+#     authority (no mcp.broker_admin) — it can produce artifacts, never publish
+#     them, and its network grant is `none` (hermetic build);
+#   * the SIGNER holds the release authority (mcp.broker_admin) but only
+#     fs.repo_ro — it can sign and ship, but cannot mutate the bytes it signs;
+#   * therefore no single agent can both BUILD and SIGN. The separation is a
+#     compile-time fact, not a CI convention that can be edited away.
+#
+# Determinism + provenance (the paper's core claims) make the signed artifact
+# reproducible and traceable back to its source spans.
+
+runtime "supply-chain" {
+  systems = ["x86_64-linux"]
+
+  index sourceTree {
+    source = [github("example-corp/release-target")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, nix.derivation]
+  }
+
+  stream auditLog {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 365d
+  }
+
+  budget release {
+    tokens = 800000
+    wallClock = 1h
+    toolCalls = 200
+    approvals = "destructive"
+    fuel = 2000000000
+  }
+
+  # The release field. The release manager is the root of trust; each role
+  # below receives a strictly attenuated, duty-separated subset (0011 §4.4).
+  mesh field {
+    node releaseManager {
+      role = "root-of-trust"
+      capabilities = [fs.host_rw, process.exec_host, network.egress, mcp.broker_admin, mem.admin]
+    }
+    # Source reviewer: read-only audit of the tree. Cannot build, cannot ship.
+    node sourceReviewer {
+      role = "source-audit"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    # Builder: mutates the build tree, runs the compiler in a SANDBOX. No mcp
+    # grant ⇒ cannot publish/sign. No network grant ⇒ hermetic build.
+    node builder {
+      role = "build"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.append]
+    }
+    # Signer: holds the release authority (broker_admin) but only repo_ro —
+    # it signs the artifact it is given, and cannot alter the bytes it signs.
+    node signer {
+      role = "ceremony"
+      capabilities = [fs.repo_ro, mcp.broker_admin, mem.admin]
+    }
+    # Distributor: pushes the signed artifact out (egress) read-only. Cannot
+    # sign (github_read, not broker_admin) and cannot modify the tree.
+    node distributor {
+      role = "distribution"
+      capabilities = [fs.repo_ro, network.egress, mcp.github_read]
+    }
+
+    releaseManager -> sourceReviewer
+    releaseManager -> builder
+    releaseManager -> signer
+    releaseManager -> distributor
+  }
+
+  # The release ceremony as a checked DAG: review feeds build feeds sign feeds
+  # distribute. The hand-off between `build` and `sign` is exactly the trust
+  # boundary the capability split enforces.
+  workflow ceremony {
+    on = "release.tag:pushed"
+    budget = budget.release
+    maxDepth = 5
+
+    node review {
+      agent = field.sourceReviewer
+      output = artifacts.auditReport
+    }
+    node build {
+      agent = field.builder
+      input = artifacts.auditReport
+      output = artifacts.unsignedBuild
+      retries = 1
+    }
+    node sign {
+      agent = field.signer
+      input = artifacts.unsignedBuild
+      output = artifacts.signedArtifact
+    }
+    node distribute {
+      agent = field.distributor
+      input = artifacts.signedArtifact
+    }
+
+    review -> build -> sign -> distribute
+  }
+
+  fiber provenanceMiner {
+    engine = zigDaemon
+    input = stream.auditLog
+    output = artifacts.provenanceChain
+  }
+
+  surface releaseView {
+    mode = raylib
+    fps = 30
+    input = [stream.auditLog, graph.ceremony, graph.field]
+    views = ["workflow-dag", "mesh-topology", "filesystem-diff"]
+  }
+
+  parallel "supply-chain-runtime" {
+    fibers = [provenanceMiner, releaseView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}
