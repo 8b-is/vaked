@@ -232,7 +232,7 @@ cmd_lower() {
     printf '{"stage":"lower","file":"%s","ms":%d,"exit":%d}\n' "$file" "$ms" "$rc"
   elif [[ $rc -eq 0 ]]; then ok "lower ${ms}ms"
   else fail "lower ${ms}ms (exit $rc)"; fi
-  if [[ $rc -eq 0 && $OPT_VERIFY == 1 ]]; then _verify_provenance "$file"; fi
+  if [[ $rc -eq 0 && $OPT_VERIFY == 1 ]]; then _verify_provenance "$file" || true; fi
   return $rc
 }
 
@@ -278,7 +278,7 @@ cmd_all() {
 
   _all_emit "$file" $parse_ms $check_ms $lower_ms 0
   _all_maybe_audit all "$file" $parse_ms $check_ms $lower_ms 0
-  if [[ $OPT_VERIFY == 1 ]]; then _verify_provenance "$file"; fi
+  if [[ $OPT_VERIFY == 1 ]]; then _verify_provenance "$file" || true; fi
 }
 
 _all_emit() {
@@ -408,7 +408,7 @@ cmd_audit() {
   _audit_append "$rec"
   log "audit record → ${OPT_AUDIT_LOG:-$REPO_ROOT/.vaked/audit.jsonl}"
 
-  if [[ $rc -eq 0 && $OPT_VERIFY == 1 ]]; then _verify_provenance "$file"; fi
+  if [[ $rc -eq 0 && $OPT_VERIFY == 1 ]]; then _verify_provenance "$file" || true; fi
   return $rc
 }
 
@@ -432,9 +432,11 @@ print(d.get('source_hash', d.get('hash', '')))
            || shasum -a256 "$file" 2>/dev/null | cut -d' ' -f1 || echo "")
   if [[ "$expected" == "$actual" ]]; then
     ok "verify: provenance hash OK"
+    return 0
   else
     fail "verify: hash mismatch — provenance may be stale"
     printf >&2 '  expected: %s\n  actual:   %s\n' "$expected" "$actual"
+    return 1
   fi
 }
 
@@ -485,8 +487,8 @@ if bad:
     sys.exit(1)
 sys.stderr.write(f"audit chain: {count} records OK\n")
 PYEOF
-  if [[ $bad -eq 0 ]]; then ok "audit chain: all records valid"
-  else fail "audit chain: $bad invalid record(s)"; fi
+  if [[ $bad -eq 0 ]]; then ok "audit chain: all records valid"; return 0
+  else fail "audit chain: $bad invalid record(s)"; return 1; fi
 }
 
 cmd_verify() {
@@ -506,10 +508,10 @@ cmd_verify() {
 
   local overall=0
   if [[ $do_prov -eq 1 || $do_hash -eq 1 ]]; then
-    _verify_provenance "$file" || overall=$?
+    _verify_provenance "$file" || overall=1
   fi
   if [[ $do_chain -eq 1 ]]; then
-    _verify_audit_chain || true
+    _verify_audit_chain || overall=1
   fi
 
   if [[ $OPT_JSON == 1 ]]; then
@@ -816,8 +818,21 @@ import sys, json, os, subprocess, time, urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 REPO_ROOT, PORT, HOST = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+REPO_ROOT_ABS = os.path.realpath(REPO_ROOT)
 _env = {**os.environ,
         "PYTHONPATH": REPO_ROOT + ((":" + os.environ["PYTHONPATH"]) if "PYTHONPATH" in os.environ else "")}
+
+class PathError(Exception):
+    pass
+
+def safe_repo_path(rel):
+    """Resolve rel against REPO_ROOT, rejecting anything that escapes it."""
+    if not rel:
+        raise PathError("file required")
+    p = os.path.realpath(os.path.join(REPO_ROOT_ABS, rel))
+    if p == REPO_ROOT_ABS or p.startswith(REPO_ROOT_ABS + os.sep):
+        return p
+    raise PathError(f"path escapes repository root: {rel}")
 
 def run_vc(args):
     t0 = time.perf_counter()
@@ -867,15 +882,20 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             self._resp({"error": f"bad JSON: {e}"}, 400)
             return
-        routes = {
-            "/parse": lambda: run_vc(["parse", body["file"]]),
-            "/check": lambda: run_vc(["check", body["file"], "--json"]),
-            "/lower": lambda: run_vc(["lower", body["file"]] + (["--out", body["out"]] if "out" in body else [])),
-            "/lint":  lambda: run_vc(["check", body["file"], "--json"]),
-        }
-        if route not in routes:
+        if route not in ("/parse", "/check", "/lower", "/lint"):
             self._resp({"error": "not found"}, 404)
             return
+        try:
+            fpath = safe_repo_path(body.get("file", ""))
+        except PathError as e:
+            self._resp({"error": str(e)}, 400)
+            return
+        routes = {
+            "/parse": lambda: run_vc(["parse", fpath]),
+            "/check": lambda: run_vc(["check", fpath, "--json"]),
+            "/lower": lambda: run_vc(["lower", fpath] + (["--out", body["out"]] if "out" in body else [])),
+            "/lint":  lambda: run_vc(["check", fpath, "--json"]),
+        }
         try:
             out, err, rc, ms = routes[route]()
             result = {"output": out, "stderr": err, "exit": rc, "ms": ms}
@@ -905,15 +925,25 @@ import sys, json, os, subprocess, time, hmac, hashlib
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 REPO_ROOT, PORT, SECRET, EVENT = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+REPO_ROOT_ABS = os.path.realpath(REPO_ROOT)
 _env = {**os.environ,
         "PYTHONPATH": REPO_ROOT + ((":" + os.environ["PYTHONPATH"]) if "PYTHONPATH" in os.environ else "")}
+
+def safe_repo_path(rel):
+    """Resolve rel against REPO_ROOT, rejecting anything that escapes it."""
+    p = os.path.realpath(os.path.join(REPO_ROOT_ABS, rel))
+    if p == REPO_ROOT_ABS or p.startswith(REPO_ROOT_ABS + os.sep):
+        return p
+    return None
 
 def run_all(fpath):
     t0 = time.perf_counter()
     for stage in ("parse", "check", "lower"):
         r = subprocess.run([sys.executable, "-m", "vakedc", stage, fpath],
                            capture_output=True, text=True, env=_env)
-        if r.returncode not in (0, 1):
+        # any nonzero stage (1 = diagnostic, 2 = IO/usage) fails validation,
+        # matching cmd_all which stops on the first nonzero stage exit
+        if r.returncode != 0:
             return {"file": fpath, "stage": stage, "exit": r.returncode,
                     "ms": round((time.perf_counter()-t0)*1000, 2), "stderr": r.stderr}
     return {"file": fpath, "exit": 0, "ms": round((time.perf_counter()-t0)*1000, 2)}
@@ -948,7 +978,9 @@ class H(BaseHTTPRequestHandler):
         for commit in payload.get("commits", []):
             for f in commit.get("modified", []) + commit.get("added", []):
                 if f.endswith(".vaked"):
-                    files.add(os.path.join(REPO_ROOT, f))
+                    sp = safe_repo_path(f)
+                    if sp:
+                        files.add(sp)
         t0 = time.perf_counter()
         results = [run_all(f) for f in files if os.path.isfile(f)]
         self._resp({"results": results, "total_ms": round((time.perf_counter()-t0)*1000, 2),
