@@ -251,6 +251,7 @@ schema budget {
   field wallClock : Duration { optional }
   field toolCalls : Int      { optional > 0 }
   field approvals : String   { optional oneof ["never", "destructive", "always"] }
+  field fuel      : Int      { optional > 0 }   # Wasmtime instruction units (#50)
 }
 
 # `runclass` (#28, second slice) — RunClass: the scheduling class a fiber /

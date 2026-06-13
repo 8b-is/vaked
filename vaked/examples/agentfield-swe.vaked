@@ -82,6 +82,7 @@ runtime "agent-field" {
     wallClock = 2h
     toolCalls = 400
     approvals = "destructive"
+    fuel = 5000000000
   }
 
   # The swe_af workflow. Workflow edges are step ORDERING (a checked DAG);
