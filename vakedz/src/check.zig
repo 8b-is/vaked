@@ -1707,13 +1707,13 @@ pub fn runJson(a: std.mem.Allocator, source_path: []const u8, src: []const u8, b
 
     var lx_src = lex_mod.Lexer.init(a, src);
     lx_src.run() catch {
-        const err = lx_src.err orelse .{ .msg = "lex error", .line = 0, .col = 0 };
+        const err = lx_src.err orelse lex_mod.LexError{ .msg = "lex error", .line = 0, .col = 0 };
         std.debug.print("{s}:{d}:{d}: error: {s}\n", .{ source_path, err.line, err.col, err.msg });
         return false;
     };
     var parser_src = parser_mod.Parser.init(a, lx_src.tokens.items);
     const items = parser_src.parseFile() catch {
-        const err = parser_src.err orelse .{ .msg = "parse error", .line = 0, .col = 0 };
+        const err = parser_src.err orelse parser_mod.ParseError{ .msg = "parse error", .line = 0, .col = 0 };
         std.debug.print("{s}:{d}:{d}: error: {s}\n", .{ source_path, err.line, err.col, err.msg });
         return false;
     };
