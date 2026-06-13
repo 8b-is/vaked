@@ -1033,7 +1033,9 @@ fn conformNode(a: std.mem.Allocator, nd: *const p.NodeDecl, schema: SchemaSpec, 
 // Capability refs + attenuation (§4)
 // --------------------------------------------------------------------------- //
 
-fn grantRefParts(vprop: VProp) ?struct { domain: []const u8, grant: []const u8 } {
+const GrantRef = struct { domain: []const u8, grant: []const u8 };
+
+fn grantRefParts(vprop: VProp) ?GrantRef {
     switch (vprop) {
         .ref => |rv| {
             var it = std.mem.splitScalar(u8, rv.dotted, '.');
@@ -1068,7 +1070,7 @@ fn leqGrant(cap: CapabilitySpec, aa: []const u8, bb: []const u8) bool {
 fn checkMesh(a: std.mem.Allocator, mesh_decl: *const p.Decl, reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
     const mesh_schema = reg.schemas.get("meshNode");
     const mesh_lbl = try std.fmt.allocPrint(a, "mesh {s}", .{mesh_decl.name});
-    var node_grants = std.StringHashMap(std.array_list.Managed(struct { domain: []const u8, grant: []const u8 })).init(a);
+    var node_grants = std.StringHashMap(std.array_list.Managed(GrantRef)).init(a);
 
     for (mesh_decl.body) |st| {
         switch (st) {
@@ -1077,7 +1079,7 @@ fn checkMesh(a: std.mem.Allocator, mesh_decl: *const p.Decl, reg: *Registry, sma
                 if (mesh_schema) |ms| try conformNode(a, nd, ms, reg, smap_opt, file, diags, nspan);
 
                 const b = try nodeBindings(a, nd);
-                var grants_list = std.array_list.Managed(struct { domain: []const u8, grant: []const u8 }).init(a);
+                var grants_list = std.array_list.Managed(GrantRef).init(a);
                 if (b.map.get("capabilities")) |caps_vprop| {
                     switch (caps_vprop) {
                         .list => |items| {
