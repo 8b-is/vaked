@@ -43,6 +43,13 @@ from .check import check_source, load_builtins, default_builtins_path
 from . import lower as lower_mod
 
 
+def _cmd_lsp(args) -> int:
+    """Run as a JSON-RPC 2.0 LSP server over stdio (LSP 3.17)."""
+    from .lsp import LspServer
+    server = LspServer(builtins_path=args.builtins)
+    return server.run()
+
+
 def _cmd_parse(args) -> int:
     try:
         with open(args.file, "r", encoding="utf-8") as fh:
@@ -253,6 +260,12 @@ def main(argv=None) -> int:
                     help="path to the built-in catalog (default: the repo's "
                          "vaked/schema/builtins.vaked)")
 
+    sp = sub.add_parser("lsp",
+                        help="run as an LSP 3.17 server over stdio (for vaked-ide)")
+    sp.add_argument("--builtins", metavar="PATH", default=None,
+                    help="path to the built-in catalog (default: the repo's "
+                         "vaked/schema/builtins.vaked)")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "parse":
@@ -261,6 +274,8 @@ def main(argv=None) -> int:
         return _cmd_check(args)
     if args.cmd == "lower":
         return _cmd_lower(args)
+    if args.cmd == "lsp":
+        return _cmd_lsp(args)
     ap.print_help(sys.stderr)
     return 2
 
