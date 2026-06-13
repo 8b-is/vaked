@@ -824,28 +824,9 @@ fn checkFieldConstraints(a: std.mem.Allocator, vprop: VProp, fspec: FieldSpec, s
 }
 
 fn checkMatches(a: std.mem.Allocator, vprop: VProp, rx: []const u8, fname: []const u8, vspan: Span, file: []const u8, decl_lbl: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
-    switch (vprop) {
-        .lit => |lv| {
-            if (!std.mem.eql(u8, lv.kind, "STRING") and !std.mem.eql(u8, lv.kind, "PATH")) return;
-            var body = rx;
-            if (body.len >= 2 and body[0] == '/' and body[body.len - 1] == '/') body = body[1 .. body.len - 1];
-            const script = try std.fmt.allocPrint(a, "import re,sys; sys.exit(0 if re.fullmatch(r\"{s}\", sys.argv[1]) else 1)", .{body});
-            var child = std.process.Child{ .argv = &.{ "python3", "-c", script, lv.value }, .allocator = a };
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-            const term = child.spawnAndWait() catch return;
-            const matched = switch (term) {
-                .Exited => |code| code == 0,
-                else => true,
-            };
-            if (!matched) {
-                const rv = try renderVProp(a, vprop);
-                const msg = try std.fmt.allocPrint(a, "field `{s}`: value {s} does not match /{s}/", .{ fname, rv, body });
-                try emit(a, diags, "E-CONSTRAINT-MATCHES", file, vspan, decl_lbl, msg);
-            }
-        },
-        else => {},
-    }
+    // Zig 0.16.0: std.process.spawn requires Io which is not threaded into check functions.
+    // E-CONSTRAINT-MATCHES regex validation is deferred to vakedc (Python). vakedz v0.1 skips it.
+    _ = a; _ = vprop; _ = rx; _ = fname; _ = vspan; _ = file; _ = decl_lbl; _ = diags;
 }
 
 // --------------------------------------------------------------------------- //

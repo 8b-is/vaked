@@ -188,7 +188,7 @@ fn cmdCheck(a: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
             std.debug.print("check: cannot read builtins {s}: {s}\n", .{ builtins_path, @errorName(e) });
             return 1;
         };
-        const clean = try check.runJson(a, file, src, builtins_path, builtins_src, fw.interface);
+        const clean = try check.runJson(a, file, src, builtins_path, builtins_src, &fw.interface);
         try fw.interface.flush();
         return if (clean) 0 else 1;
     }
