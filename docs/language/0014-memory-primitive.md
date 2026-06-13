@@ -100,7 +100,9 @@ Memory needs a runtime home with its own design → plan → implement cycle (li
 eventd): a `memoryd` roster entry — the mining daemon that consumes `source`
 streams, applies `mine`, appends to `eventd`, and serves recall queries against
 the folded state, enforcing the `mem` capability domain. Noted in
-[`docs/runtime/README.md`](../runtime/README.md).
+[`docs/runtime/README.md`](../runtime/README.md); designed in
+[`2026-06-13-memoryd-design.md`](../superpowers/specs/2026-06-13-memoryd-design.md)
+(CDN-backed recall, edge `cf-second-brain` reuse, GitHub fallback tier).
 
 ## Relationship to MemPalace (the proving ground)
 
