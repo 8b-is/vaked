@@ -230,6 +230,7 @@ diff results-v0.1.json results-v0.2-phase1.json
 
 Profile with:
 ```bash
+make -C examples/evaluation loadtests   # the 1k/10k fixtures are generated, not committed
 python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-workers.vaked
 # Identify bottlenecks: use_check, attenuation checks, sorting
 ```
@@ -446,6 +447,7 @@ Recommended for validating optimizations:
 
 Example profile command:
 ```bash
+make -C examples/evaluation loadtests   # the 1k/10k fixtures are generated, not committed
 python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-workers.vaked 2>&1 | head -20
 # Identify bottleneck functions: use_check, attenuation_check, graph_traversal
 ```
