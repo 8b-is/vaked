@@ -66,7 +66,7 @@ runtime "sdd-field" {
     orchestrator -> broker
   }
 
-  budget sdd {
+  budget sddRun {
     tokens = 8000000
     wallClock = 8h
     toolCalls = 2000
@@ -79,7 +79,7 @@ runtime "sdd-field" {
   # the stage), each gated before the next stage starts.
   workflow sdd {
     on = "operator.invoke:subagent-driven-development"
-    budget = budget.sdd
+    budget = budget.sddRun
     maxDepth = 6
 
     node frame {
