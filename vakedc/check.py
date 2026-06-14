@@ -1517,42 +1517,63 @@ def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset(),
 
 
 def _check_name_collisions(items, file, smap, diags):
-    """Emit ``E-DECL-NAME-COLLISION`` for top-level decls that share a name (#25).
+    """Emit ``E-DECL-NAME-COLLISION`` for sibling decls that share a name (#25).
 
     Node ids are ``<filename>#<name-chain>`` with no kind (``graph.node_id``) and
-    ``Graph.add_node`` is keep-first, so two top-level decls with the same name —
-    most commonly different kinds, e.g. ``schema memory`` + ``capability memory``
-    — produce one node and the later decl is dropped from the graph with no
-    diagnostic.  We flag every decl after the first that reuses a name, landing on
-    its leading keyword and pointing back at the first via ``related``.
+    ``Graph.add_node`` is keep-first, so two decls in the SAME scope with the same
+    name — most commonly different kinds, e.g. ``schema memory`` + ``capability
+    memory`` — produce one node and the later decl is dropped from the graph with
+    no diagnostic.  We flag every decl after the first that reuses a name in its
+    scope, landing on its leading keyword and pointing back at the first via
+    ``related``.
 
-    Top-level only: nested-sibling collisions are a possible follow-up, but the
-    issue (#25) and the live workaround (``builtins.vaked`` naming a capability
-    domain ``mem`` to dodge ``schema memory``) are about top-level decls.
+    Both scope levels are checked with the same kind-agnostic node-id semantics:
+
+      * top-level decls (``<file>#<name>``), the original #25 case and the live
+        workaround (``builtins.vaked`` naming a capability domain ``mem`` to dodge
+        ``schema memory``);
+      * nested siblings inside a decl body (``<file>#<parent>/<name>``) — the same
+        collapse one level deeper (e.g. ``schema dup`` + ``capability dup`` inside
+        one ``runtime``).  The resolver mints child ids from each body's ``P.Decl``
+        siblings, so two of them sharing a name collide identically.
     """
-    first_seen = {}     # name -> the first P.Decl declaring it
-    for it in items:
+    _check_scope_collisions(items, file, smap, diags, scope_kind="top-level")
+
+
+def _check_scope_collisions(siblings, file, smap, diags, scope_kind):
+    """Flag duplicate names among the ``P.Decl`` siblings of one scope, then recurse
+    into each decl's body (its own nested sibling scope).
+
+    ``scope_kind`` ("top-level" or "nested") only tunes the message wording; the
+    node-id collapse and keep-first drop are identical at every depth, so the same
+    ``E-DECL-NAME-COLLISION`` code is emitted throughout."""
+    first_seen = {}     # name -> the first P.Decl declaring it in this scope
+    for it in siblings:
         if not isinstance(it, P.Decl):
             continue
         prior = first_seen.get(it.name)
         if prior is None:
             first_seen[it.name] = it
-            continue
-        span = _span_of_decl_kw(smap, it) or (it.byteStart, it.byteEnd, it.line, it.col)
-        related = [{
-            "file": file,
-            "decl": f"{prior.kind} {prior.name}",
-            "span": {"byteStart": prior.byteStart, "byteEnd": prior.byteEnd,
-                     "line": prior.line, "col": prior.col},
-            "message": f"first declared here as `{prior.kind} {prior.name}`",
-        }]
-        kindnote = ("a different kind" if it.kind != prior.kind
-                    else "the same kind")
-        _emit(diags, "E-DECL-NAME-COLLISION", file, span, it,
-              f"`{it.kind} {it.name}` collides with `{prior.kind} {prior.name}` "
-              f"({kindnote}, same name): top-level declarations share a "
-              f"kind-agnostic graph id, so the later one is silently dropped — "
-              f"rename one", related=related)
+        else:
+            span = _span_of_decl_kw(smap, it) or (it.byteStart, it.byteEnd, it.line, it.col)
+            related = [{
+                "file": file,
+                "decl": f"{prior.kind} {prior.name}",
+                "span": {"byteStart": prior.byteStart, "byteEnd": prior.byteEnd,
+                         "line": prior.line, "col": prior.col},
+                "message": f"first declared here as `{prior.kind} {prior.name}`",
+            }]
+            kindnote = ("a different kind" if it.kind != prior.kind
+                        else "the same kind")
+            scopenote = ("top-level declarations" if scope_kind == "top-level"
+                         else "sibling declarations")
+            _emit(diags, "E-DECL-NAME-COLLISION", file, span, it,
+                  f"`{it.kind} {it.name}` collides with `{prior.kind} {prior.name}` "
+                  f"({kindnote}, same name): {scopenote} share a "
+                  f"kind-agnostic graph id, so the later one is silently dropped — "
+                  f"rename one", related=related)
+        # Recurse into this decl's body — its own nested sibling scope.
+        _check_scope_collisions(it.body, file, smap, diags, scope_kind="nested")
 
 
 def _span_of_decl_kw(smap, decl):

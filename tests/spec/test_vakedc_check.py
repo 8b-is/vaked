@@ -502,6 +502,24 @@ capability mem { grant none recall
                  order none < recall }
 '''
 
+# Nested siblings of different kinds, same name, in ONE parent body: the #25
+# collapse one level deeper (resolver mints `<file>#r/dup` for both, keep-first
+# drops the capability).  Must now be flagged.
+_NC_NESTED = '''runtime r {
+  schema dup { field x : Int { optional } }
+  capability dup { grant none a
+                   order none < a }
+}
+'''
+
+# Same name reused at DIFFERENT nesting levels (top-level `memory` + a nested
+# `stream memory`): distinct node ids (`#memory` vs `#r/memory`), so NO collision.
+_NC_CROSS_LEVEL = '''schema memory { field topic : String { nonempty } }
+runtime r {
+  stream memory { from = source.x }
+}
+'''
+
 
 def _test_name_collision(lines):
     cache = _builtins_cache()
@@ -533,9 +551,31 @@ def _test_name_collision(lines):
         lines.append(f"  FAIL name-collision: distinct names (`memory`/`mem`) must "
                      f"not collide, got {len(clean)}")
 
+    # Nested siblings of different kinds, same name: must fire exactly once, with
+    # a `related` span back to the first declaration.
+    nested = [d for d in diags(_NC_NESTED, "nc-nested.vaked") if d.code == _COLLIDE]
+    if len(nested) != 1:
+        ok = False
+        lines.append(f"  FAIL name-collision: nested `schema dup` + `capability dup` "
+                     f"in one runtime should yield exactly one {_COLLIDE}, got "
+                     f"{len(nested)}")
+    elif not nested[0].related:
+        ok = False
+        lines.append("  FAIL name-collision: nested collision diagnostic should carry "
+                     "a `related` span pointing at the first declaration")
+
+    # Same name at different nesting levels has distinct node ids → no collision.
+    cross = [d for d in diags(_NC_CROSS_LEVEL, "nc-cross.vaked") if d.code == _COLLIDE]
+    if cross:
+        ok = False
+        lines.append(f"  FAIL name-collision: same name at different nesting levels "
+                     f"(top-level `memory` vs nested `stream memory`) must not "
+                     f"collide, got {len(cross)}")
+
     if ok:
-        lines.append("  name-collision: same-name top-level decls flagged "
-                     "(E-DECL-NAME-COLLISION); distinct names clean")
+        lines.append("  name-collision: same-name top-level AND nested-sibling decls "
+                     "flagged (E-DECL-NAME-COLLISION); distinct names / cross-level "
+                     "reuse clean")
     return ok
 
 
