@@ -1,0 +1,141 @@
+# hcp-litany-dev-loop.vaked — the agentic software-development meta-workflow,
+# expressed grammatically (issue #165, WP3 HCP/Litany).
+#
+# This dogfoods the language against the way *we actually drive development*:
+# a chain of agent activities — brainstorm, subagent-driven implementation,
+# time-boxed deep research, and a recurring PR-babysit that resolves conflicts
+# and drives CI to all-green. It composes EXISTING v0.3/v0.4 kinds only (no new
+# grammar); the protocol layer (HCP/Litany, RFCs 0001-0007) is a lower layer
+# this declaration *lowers onto*, documented in the companion design note
+# docs/superpowers/specs/2026-06-14-hcp-litany-dev-loop-design.md.
+#
+# The two-graph discipline (0015) is the spine:
+#   mesh     — the agent field: operator DELEGATES attenuated authority (§4.4).
+#   workflow — the dev loop: step ORDERING as a checked DAG.
+#   budget   — bounds: the deep-research wall-clock cap lives here (15m).
+#   runclass — scheduling: the PR-babysit recurrence lives here (interval 2m).
+#
+# How the three "shape" constraints from the request map to grammar:
+#   "deep-research, max 15 min"      -> budget.research.wallClock = 15m   (step budget)
+#   "pr-babysit, every 2 min"        -> runclass.babysit_loop.interval = 2m (step runclass)
+#   "resolve conflicts / drive green"-> retries on the babysit step (bounded loop)
+
+runtime "hcp-litany-dev-loop" {
+  systems = ["x86_64-linux"]
+
+  # The agent field. Mesh edges are capability DELEGATIONS: the operator holds
+  # the strongest grant in every domain it touches, and each agent receives an
+  # attenuated subset (POLA, 0011 §4.4). Capability separation gives static
+  # guarantees: only `researcher` reaches the internet (network.egress); only
+  # `babysitter` and `operator` can write to GitHub (mcp.github_write);
+  # `brainstormer` and `researcher` can never mutate the repo.
+  mesh field {
+    node operator {
+      role = "control-plane"
+      # Holds the maximal grant in each delegated domain so every `operator -> X`
+      # edge passes attenuation — incl. network.egress (delegated to researcher).
+      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin, network.egress]
+    }
+    node brainstormer {
+      role = "brainstorm"
+      # Reads the corpus and recalls prior context; produces ideas only.
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node implementer {
+      role = "implement"
+      # The only node that mutates the tree and spawns build/test, sandboxed.
+      # No mcp.github_write: it cannot self-publish (the coder pattern).
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    node researcher {
+      role = "deep-research"
+      # The ONLY node with network.egress (web fan-out); writes findings to
+      # memory (mem.append), never to the repo. Cannot touch code or ship.
+      capabilities = [fs.repo_ro, network.egress, mem.append]
+    }
+    node babysitter {
+      role = "pr-babysit"
+      # Resolves conflicts (repo_rw to rebase/merge) and merges via the GitHub
+      # broker (mcp.github_write). Conflict-resolution and merge are one role.
+      capabilities = [fs.repo_rw, mcp.github_write, mem.recall]
+    }
+
+    operator -> brainstormer
+    operator -> implementer
+    operator -> researcher
+    operator -> babysitter
+  }
+
+  # Overall meta-workflow bound (workflow.budget), enforced by the supervision
+  # plane (mcp-brokerd: policy, budgets, approvals).
+  budget run {
+    tokens = 4000000
+    wallClock = 1h
+    toolCalls = 600
+    approvals = "destructive"
+  }
+
+  # The deep-research time-box: "max 15 min". A wall-clock cap on a single step.
+  budget research {
+    wallClock = 15m
+    tokens = 800000
+    toolCalls = 200
+  }
+
+  # The PR-babysit per-cycle bound. approvals = "never" encodes the autonomous,
+  # "no comments on the PR" stance: the babysit step prompts for nothing.
+  budget babysit {
+    wallClock = 5m
+    toolCalls = 50
+    approvals = "never"
+  }
+
+  # The PR-babysit recurrence: "every 2 min". `interval` is the worker tick
+  # baseline (the RFC 0005 `slow`/SetIntervalControl verb overrides it live);
+  # maxRestarts/window feed supervisor restart intensity for transient CI flakes.
+  runclass babysit_loop {
+    priority = "normal"
+    interval = 2m
+    maxRestarts = 100
+    window = 1h
+  }
+
+  # The dev loop. Workflow edges are step ORDERING (a checked DAG); each step
+  # names its executing agent from the mesh and threads typed artifacts forward.
+  workflow dev_loop {
+    on = "github.issue.labeled:agent"
+    budget = budget.run
+    maxDepth = 6
+
+    node brainstorm {
+      agent = field.brainstormer
+      output = artifacts.ideas
+    }
+    node develop {
+      # subagent-driven development: the implementer turns ideas into a patch.
+      agent = field.implementer
+      input = artifacts.ideas
+      output = artifacts.patch
+      retries = 2
+    }
+    node research {
+      # time-boxed deep research (<=15m), bounded by budget.research.wallClock.
+      agent = field.researcher
+      input = artifacts.patch
+      output = artifacts.findings
+      budget = budget.research
+    }
+    node babysit {
+      # recurring drive-to-green: resolve conflicts, wait on CI, merge.
+      # Recurrence is the runclass interval; the conflict-resolve loop is retries.
+      agent = field.babysitter
+      input = artifacts.findings
+      output = artifacts.merged
+      budget = budget.babysit
+      runclass = runclass.babysit_loop
+      retries = 30
+    }
+
+    brainstorm -> develop -> research -> babysit
+  }
+}
