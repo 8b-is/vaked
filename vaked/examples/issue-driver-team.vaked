@@ -22,7 +22,7 @@
 #
 # Layering (cost/effort discipline):
 #   L0 orchestrate — gemini-3-flash-lite / haiku-4-5   reasoning=none  (routers)
-#   L1 code        — opus-4-8 / gpt-5 / gemini-3-pro    reasoning=high  (coders)
+#   L1 code        — opus-4-8 / deepseek-v4-flash / gemini-3-pro  reasoning=high (coders)
 #   L2 review      — sonnet-4-6                          reasoning=med
 #   L3 verify      — gemini-3-flash-lite                 reasoning=none  (CI gate)
 #   L4 integrate   — grok-4-fast                          reasoning=none  (merge)
@@ -99,7 +99,7 @@ runtime "issue-driver" {
       role = "implement"
       layer = "L1-code"
       stream = "daemons/runtime"
-      model = "openrouter/openai/gpt-5"
+      model = "openrouter/deepseek/deepseek-v4-flash"
       reasoning = "high"
       capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
     }
