@@ -31,7 +31,7 @@ runtime "sdd-field" {
     }
     node researcher {
       role = "research"            # one instance per core/adjacent topic (fan-out)
-      capabilities = [net.web_ro, mem.recall]
+      capabilities = [fs.repo_ro, mem.recall]   # web access is via the deep-research skill (no `net` cap domain in the schema yet)
     }
     node specAuthor {
       role = "spec"
@@ -70,7 +70,7 @@ runtime "sdd-field" {
     tokens = 8000000
     wallClock = 8h
     toolCalls = 2000
-    approvals = "merge"          # never self-merge; human approves the final integration
+    approvals = "destructive"    # human approves the destructive integration step; never self-merge
     fuel = 20000000000
   }
 
