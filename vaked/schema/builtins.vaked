@@ -277,6 +277,30 @@ schema host {
   field deploy : String { optional nonempty }   # "ssh://root@vps" | "local"
 }
 
+# `network` kind (#28, audit slice) — a deny-by-default egress membrane for one
+# principal, compiled to gen/ebpf.policy.json and enforced by agent-guardd
+# (0012 §7; docs/runtime/agent-guardd.md).  `network` is BOTH a built-in
+# capability domain (the grant lattice none < loopback < lan < egress, below)
+# AND a declarable kind: the domain is the principal's lattice grant; a `network`
+# decl is one concrete membrane that REFINES that grant into a host:port
+# allow-set.
+#
+# The schema is named `networkMembrane`, NOT `network`: a top-level
+# `schema network` would share a kind-agnostic LPG node id with `capability
+# network` and collide (E-DECL-NAME-COLLISION) — the same constraint that named
+# the memory-domain `mem` (not `memory`).  The checker conforms a `network` decl
+# against this schema via the kind->schema alias `_KIND_SCHEMA` (vakedc/check.py),
+# mirroring the `fiber.policy`->`fiberPolicy` indirection.  Fields mirror
+# emit_ebpf_policy (vakedc/lower.py): `principal` is the guarded mesh node,
+# `default` is the posture (deny-by-default), `allow` is the egress(host, port)
+# rule list, `observe` is the eBPF testimony stream.  Closed.
+schema networkMembrane {
+  field principal : String { nonempty }                 # guarded mesh-node name
+  field default   : String { optional oneof ["deny", "allow"] default = "deny" }
+  field allow     : List<EgressRule> { optional nonempty }   # egress(host, port) rules
+  field observe   : Stream<T> { optional }              # eBPF testimony channel
+}
+
 # --------------------------------------------------------------------------- #
 # Built-in namespace catalog (RFC 0017, v0.4)
 #

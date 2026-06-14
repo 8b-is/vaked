@@ -956,6 +956,15 @@ _NESTED_SCHEMA = {
     ("fiber", "policy"): "fiberPolicy",
 }
 
+# Kinds whose conformance schema is named differently from the kind, because a
+# top-level `schema <kind>` would collide with a same-named `capability <kind>`
+# in the kind-agnostic LPG (E-DECL-NAME-COLLISION).  `network` is both a kind
+# (an egress membrane) and a capability domain; its membrane schema lives under
+# `networkMembrane` (mirrors the `mem`/`memory` naming dodge in builtins.vaked).
+_KIND_SCHEMA = {
+    "network": "networkMembrane",
+}
+
 
 def _conform_decl(decl, schema: SchemaSpec, registry, smap, file, diags):
     decl_span = (decl.byteStart, decl.byteEnd, decl.line, decl.col)
@@ -1615,7 +1624,7 @@ def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
 
     # Conformance for kinds that have a schema (skip the meta-kinds themselves).
     if kind not in ("schema", "capability"):
-        schema = registry.schemas.get(kind)
+        schema = registry.schemas.get(_KIND_SCHEMA.get(kind, kind))
         if schema is not None:
             _conform_decl(decl, schema, registry, smap, file, diags)
         _check_generics(decl, registry, by_name_kind, smap, file, diags)
