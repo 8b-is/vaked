@@ -2,7 +2,7 @@
 //!
 //! Subcommands mirror `vakedc`:
 //!   vakedz parse <file> [--json PATH] [--print] [--no-cache]
-//!   vakedz check <file>
+//!   vakedz check <file> [--json] [--builtins PATH]
 //!   vakedz lower <file> [--out DIR]
 //!   vakedz all   <file> [--out DIR]
 //!   vakedz cache verify | path
@@ -37,7 +37,7 @@ const usage =
     \\
     \\usage:
     \\  vakedz parse <file> [--json PATH] [--print] [--no-cache]
-    \\  vakedz check <file>
+    \\  vakedz check <file> [--json] [--builtins PATH]
     \\  vakedz lower <file> [--out DIR]
     \\  vakedz all   <file> [--out DIR]
     \\  vakedz cache verify | path
@@ -178,6 +178,21 @@ fn cmdCheck(a: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
         std.debug.print("check: cannot read {s}: {s}\n", .{ file, @errorName(e) });
         return 1;
     };
+
+    if (hasFlag(args, "--json")) {
+        // Write diagnostic JSON to stdout; exit 0 if clean, 1 if diagnostics.
+        var buf: [4096]u8 = undefined;
+        var fw = Io.File.stdout().writer(io, &buf);
+        const builtins_path = flagValue(args, "--builtins") orelse "vaked/schema/builtins.vaked";
+        const builtins_src = readFile(a, io, builtins_path) catch |e| {
+            std.debug.print("check: cannot read builtins {s}: {s}\n", .{ builtins_path, @errorName(e) });
+            return 1;
+        };
+        const clean = try check.runJson(a, file, src, builtins_path, builtins_src, &fw.interface);
+        try fw.interface.flush();
+        return if (clean) 0 else 1;
+    }
+
     const r = try check.run(a, file, src);
     std.debug.print("{s}\n", .{r.message});
     return if (r.ok) 0 else 1;
