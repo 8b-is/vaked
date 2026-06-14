@@ -1,0 +1,246 @@
+# issue-driver-team.vaked — a multi-coder, multi-layer team topology that drives
+# an open GitHub issue all the way to a green, mergeable PR, expressed in Vaked
+# and dogfed through vakedc.
+#
+# The design follows Team Topologies: cheap, NO-REASONING "flash" models do the
+# orchestration / routing / verification (the fast interaction surfaces), while
+# the LATEST top agentic models (via OpenRouter) do the actual coding in
+# stream-aligned lanes. Authority is delegated downward and attenuated at every
+# hop, so a routing model can never write code and a coding model can never
+# publish — only the integrator holds `mcp.github_write`.
+#
+# Two graphs, the 0015 semantic split:
+#
+#   * mesh `team`    — AUTHORITY. operator -> orchestrator -> {coders, reviewer,
+#                      verifier, integrator}, each receiving a strictly
+#                      attenuated capability subset (POLA).
+#   * workflow `drive` — ORDERING. triage -> route -> {implement-lane × N} ->
+#                      review -> verify -> integrate -> publish, a checked DAG.
+#                      The "kick CI until green" loop is modeled as `retries` on
+#                      the verify step (a retry is NOT a back-edge — the DAG
+#                      stays acyclic and the critical-path depth stays bounded).
+#
+# Layering (cost/effort discipline):
+#   L0 orchestrate — gemini-3-flash-lite / haiku-4-5   reasoning=none  (routers)
+#   L1 code        — opus-4-8 / deepseek-v4-flash / gemini-3-pro  reasoning=high (coders)
+#   L2 review      — sonnet-4-6                          reasoning=med
+#   L3 verify      — gemini-3-flash-lite                 reasoning=none  (CI gate)
+#   L4 integrate   — grok-4-fast                          reasoning=none  (merge)
+
+use "./engines/zig.vaked"
+
+runtime "issue-driver" {
+  systems = ["x86_64-linux"]
+
+  namespace agentpipe   { member transcripts }
+  namespace agentGuardd { member ringbuf }
+
+  # The repo corpus every lane grounds against.
+  index repoCorpus {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  stream transcripts {
+    source = agentpipe.transcripts
+    type = Agent.Transcript
+    retention = 30d
+  }
+
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 24h
+  }
+
+  # The fleet run budget. Heavy coders draw against it; routers are cheap.
+  budget fleet {
+    tokens = 8000000
+    wallClock = 4h
+    toolCalls = 1200
+    approvals = "destructive"
+    fuel = 8000000000
+  }
+
+  # AUTHORITY graph. Each edge DELEGATES an attenuated subset (0011 §4.4).
+  mesh team {
+    # L0 — control plane. Cheap, no-reasoning router holds the full grant set and
+    # hands attenuated subsets down. It coordinates; it does not code.
+    node operator {
+      role = "control-plane"
+      layer = "L0-orchestrate"
+      model = "openrouter/google/gemini-3-flash-lite"
+      reasoning = "none"
+      effort = "low"
+      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin, network.egress]
+    }
+    # L0 — triage/router. Read-only classifier that decides which lane owns the
+    # issue. No write authority at all.
+    node triager {
+      role = "route"
+      layer = "L0-orchestrate"
+      model = "openrouter/anthropic/claude-haiku-4-5"
+      reasoning = "none"
+      effort = "low"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    # L1 — stream-aligned coders. Top agentic models, sandboxed write. No mcp
+    # grant => they produce patches, never publish them.
+    node coderLang {
+      role = "implement"
+      layer = "L1-code"
+      stream = "language/compiler"
+      model = "openrouter/anthropic/claude-opus-4-8"
+      reasoning = "high"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    node coderRuntime {
+      role = "implement"
+      layer = "L1-code"
+      stream = "daemons/runtime"
+      model = "openrouter/deepseek/deepseek-v4-flash"
+      reasoning = "high"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    node coderProtocol {
+      role = "implement"
+      layer = "L1-code"
+      stream = "protocol/wire"
+      model = "openrouter/google/gemini-3-pro"
+      reasoning = "high"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    # L2 — enabling/review. Mid model, read-only. Enforces conventions, cannot
+    # mutate the tree it reviews.
+    node reviewer {
+      role = "review"
+      layer = "L2-review"
+      model = "openrouter/anthropic/claude-sonnet-4-6"
+      reasoning = "medium"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    # L3 — platform/verify. Cheap, no-reasoning. Reads CI status and the tree,
+    # drives the green gate. No write to the tree.
+    node verifier {
+      role = "verify"
+      layer = "L3-verify"
+      model = "openrouter/google/gemini-3-flash-lite"
+      reasoning = "none"
+      effort = "low"
+      capabilities = [fs.repo_ro, mcp.github_read, mem.recall]
+    }
+    # L4 — integrate. The ONLY node holding github write authority: it opens the
+    # PR and drives it to mergeable. No reasoning — it assembles, it does not code.
+    node integrator {
+      role = "integrate"
+      layer = "L4-integrate"
+      model = "openrouter/x-ai/grok-4-fast"
+      reasoning = "none"
+      effort = "low"
+      capabilities = [fs.repo_ro, mcp.github_write, network.egress]
+    }
+
+    operator -> triager
+    operator -> coderLang
+    operator -> coderRuntime
+    operator -> coderProtocol
+    operator -> reviewer
+    operator -> verifier
+    operator -> integrator
+  }
+
+  # ORDERING graph: triage -> route -> fan-out coders -> fan-in review -> verify
+  # (kick-until-green via retries) -> integrate -> publish. A checked DAG.
+  workflow drive {
+    on = "github.issue.labeled:agent"
+    budget = budget.fleet
+    maxDepth = 8
+
+    node triage {
+      agent = team.triager
+      output = artifacts.issueClass
+    }
+    node route {
+      agent = team.triager
+      input = artifacts.issueClass
+      output = artifacts.lanePlan
+    }
+    node implementLang {
+      agent = team.coderLang
+      input = artifacts.lanePlan
+      output = artifacts.patchLang
+      retries = 2
+    }
+    node implementRuntime {
+      agent = team.coderRuntime
+      input = artifacts.lanePlan
+      output = artifacts.patchRuntime
+      retries = 2
+    }
+    node implementProtocol {
+      agent = team.coderProtocol
+      input = artifacts.lanePlan
+      output = artifacts.patchProtocol
+      retries = 2
+    }
+    node review {
+      agent = team.reviewer
+      input = artifacts.lanePlan
+      output = artifacts.verdict
+    }
+    # Self-verify drive: re-run CI until no error / green. The kick loop is a
+    # retry budget on a single step, not a back-edge.
+    node verify {
+      agent = team.verifier
+      input = artifacts.verdict
+      output = artifacts.greenStatus
+      retries = 5
+    }
+    node integrate {
+      agent = team.integrator
+      input = artifacts.greenStatus
+      output = artifacts.pullRequest
+    }
+    node publish {
+      agent = team.integrator
+      input = artifacts.pullRequest
+    }
+
+    triage -> route
+    route -> implementLang
+    route -> implementRuntime
+    route -> implementProtocol
+    implementLang -> review
+    implementRuntime -> review
+    implementProtocol -> review
+    review -> verify
+    verify -> integrate
+    integrate -> publish
+  }
+
+  runclass interactive {
+    priority = "high"
+    interval = 5s
+  }
+
+  fiber transcriptMiner {
+    engine = zigDaemon
+    input = stream.transcripts
+    output = artifacts.palaceEntries
+    runclass = runclass.interactive
+  }
+
+  surface fleetView {
+    mode = raylib
+    fps = 30
+    input = [stream.ebpfEvents, graph.drive, graph.team]
+    views = ["workflow-dag", "mesh-topology", "memory-recall"]
+  }
+
+  parallel "issue-driver-runtime" {
+    fibers = [transcriptMiner, fleetView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}

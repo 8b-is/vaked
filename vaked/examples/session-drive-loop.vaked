@@ -1,0 +1,235 @@
+# session-drive-loop.vaked — the meta-workflow this very session ran: sweep ALL
+# open issues, self-verify each against `main`, abstain on the already-done,
+# implement the rest with a multi-model swarm, then REFLECT the evidence back
+# into the docs/theory. Expressed in Vaked and dogfed through vakedc — the loop
+# that drives `main` further, modeled in the language it advances.
+#
+# This is the third and most complete dogfood in the series:
+#   pr-multimodel-pipeline.vaked  — one PR loop (author/reviewer/broker)
+#   issue-driver-team.vaked       — one issue, multi-layer multi-coder team
+#   session-drive-loop.vaked      — the whole session: every open issue, with a
+#                                   self-verify ABSTAIN gate and a REFLECT step
+#
+# Two new ideas this file adds over its siblings:
+#
+#   1. verifyExisting — a no-op gate. Before any coder runs, a cheap verifier
+#      checks the issue against `main`. If the work is already merged (this
+#      session found #192 and #58 already done), the lane ABSTAINS — no
+#      redundant PR. Modeled as a step whose `retries` carry the re-checks; the
+#      decision to skip is the verifier's, not a back-edge.
+#   2. reflect — a documentarian step that turns the run's OUTPUT (compile
+#      results, negative tests, the attenuation catch) into evidence committed
+#      to the docs. The loop does not just close issues; it drives the theory.
+#
+# Authority is attenuated per layer exactly as the fleet ran it: cheap
+# no-reasoning flash models orchestrate/route/verify; top OpenRouter agentic
+# models code; only the integrator holds `mcp.github_write`.
+
+use "./engines/zig.vaked"
+
+runtime "session-drive" {
+  systems = ["x86_64-linux"]
+
+  namespace agentpipe   { member transcripts }
+  namespace agentGuardd { member ringbuf }
+
+  # The issue backlog and the repo the loop drives forward.
+  index openIssues {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  stream transcripts {
+    source = agentpipe.transcripts
+    type = Agent.Transcript
+    retention = 30d
+  }
+
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 24h
+  }
+
+  budget sweep {
+    tokens = 16000000
+    wallClock = 8h
+    toolCalls = 4000
+    approvals = "destructive"
+    fuel = 16000000000
+  }
+
+  # AUTHORITY graph (POLA, attenuated per layer).
+  mesh session {
+    node operator {
+      role = "control-plane"
+      layer = "L0-orchestrate"
+      model = "openrouter/google/gemini-3-flash-lite"
+      reasoning = "none"
+      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mcp.github_read, mem.admin, network.egress]
+    }
+    # Collector + triager: read the open issues, classify, decide the lane.
+    node collector {
+      role = "collect"
+      layer = "L0-orchestrate"
+      model = "openrouter/anthropic/claude-haiku-4-5"
+      reasoning = "none"
+      capabilities = [fs.repo_ro, mcp.github_read, mem.recall]
+    }
+    # Verifier: the ABSTAIN gate. Reads main + CI, decides if work is needed.
+    node verifier {
+      role = "verify"
+      layer = "L3-verify"
+      model = "openrouter/google/gemini-3-flash-lite"
+      reasoning = "none"
+      capabilities = [fs.repo_ro, mcp.github_read, mem.recall]
+    }
+    # Coders: the top agentic models, sandboxed write, no publish authority.
+    node coderLang {
+      role = "implement"
+      layer = "L1-code"
+      stream = "language/compiler"
+      model = "openrouter/anthropic/claude-opus-4-8"
+      reasoning = "high"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    node coderRuntime {
+      role = "implement"
+      layer = "L1-code"
+      stream = "daemons/runtime"
+      model = "openrouter/deepseek/deepseek-v4-flash"
+      reasoning = "high"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    # Reviewer: read-only conventions gate.
+    node reviewer {
+      role = "review"
+      layer = "L2-review"
+      model = "openrouter/anthropic/claude-sonnet-4-6"
+      reasoning = "medium"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    # Documentarian: turns run evidence into committed docs/proof. Writes docs
+    # only (repo_rw to land the design record), no publish authority.
+    node documentarian {
+      role = "reflect"
+      layer = "L2-review"
+      model = "openrouter/anthropic/claude-opus-4-8"
+      reasoning = "high"
+      capabilities = [fs.repo_rw, mem.append]
+    }
+    # Integrator: the sole github_write holder — opens PRs, closes done issues,
+    # drives to mergeable.
+    node integrator {
+      role = "integrate"
+      layer = "L4-integrate"
+      model = "openrouter/x-ai/grok-4-fast"
+      reasoning = "none"
+      capabilities = [fs.repo_ro, mcp.github_write, network.egress]
+    }
+
+    operator -> collector
+    operator -> verifier
+    operator -> coderLang
+    operator -> coderRuntime
+    operator -> reviewer
+    operator -> documentarian
+    operator -> integrator
+  }
+
+  # ORDERING graph: the session loop as a checked DAG.
+  #   collect -> triage -> verifyExisting -> {abstain | implement lanes} ->
+  #   review -> reflect -> integrate -> publish
+  workflow drive_all {
+    on = "github.issue.labeled:agent"
+    budget = budget.sweep
+    maxDepth = 9
+
+    node collect {
+      agent = session.collector
+      output = artifacts.issueList
+    }
+    node triage {
+      agent = session.collector
+      input = artifacts.issueList
+      output = artifacts.lanePlan
+    }
+    # The abstain gate: re-check against main (retries carry the re-verification
+    # rounds). Emits whether each issue is already-done or actionable.
+    node verifyExisting {
+      agent = session.verifier
+      input = artifacts.lanePlan
+      output = artifacts.actionPlan
+      retries = 3
+    }
+    node implementLang {
+      agent = session.coderLang
+      input = artifacts.actionPlan
+      output = artifacts.patchLang
+      retries = 2
+    }
+    node implementRuntime {
+      agent = session.coderRuntime
+      input = artifacts.actionPlan
+      output = artifacts.patchRuntime
+      retries = 2
+    }
+    node review {
+      agent = session.reviewer
+      input = artifacts.actionPlan
+      output = artifacts.verdict
+    }
+    # Reflect: fold the run's evidence into a committed design/proof doc.
+    node reflect {
+      agent = session.documentarian
+      input = artifacts.verdict
+      output = artifacts.proofDoc
+    }
+    node integrate {
+      agent = session.integrator
+      input = artifacts.proofDoc
+      output = artifacts.pullRequest
+      retries = 5
+    }
+    node publish {
+      agent = session.integrator
+      input = artifacts.pullRequest
+    }
+
+    collect -> triage
+    triage -> verifyExisting
+    verifyExisting -> implementLang
+    verifyExisting -> implementRuntime
+    implementLang -> review
+    implementRuntime -> review
+    review -> reflect
+    reflect -> integrate
+    integrate -> publish
+  }
+
+  runclass interactive {
+    priority = "high"
+    interval = 5s
+  }
+
+  fiber transcriptMiner {
+    engine = zigDaemon
+    input = stream.transcripts
+    output = artifacts.palaceEntries
+    runclass = runclass.interactive
+  }
+
+  surface sessionView {
+    mode = raylib
+    fps = 30
+    input = [stream.ebpfEvents, graph.drive_all, graph.session]
+    views = ["workflow-dag", "mesh-topology", "memory-recall"]
+  }
+
+  parallel "session-drive-runtime" {
+    fibers = [transcriptMiner, sessionView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}
