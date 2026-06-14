@@ -1,0 +1,161 @@
+# pr-multimodel-pipeline.vaked — the multi-model PR-implementation loop that
+# produced peterlodri-sec/vaked-base#219, expressed in Vaked and dogfed through
+# vakedc itself. This is the self-referential proof: the workflow that built the
+# PR, written in the language, compiled by the language's own front-end.
+#
+# Case study: an agentic "end-to-end implementation" loop runs more than one
+# model, and the models do NOT trust each other equally. The AUTHOR model
+# (claude-opus-4-8) writes the change and can mutate the tree, but must never be
+# able to publish on its own. The REVIEWER model (gemini-3.1-flash-lite) is
+# advisory and strictly read-only — it can read the patch and emit a verdict,
+# but cannot alter a single byte. Only the BROKER holds the GitHub write
+# authority, so it is the sole node that can open the PR and post the check-in.
+#
+# Vaked encodes this as two distinct graphs the type checker verifies before
+# anything runs (design 0015, the semantic split):
+#
+#   * mesh `field`    — AUTHORITY: operator -> agent edges DELEGATE an
+#                       attenuated capability subset to each model (POLA).
+#   * workflow `pr_loop` — ORDERING: collect -> implement -> review -> publish
+#                       -> checkin is a checked DAG (no cycles, bounded depth).
+#
+# The compile-time fact this buys us: the reviewer holds no `fs.repo_rw` and the
+# author holds no `mcp.github_write`, so no single model can widen its authority
+# across a step boundary. The fix-loop (the entity-decode + format rounds the
+# author actually did on #219) is modeled as `retries` on the implement step —
+# a retry is NOT a back-edge, so the DAG stays acyclic.
+
+use "./engines/zig.vaked"
+
+runtime "pr-pipeline" {
+  systems = ["x86_64-linux"]
+
+  # Daemon-channel namespaces this runtime brings into scope (RFC 0017, POLA).
+  namespace agentpipe   { member transcripts }
+  namespace agentGuardd { member ringbuf }
+
+  # The repo corpus the models ground against — the very repo this PR targets.
+  index repoCorpus {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  # Session transcripts (author + reviewer turns) and the eBPF evidence stream.
+  stream transcripts {
+    source = agentpipe.transcripts
+    type = Agent.Transcript
+    retention = 30d
+  }
+
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 24h
+  }
+
+  # The run budget the loop is bounded by, enforced by the supervision plane.
+  budget pr {
+    tokens = 2000000
+    wallClock = 1h
+    toolCalls = 300
+    approvals = "destructive"
+    fuel = 2000000000
+  }
+
+  # AUTHORITY graph. Mesh edges are capability DELEGATIONS: the operator holds
+  # the strongest grants; every model receives a strictly attenuated subset.
+  mesh field {
+    node operator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin]
+    }
+    # Author model: writes the change, runs commands sandboxed, recalls memory.
+    # No mcp grant => cannot publish. This is the opus session that built #219.
+    node author {
+      role = "implement"
+      model = "claude-opus-4-8"
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    # Reviewer model: advisory, read-only audit of the patch. No write grant of
+    # any kind => physically cannot mutate the tree it reviews. This is the
+    # gemini-3.1-flash-lite vaked-ci-reviewer that commented on #219.
+    node reviewer {
+      role = "review"
+      model = "gemini-3.1-flash-lite"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    # Broker: holds the GitHub write authority and nothing else. The only node
+    # that can open the PR and post the self-check-in.
+    node broker {
+      role = "mcp-broker"
+      capabilities = [mcp.github_write]
+    }
+    operator -> author
+    operator -> reviewer
+    operator -> broker
+  }
+
+  # ORDERING graph: the PR loop as a checked DAG. Each step names the model that
+  # executes it; the input/output artifacts thread the hand-off between models.
+  workflow pr_loop {
+    on = "github.issue.labeled:agent"
+    budget = budget.pr
+    maxDepth = 6
+
+    node collect {
+      agent = field.author
+      output = artifacts.issueList
+    }
+    node implement {
+      agent = field.author
+      input = artifacts.issueList
+      output = artifacts.patch
+      retries = 2
+    }
+    node review {
+      agent = field.reviewer
+      input = artifacts.patch
+      output = artifacts.verdict
+    }
+    node publish {
+      agent = field.broker
+      input = artifacts.verdict
+      output = artifacts.pullRequest
+    }
+    node checkin {
+      agent = field.broker
+      input = artifacts.pullRequest
+    }
+
+    collect -> implement -> review -> publish -> checkin
+  }
+
+  # The scheduling class the interactive agents run under.
+  runclass interactive {
+    priority = "high"
+    interval = 5s
+  }
+
+  # Background fiber: mine the transcripts into palace entries (MemPalace shape).
+  fiber transcriptMiner {
+    engine = zigDaemon
+    input = stream.transcripts
+    output = artifacts.palaceEntries
+    runclass = runclass.interactive
+  }
+
+  # Operator surface: the live view over the loop.
+  surface prView {
+    mode = raylib
+    fps = 30
+    input = [stream.ebpfEvents, graph.pr_loop, graph.field]
+    views = ["workflow-dag", "mesh-topology", "memory-recall"]
+  }
+
+  parallel "pr-runtime" {
+    fibers = [transcriptMiner, prView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}
