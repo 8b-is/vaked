@@ -216,6 +216,21 @@ def _test_rejected(lines):
 # 5. All 17 examples check clean (rejected is the sole exception)
 # --------------------------------------------------------------------------- #
 
+# The intentionally-broken cap-use-* fixtures (Risk 6, E-CAP-USE). Each produces
+# at least one ERROR, so they are excluded from the clean-examples check and
+# verified by _test_cap_use (group 5e). cap-use-no-needs.vaked is the opt-out
+# PROOF (clean) and is deliberately NOT listed here.
+_CAP_USE_BROKEN = frozenset((
+    "cap-use-underpowered.vaked",
+    "cap-use-no-caps.vaked",
+    "cap-use-wrong-domain.vaked",
+    "cap-use-partial.vaked",
+    "cap-use-two-nodes.vaked",
+    "cap-use-and-excess.vaked",
+    "cap-use-and-attenuation.vaked",
+))
+
+
 def _test_all_examples(lines):
     ok = True
     cache = _builtins_cache()
@@ -235,6 +250,12 @@ def _test_all_examples(lines):
         # checker). It is verified separately (group 5c-ns below) and excluded here.
         if os.path.basename(f) == "error-unknown-namespace.vaked":
             continue
+        # The cap-use-* negative fixtures (Risk 6, E-CAP-USE) are intentionally
+        # invalid; they are verified separately by _test_cap_use (group 5e) and
+        # excluded here. (cap-use-no-needs.vaked is the opt-out PROOF — it is clean
+        # and is NOT in this set, so it stays in the clean-examples check.)
+        if os.path.basename(f) in _CAP_USE_BROKEN:
+            continue
         # "Clean" means no ERRORS. Advisory warnings (e.g. the #226 POLA /
         # confused-deputy lints on pola-violation.vaked) are non-blocking and
         # are verified by their own group below.
@@ -247,9 +268,10 @@ def _test_all_examples(lines):
                 lines.append(f"      {d.code} @ {d.line}:{d.col} :: {d.message}")
         else:
             n_clean += 1
-    lines.append(f"  examples: {n_clean}/{len(files) - 2} non-error examples "
+    n_excluded = 2 + len(_CAP_USE_BROKEN)   # rejected + error-unknown-namespace + cap-use-*
+    lines.append(f"  examples: {n_clean}/{len(files) - n_excluded} non-error examples "
                  f"check clean (+ rejected.vaked + error-unknown-namespace.vaked "
-                 f"covered separately)")
+                 f"+ {len(_CAP_USE_BROKEN)} cap-use-* fixtures covered separately)")
     return ok
 
 
@@ -1083,6 +1105,107 @@ def _test_capability_reachability(lines):
     return ok
 
 
+# 5e. POLA use-check — E-CAP-USE (Risk 6, 0011 §4.3 `used(p) ⊑ granted(p)`).
+# --------------------------------------------------------------------------- #
+# The dual of W-POLA-EXCESS: a node that declares `needs` it does not HOLD (no
+# held grant in the domain dominates the exercised capability) is underpowered —
+# an ERROR. Seven negative fixtures cover underpowered / no-caps / wrong-domain /
+# partial / two-node / excess-combo / attenuation-combo; the eighth
+# (cap-use-no-needs) is the opt-out proof and must be clean.
+# --------------------------------------------------------------------------- #
+
+_CAP_USE = "E-CAP-USE"
+_CAP_USE_DIR = os.path.join(REPO, "vaked", "examples", "types")
+
+# (basename, sorted expected codes incl. severity-orthogonal companions)
+_CAP_USE_CASES = [
+    ("cap-use-underpowered.vaked",     [_CAP_USE]),
+    ("cap-use-no-caps.vaked",          [_CAP_USE]),
+    ("cap-use-wrong-domain.vaked",     [_CAP_USE]),
+    ("cap-use-partial.vaked",          [_CAP_USE]),
+    ("cap-use-two-nodes.vaked",        [_CAP_USE]),
+    # over-grant WARNING + under-grant ERROR, on different nodes:
+    ("cap-use-and-excess.vaked",       [_CAP_USE, _POLA_EXCESS]),
+    # use ERROR + delegation-attenuation ERROR:
+    ("cap-use-and-attenuation.vaked",  ["E-CAP-ATTENUATION", _CAP_USE]),
+]
+
+
+def _test_cap_use(lines):
+    ok = True
+    cache = _builtins_cache()
+
+    for base, expect in _CAP_USE_CASES:
+        path = os.path.join(_CAP_USE_DIR, base)
+        rel = os.path.relpath(path, REPO)
+        diags = vakedc.check_source(open(path, encoding="utf-8").read(), rel,
+                                    builtins_cache=cache)
+        codes = sorted(d.code for d in diags)
+        if codes != sorted(expect):
+            ok = False
+            lines.append(f"  FAIL cap-use: {base} expected {sorted(expect)}, "
+                         f"got {codes}")
+            continue
+        # Every E-CAP-USE is an ERROR, names the offending node, and is
+        # source-mapped onto the `needs` field value (not byte 0).
+        for d in diags:
+            if d.code != _CAP_USE:
+                continue
+            if d.severity != "error":
+                ok = False
+                lines.append(f"  FAIL cap-use: {base} {_CAP_USE} severity is "
+                             f"{d.severity} (expected error)")
+            if "node `" not in d.message or "(0011 §4.3)" not in d.message:
+                ok = False
+                lines.append(f"  FAIL cap-use: {base} {_CAP_USE} message lacks "
+                             f"node name / §-ref: {d.message}")
+            if (d.byteStart, d.byteEnd) == (0, 0):
+                ok = False
+                lines.append(f"  FAIL cap-use: {base} {_CAP_USE} is not "
+                             f"source-mapped (span 0..0)")
+
+    # partial: the single E-CAP-USE must be the NETWORK domain (fs need satisfied).
+    pdiags = vakedc.check_source(
+        open(os.path.join(_CAP_USE_DIR, "cap-use-partial.vaked"),
+             encoding="utf-8").read(),
+        "cap-use-partial.vaked", builtins_cache=cache)
+    puse = [d for d in pdiags if d.code == _CAP_USE]
+    if len(puse) != 1 or "network.egress" not in puse[0].message:
+        ok = False
+        lines.append(f"  FAIL cap-use: partial expected 1 {_CAP_USE} naming "
+                     f"network.egress, got {[d.message for d in puse]}")
+
+    # two-nodes: the single E-CAP-USE must name `reviewer`, NOT the clean `author`.
+    tdiags = vakedc.check_source(
+        open(os.path.join(_CAP_USE_DIR, "cap-use-two-nodes.vaked"),
+             encoding="utf-8").read(),
+        "cap-use-two-nodes.vaked", builtins_cache=cache)
+    tuse = [d for d in tdiags if d.code == _CAP_USE]
+    if len(tuse) != 1 or "`reviewer`" not in tuse[0].message \
+            or "`author`" in tuse[0].message:
+        ok = False
+        lines.append(f"  FAIL cap-use: two-nodes expected 1 {_CAP_USE} on "
+                     f"`reviewer` only, got {[d.message for d in tuse]}")
+
+    # Case 8 — opt-out proof: a node holding a cap but declaring NO `needs` is
+    # silent (no E-CAP-USE, and indeed no diagnostics at all).
+    ndiags = vakedc.check_source(
+        open(os.path.join(_CAP_USE_DIR, "cap-use-no-needs.vaked"),
+             encoding="utf-8").read(),
+        "cap-use-no-needs.vaked", builtins_cache=cache)
+    if ndiags:
+        ok = False
+        lines.append(f"  FAIL cap-use: cap-use-no-needs expected clean (opt-out), "
+                     f"got {[d.code for d in ndiags]}")
+
+    if ok:
+        lines.append("  cap-use (Risk 6): E-CAP-USE fires on underpowered / "
+                     "no-caps / wrong-domain / partial / two-node nodes (+ combos "
+                     "with W-POLA-EXCESS and E-CAP-ATTENUATION); the no-needs "
+                     "opt-out stays clean")
+    return ok
+
+
 # 6. `network` schema (#28) — the egress-membrane kind is now schema'd.
 #
 # Before this slice a `network` decl was schema-less: ANY body checked clean.
@@ -1153,8 +1276,8 @@ def run():
                _test_all_examples, _test_ref_resolution, _test_import_binding,
                _test_name_collision, _test_workflow, _test_namespace_checker,
                _test_network_schema, _test_ebpf_intent,
-               _test_capability_reachability, _test_determinism,
-               _test_determinism_boundary):
+               _test_capability_reachability, _test_cap_use,
+               _test_determinism, _test_determinism_boundary):
         try:
             ok = fn(lines) and ok
         except Exception as e:

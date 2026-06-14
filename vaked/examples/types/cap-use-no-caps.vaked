@@ -1,0 +1,23 @@
+# v0.3 example — POLA USE-CHECK violation (E-CAP-USE), Risk 6.
+#
+# The node declares it USES fs.repo_rw (via `needs`) but holds NO capabilities at
+# all. With an empty held set there is no grant in the `fs` domain to dominate the
+# exercised capability, so `used(p) ⊑ granted(p)` fails (0011 §4.3) and the checker
+# emits one E-CAP-USE error reporting "(none in domain fs)".
+#
+# DO NOT "fix" this file — it is a negative use-check fixture and must keep
+# producing exactly one E-CAP-USE error.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh noCapsField {
+  node worker {
+    role  = "worker"
+    # exercises repo_rw but holds NOTHING → E-CAP-USE (none in domain fs)
+    needs = [fs.repo_rw]
+  }
+}

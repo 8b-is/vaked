@@ -1,0 +1,43 @@
+# v0.3 example — the POLA use-check ERROR alongside a delegation-attenuation
+# ERROR, Risk 6.  Two independent capability errors, different shapes:
+#
+#   * E-CAP-ATTENUATION (0011 §4.4) — the delegation `author -> reviewer` escalates
+#     authority: the receiver holds fs.repo_rw but the sender holds only fs.repo_ro
+#     (repo_rw </= repo_ro), so the edge is rejected.
+#   * E-CAP-USE (0011 §4.3) — `tool` exercises fs.repo_rw (declared in `needs`) but
+#     only holds fs.repo_ro, so no held grant dominates the exercised capability.
+#
+# `tool` has no delegation edges (so no attenuation/deputy interaction), and
+# author/reviewer declare no `needs` (so no use-check on them). The checker emits
+# exactly one E-CAP-ATTENUATION + one E-CAP-USE.
+#
+# DO NOT "fix" this file — it is a negative fixture and must keep producing
+# exactly one E-CAP-ATTENUATION + one E-CAP-USE.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh useAndAttenuationField {
+  node author {
+    role         = "author"
+    capabilities = [fs.repo_ro]          # sender holds only repo_ro
+  }
+
+  node reviewer {
+    role         = "reviewer"
+    capabilities = [fs.repo_rw]          # receiver holds repo_rw (STRONGER)
+  }
+
+  node tool {
+    role         = "tool"
+    # uses repo_rw but only holds repo_ro → E-CAP-USE (no edges on this node)
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_ro]
+  }
+
+  # E-CAP-ATTENUATION: granted(reviewer)=repo_rw </= granted(author)=repo_ro.
+  author -> reviewer : "handoff"
+}

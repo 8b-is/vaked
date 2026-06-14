@@ -20,8 +20,9 @@ declares the capability graph as a first-class artifact (the LPG built in
 that runtime systems can only discover late. This note specifies the
 capability-reachability pass added to `vakedc check` (issue #226): per-node
 authority derived from the mesh, two advisory least-authority lints
-(`W-POLA-EXCESS`, `W-CONFUSED-DEPUTY`), and the documented limit on what a network
-membrane can and cannot attenuate.
+(`W-POLA-EXCESS`, `W-CONFUSED-DEPUTY`), the **POLA use-check** error
+(`E-CAP-USE`, 0011 §4.3 — a node may not exercise authority it does not hold),
+and the documented limit on what a network membrane can and cannot attenuate.
 
 ## Motivation
 
@@ -71,13 +72,36 @@ maximum authority the node claims it requires, expressed in the same
 `domain.grant` ref form as `capabilities`. It is validated against the capability
 registry exactly like `capabilities` (unknown domain/grant ⇒ the usual
 `E-CAP-UNKNOWN-DOMAIN` / `E-CAP-UNKNOWN-GRANT` errors). A node that omits `needs`
-opts out of the POLA-excess lint (no declared budget ⇒ nothing to compare).
+opts out of *both* POLA checks — the `W-POLA-EXCESS` lint and the `E-CAP-USE`
+use-check (no declared budget / use set ⇒ nothing to compare).
 
 ## The lints
 
-Both lints are **advisory warnings** (`severity = "warning"`). They never block a
+The two **advisory warnings** below (`severity = "warning"`) never block a
 `check`; they surface a hazard with the node name and the offending grants so an
-author can tighten the graph or consciously accept the shape.
+author can tighten the graph or consciously accept the shape. They sit alongside
+the **POLA use-check error** (`E-CAP-USE`, `severity = "error"`), which *does*
+block — exercising authority a node does not hold is unsound, not merely
+imprudent.
+
+### `E-CAP-USE` (the POLA use-check)
+
+`needs` declares the capabilities a node **uses** (`used(p)`, 0011 §4.3). The
+use-check requires `used(p) ⊑ granted(p)`: for each declared `(domain,
+need_grant)`, the node must hold some grant `g` in the **same domain** with
+`need_grant ≤ g` under that domain's attenuation order (a stronger held grant
+authorizes a weaker use). If no held grant in the domain dominates the need — the
+node holds nothing in the domain, or only weaker grants — the node is
+*underpowered*: it exercises authority it does not hold. Emit `E-CAP-USE`
+(severity `error`) against the node's `needs` field, naming the node, the
+exercised `domain.grant`, and the held grants (or `(none in domain <d>)`).
+
+This is the **dual** of `W-POLA-EXCESS` and orthogonal to it per domain:
+`W-POLA-EXCESS` fires when a held grant is *stronger* than every declared need
+(granted > needed — a warning); `E-CAP-USE` fires when a declared need is not
+dominated by any held grant (needed > held — an error). One node can raise both,
+in different domains. A node that declares no `needs` opts out of both (no
+declared `used` set ⇒ nothing to check).
 
 ### `W-POLA-EXCESS`
 
@@ -136,12 +160,18 @@ callers are sorted before rendering, so diagnostics are byte-stable across runs
 - `vaked/examples/types/pola-least-authority.vaked` — the clean pair: every node
   holds exactly its declared need and no shared deputy arises, so the pass is
   silent.
+- `vaked/examples/types/cap-use-*.vaked` — the `E-CAP-USE` fixtures (Risk 6):
+  seven negative cases (underpowered, no-caps, wrong-domain, partial, two-node,
+  and combos with `W-POLA-EXCESS` / `E-CAP-ATTENUATION`) plus `cap-use-no-needs`,
+  the opt-out proof (a cap-holding node with no `needs` stays clean).
 
 ## Status
 
 - ✅ Per-node held authority + declared `needs` from the mesh.
 - ✅ `W-POLA-EXCESS` and `W-CONFUSED-DEPUTY` warnings with node names + offending
   grants/edges.
+- ✅ `E-CAP-USE` use-check error (Risk 6, 0011 §4.3): a node may not exercise (via
+  `needs`) authority no held grant dominates; the dual of `W-POLA-EXCESS`.
 - ✅ Design note (this document) on the channel-vs-reference attenuation gap.
 - ✅ Example pair exercising a warning case and a clean least-authority graph.
 - ⏳ Follow-up: expose the transitive reachability set to `emit_ebpf_policy` so the

@@ -1,0 +1,25 @@
+# v0.3 example — POLA USE-CHECK violation (E-CAP-USE), Risk 6.
+#
+# The dual of W-POLA-EXCESS: instead of holding MORE than it needs, this node is
+# UNDERPOWERED — it declares it USES fs.repo_rw (via `needs`) but only HOLDS
+# fs.repo_ro. Since repo_ro < repo_rw (repo_ro does NOT dominate repo_rw), no held
+# grant authorizes the exercised capability, so `used(p) ⊑ granted(p)` fails
+# (0011 §4.3) and the checker emits one E-CAP-USE error.
+#
+# DO NOT "fix" this file — it is a negative use-check fixture and must keep
+# producing exactly one E-CAP-USE error.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh underpoweredField {
+  node worker {
+    role         = "worker"
+    # exercises repo_rw but only holds repo_ro (repo_ro </= repo_rw) → E-CAP-USE
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_ro]
+  }
+}

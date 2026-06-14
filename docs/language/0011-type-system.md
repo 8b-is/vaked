@@ -357,7 +357,10 @@ where `c ⊑ G` ("`c` is authorized by grant-set `G`") holds iff there exists
 `g ∈ G` in the **same domain** as `c` with `c ≤ g` (a stronger held grant
 authorizes a weaker use). If `p` uses a capability in a domain it holds nothing
 in, or uses a grant strictly above everything it holds, that is a
-**capability-use error**.
+**capability-use error** (`E-CAP-USE`, severity `error`). In the mesh slice the
+checker enforces, `used(p)` is the node's declared `needs` set; the dual
+*over-grant* (held strictly above the declared need) is the advisory
+`W-POLA-EXCESS` warning of 0026.
 
 ### 4.4 Delegation / routing only attenuates
 
@@ -562,6 +565,7 @@ Diagnostic {
   code     : stable identifier   # e.g. E-CONFORM-UNKNOWN-FIELD,
                                   #      E-CONSTRAINT-RANGE,
                                   #      E-CAP-ATTENUATION,
+                                  #      E-CAP-USE          (§4.3 use-check),
                                   #      E-GENERIC-INCONSISTENT,
                                   #      E-SCHEMA-BAD-DEFAULT,
                                   #      E-CAP-ORDER-CYCLE,

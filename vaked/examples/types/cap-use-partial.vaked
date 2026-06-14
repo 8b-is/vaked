@@ -1,0 +1,30 @@
+# v0.3 example — POLA USE-CHECK partial violation (one E-CAP-USE), Risk 6.
+#
+# The node declares it USES two capabilities — fs.repo_rw AND network.egress — but
+# only HOLDS fs.repo_rw. The fs need is satisfied (repo_rw ≤ repo_rw), but there is
+# no held grant in the `network` domain to dominate network.egress, so the
+# use-check fails for that one domain only (0011 §4.3): exactly one E-CAP-USE error
+# (for network), not two.
+#
+# DO NOT "fix" this file — it is a negative use-check fixture and must keep
+# producing exactly one E-CAP-USE error (the network domain).
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+capability network {
+  grant none loopback lan egress
+  order none < loopback < lan < egress
+}
+
+mesh partialField {
+  node worker {
+    role         = "worker"
+    # fs.repo_rw is held (need satisfied); network.egress is NOT held → 1 E-CAP-USE
+    needs        = [fs.repo_rw, network.egress]
+    capabilities = [fs.repo_rw]
+  }
+}

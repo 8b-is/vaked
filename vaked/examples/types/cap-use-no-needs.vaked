@@ -1,0 +1,25 @@
+# v0.3 example — POLA use-check OPT-OUT proof (CLEAN), Risk 6.
+#
+# A node that holds a capability but declares NO `needs` opts out of BOTH POLA
+# lints: with no declared `used` set there is nothing to compare against, so
+# neither the use-check (E-CAP-USE, 0011 §4.3) nor the excess lint
+# (W-POLA-EXCESS) fires. This file therefore checks CLEAN — no errors and no POLA
+# diagnostics — and belongs in the clean-examples set (it is the positive control
+# for the negative cap-use-* fixtures).
+#
+# Pairs with the cap-use-* negative fixtures: holding authority without declaring
+# `needs` is legal and silent.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh noNeedsField {
+  node worker {
+    role         = "worker"
+    # holds repo_rw but declares no `needs` → opts out of the POLA lints (clean)
+    capabilities = [fs.repo_rw]
+  }
+}

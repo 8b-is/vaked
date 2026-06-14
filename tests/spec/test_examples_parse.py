@@ -28,7 +28,7 @@ REPO = ps.REPO
 # #226 adds vaked/examples/types/pola-{violation,least-authority}.vaked (2 files).
 VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/primitives/*.vaked",   # 10 (memory.vaked: #24)
-    "vaked/examples/types/*.vaked",        # 6 (#226: +pola-violation, +pola-least-authority)
+    "vaked/examples/types/*.vaked",        # 14 (#226: +pola pair; Risk 6: +8 cap-use-*)
     "vaked/examples/membrane/*.vaked",     # 1 (network-membrane slice: agent-egress)
     "vaked/examples/operator-field.vaked",  # 1
     "vaked/examples/engines/zig.vaked",     # 1
@@ -36,7 +36,7 @@ VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/namespace/*.vaked",     # 2 (RFC 0017: valid + error-unknown-namespace)
     "vaked/examples/ebpf/*.vaked",          # 1 (#225: observe/enforce hook typing)
 ]
-EXPECTED_VAKED_COUNT = 24
+EXPECTED_VAKED_COUNT = 32
 
 HCP_EXAMPLE = "protocol/hcplang/examples/hcp-core.hcplang"
 

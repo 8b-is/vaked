@@ -25,9 +25,13 @@ What it implements (docs/language/0011-type-system.md):
           matches within the bounded regex dialect, default agreement), plus
           load-time refinement well-formedness (§3.7) and capability-order
           well-formedness (§4.2);
-      (c) capabilities — §4: every ``domain.grant`` reference is valid, and a
+      (c) capabilities — §4: every ``domain.grant`` reference is valid; a
           ``mesh`` delegation edge (``routes_to``) must not escalate authority —
-          the receiver's grant-set must be ``⊑`` the sender's, per domain;
+          the receiver's grant-set must be ``⊑`` the sender's, per domain
+          (``E-CAP-ATTENUATION``, §4.4); and a node's exercised capabilities
+          (declared via ``needs``) must each be dominated by a held grant in the
+          same domain (``E-CAP-USE``, the §4.3 ``used(p) ⊑ granted(p)`` POLA
+          use-check);
       (d) generics — §5: ``catalog.from`` must target an ``index`` (and the item
           type must agree when both declare one); a ``fiber``'s ``input`` /
           ``output`` are bound and, where the data permits, checked for
@@ -1732,7 +1736,23 @@ def _check_capability_reachability(mesh_decl, node_decls, node_grants,
       delegation target (`->`) of two or more distinct callers: a shared deputy
       acting under its own identity on behalf of multiple callers. The network
       membrane gates the channel but cannot attenuate the capability the deputy
-      wields inside an allowed connection (0026 §2)."""
+      wields inside an allowed connection (0026 §2).
+
+    and ONE ERROR (blocking):
+
+    * **E-CAP-USE** — a node exercises a capability (declared via `needs`) that no
+      held grant dominates: for some declared `(domain, need_grant)` there is no
+      held grant `g` in that domain with `need_grant ≤ g` under the domain's
+      attenuation order (0011 §4.3, `used(p) ⊑ granted(p)`). This is the dual of
+      W-POLA-EXCESS (held > needed, a warning); here the node is *underpowered*
+      (needed > held), which is unsound, so it is an error."""
+    # POLA use-check (0011 §4.3): every exercised capability must be dominated by
+    # a held grant.  This runs BEFORE the W-POLA-EXCESS loop and is orthogonal to
+    # it (per domain): excess is held > needed (warning); use is needed > held
+    # (error).  Reuses the same `_leq` attenuation order the edge/excess checks use.
+    _check_cap_use(node_decls, node_grants, node_needs, registry, smap, file,
+                   mesh_decl, diags)
+
     # POLA: held grant strictly exceeds the strongest declared need in its domain.
     for name in sorted(node_decls):
         needs = node_needs.get(name) or []
@@ -1784,6 +1804,50 @@ def _check_capability_reachability(mesh_decl, node_decls, node_grants,
               f"({caller_list}) delegate to it while it holds {held} under its own "
               f"identity (confused-deputy shape) — keep delegation inside "
               f"Vaked-minted capabilities (0026 §2)", severity="warning")
+
+
+def _check_cap_use(node_decls, node_grants, node_needs, registry, smap, file,
+                   mesh_decl, diags):
+    """POLA use-check (0011 §4.3) — `used(p) ⊑ granted(p)`.
+
+    A node declares the capabilities it *uses* via `needs`.  For each declared
+    `(domain, need_grant)`, the node must hold some grant `g` in that domain with
+    `need_grant ≤ g` under the domain's attenuation order (a stronger held grant
+    authorizes a weaker use).  If no held grant in the domain dominates the need,
+    the node is *underpowered* — it exercises authority it does not hold — which
+    is unsound, so emit `E-CAP-USE` (severity `error`).
+
+    Orthogonal to W-POLA-EXCESS (held > needed, a warning): this is needed > held.
+    Nodes that declare no `needs` opt out (nothing exercised ⇒ nothing to check).
+    Multiple unsatisfied domains on one node yield multiple errors.  Reuses the
+    same `_leq` order the attenuation / excess checks use; deterministic via
+    sorted node order (the span is the node's `needs` field value)."""
+    for name in sorted(node_decls):
+        needs = node_needs.get(name) or []
+        if not needs:
+            continue   # opt-out: no declared use ⇒ no use-check
+        grants_by_dom = {}
+        for (dom, gr) in node_grants.get(name) or []:
+            grants_by_dom.setdefault(dom, []).append(gr)
+        st = node_decls[name]
+        nspan = (st.byteStart, st.byteEnd, st.line, st.col)
+        nvspan = (smap.field_value_span(st.byteStart, st.byteEnd, "needs")
+                  if smap else None) or nspan
+        for (dom, need_grant) in needs:
+            cap = registry.caps.get(dom)
+            if cap is None:
+                continue   # unknown domain already reported by _check_capability_refs
+            held = grants_by_dom.get(dom, [])
+            # use is authorized iff some held grant in this domain dominates it.
+            if not any(_leq(cap, need_grant, g) for g in held):
+                if held:
+                    held_str = ", ".join("%s.%s" % (dom, g) for g in held)
+                else:
+                    held_str = "(none in domain %s)" % dom
+                _emit(diags, "E-CAP-USE", file, nvspan, mesh_decl,
+                      f"node `{name}` uses `{dom}.{need_grant}` (declared in "
+                      f"`needs`) but holds {held_str} — a held grant must dominate "
+                      f"every exercised capability (0011 §4.3)")
 
 
 # Determinism boundary (#224): the side-effecting effect vocabulary a pure

@@ -1,0 +1,35 @@
+# v0.3 example — the two POLA lints together, on different nodes, Risk 6.
+#
+# This pairs the over-grant WARNING with the under-grant ERROR to show they are
+# orthogonal (per domain):
+#   * `builder`  holds fs.host_rw but needs only fs.repo_rw — granted strictly MORE
+#     than it needs → W-POLA-EXCESS (warning; host_rw </= repo_rw).
+#   * `reviewer` needs fs.repo_rw but only holds fs.repo_ro — exercises MORE than it
+#     holds → E-CAP-USE (error; repo_ro </= repo_rw, 0011 §4.3).
+# The checker emits exactly one W-POLA-EXCESS (on `builder`) and one E-CAP-USE
+# (on `reviewer`).
+#
+# DO NOT "fix" this file — it is a negative fixture and must keep producing
+# exactly one W-POLA-EXCESS + one E-CAP-USE on distinct nodes.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh excessAndUseField {
+  node builder {
+    role         = "builder"
+    # holds host_rw, needs only repo_rw → W-POLA-EXCESS (over-grant)
+    needs        = [fs.repo_rw]
+    capabilities = [fs.host_rw]
+  }
+
+  node reviewer {
+    role         = "reviewer"
+    # needs repo_rw, holds only repo_ro → E-CAP-USE (under-grant)
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_ro]
+  }
+}

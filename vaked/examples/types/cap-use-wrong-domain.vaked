@@ -1,0 +1,30 @@
+# v0.3 example — POLA USE-CHECK violation (E-CAP-USE), Risk 6.
+#
+# The node declares it USES network.egress (via `needs`) but holds a capability in
+# a DIFFERENT domain (fs.repo_rw). `c ⊑ G` requires a held grant in the SAME domain
+# as the exercised capability; the node holds nothing in `network`, so the
+# use-check fails (0011 §4.3) and the checker emits one E-CAP-USE error reporting
+# "(none in domain network)".
+#
+# DO NOT "fix" this file — it is a negative use-check fixture and must keep
+# producing exactly one E-CAP-USE error.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+capability network {
+  grant none loopback lan egress
+  order none < loopback < lan < egress
+}
+
+mesh wrongDomainField {
+  node worker {
+    role         = "worker"
+    # exercises network.egress but only holds fs.repo_rw → E-CAP-USE (wrong domain)
+    needs        = [network.egress]
+    capabilities = [fs.repo_rw]
+  }
+}

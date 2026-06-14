@@ -1,0 +1,33 @@
+# v0.3 example — POLA USE-CHECK, one clean node + one violation (E-CAP-USE), Risk 6.
+#
+# Two nodes share the mesh:
+#   * `author` is least-authority clean — it uses repo_rw and holds repo_rw, so
+#     `used ⊑ granted` holds (no diagnostic).
+#   * `reviewer` is underpowered — it uses repo_rw but only holds repo_ro
+#     (repo_ro </= repo_rw), so the use-check fails (0011 §4.3).
+# The checker emits exactly one E-CAP-USE error, on `reviewer` only.
+#
+# DO NOT "fix" this file — it is a negative use-check fixture and must keep
+# producing exactly one E-CAP-USE error (on the `reviewer` node).
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh twoNodeField {
+  node author {
+    role         = "author"
+    # uses repo_rw, holds repo_rw → clean (repo_rw ≤ repo_rw)
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_rw]
+  }
+
+  node reviewer {
+    role         = "reviewer"
+    # uses repo_rw but only holds repo_ro → E-CAP-USE (on this node only)
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_ro]
+  }
+}
