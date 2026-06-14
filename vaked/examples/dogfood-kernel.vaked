@@ -1,0 +1,50 @@
+# dogfood-kernel.vaked — the local proposer/judge verification kernel's OWN
+# capability graph (tools/dogfood/, docs/dogfood/kernel-v0.md), declared in Vaked
+# so the kernel's enforced write-scope is LOWERED from this declaration instead
+# of hand-passed on the CLI. Declaration and enforcement cannot drift: the kernel
+# reads the lowered LPG (.vaked/graph.json) and scopes itself to what this file
+# grants (tools/dogfood/scope_from_vaked.py).
+#
+# POLA: the proposer (opencode + local Ollama) may write ONLY inside its granted
+# write-scope and reach the model on loopback — it cannot egress. The judge is
+# read-only over the repo and may only append the immutable ledger (mem.append).
+# The operator holds the attenuated superset every node delegates from.
+#
+# NOTE on `writeScope`: `filesystem` is currently a schema-less kind — there is
+# no path-allow-set membrane that refines an `fs` grant into concrete paths (the
+# way `networkMembrane` refines `network` into host:port). Until that membrane
+# schema exists, the per-principal path refinement rides as a descriptive open
+# field on the (open) `meshNode` schema. Tracked as a follow-up: add a real
+# `filesystem` membrane kind so the path allow-set is checked, not just carried.
+
+runtime "dogfood-kernel" {
+  systems = ["aarch64-darwin", "x86_64-linux"]   # local M1 + Linux container
+
+  # AUTHORITY graph (POLA, attenuated). The operator delegates a strictly weaker
+  # subset to each node; the checker refuses any edge that escalates.
+  mesh kernel {
+    node operator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, network.loopback, mem.admin]
+    }
+    # The proposer: opencode driven by a local Ollama model. Writes ONLY inside
+    # its write-scope; reaches the model on loopback; cannot egress, cannot
+    # append the ledger.
+    node proposer {
+      role = "propose"
+      model = "ollama/qwen2.5-coder:7b"
+      capabilities = [fs.repo_rw, network.loopback, mem.recall]
+      writeScope = ["tools/dogfood/sandbox"]
+    }
+    # The judge: read-only over the repo; the sole appender of the immutable
+    # ledger. No write-scope — it never mutates the tree it judges.
+    node judge {
+      role = "verify"
+      capabilities = [fs.repo_ro, mem.append]
+      writeScope = []
+    }
+
+    operator -> proposer
+    operator -> judge
+  }
+}

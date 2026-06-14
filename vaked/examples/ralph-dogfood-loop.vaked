@@ -1,0 +1,226 @@
+# ralph-dogfood-loop.vaked — the ralph track-decision loop (tools/ralph/),
+# expressed in Vaked and dogfed through vakedc itself. ralph is THE dogfood: it
+# runs every few hours, surfaces the single most important open decision per
+# concept track, and records it to an immutable, hash-chained ledger — so it
+# embodies Vaked's three theories before they land in the language. This file
+# declares that loop as a capability graph.
+#
+#   * PARALLEL  — four concept tracks round-robin as supervised fibers.
+#   * IMMUTABLE — the decision ledger is an append-only, hash-chained `eventd`
+#                 stream; the replayable history is a `memory` the loop recalls
+#                 from ("fed only structural state and its own prior decisions,
+#                 never a human in the turn" — tools/ralph/PURPOSE.md).
+#   * CONTROL   — the supervised group is pausable / slow-able / steppable /
+#                 rewindable at runtime (RFC 0005), bounded by a `budget`.
+#
+# Capability story (POLA), grounded in the local-Ollama dogfood
+# (docs/dogfood/local-ollama-setup.md): each track PROPOSES a decision but holds
+# `network.loopback` only — it can reach the self-hosted Ollama endpoint on
+# loopback but physically CANNOT egress. A track holds no write authority beyond
+# read-only repo + memory recall, so a proposer model can neither publish nor
+# append the ledger. Only the recorder appends the immutable ledger (`mem.append`),
+# and only the announcer egresses to post the decision (`network.egress`). This is
+# the same proposer/judge split the local verification kernel enforces at the
+# file-path layer (tools/dogfood/, docs/dogfood/kernel-v0.md) — here as a
+# checked capability graph.
+#
+# Fourth in the dogfood series (pr-multimodel-pipeline → issue-driver-team →
+# session-drive-loop → ralph-dogfood-loop): the autonomous strategy loop itself,
+# modeled in the language it advances.
+
+use "./engines/zig.vaked"
+
+runtime "ralph-dogfood" {
+  systems = ["x86_64-linux", "aarch64-darwin"]   # CI host + local M1 dogfood
+
+  # The append-only, hash-chained decision ledger lives in the eventd daemon.
+  namespace eventd { member log }
+
+  # The repo corpus each track grounds its decision against (read-only).
+  index repoCorpus {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  # IMMUTABLE: the decision ledger as an append-only, hash-chained event flow.
+  # The audit spine is the state-of-record (tamper-evident, replayable), so it is
+  # retained effectively forever rather than pruned.
+  stream ledger {
+    source = eventd.log
+    type = Ledger.Entry
+    retention = 3650d
+  }
+
+  # The replayable decision store the loop recalls from each tick — its own prior
+  # decisions folded out of the ledger and mined into typed entries. Recall is
+  # the `mem.recall` authority the tracks hold; only the recorder appends.
+  memory decisions {
+    source = stream.ledger
+    mine = crabcc.semantic
+    scope = "runtime"
+    retention = 3650d
+    emit = [catalog.jsonl]
+  }
+
+  # CONTROL: the loop is bounded by a budget and is pausable/steppable/rewindable
+  # live (RFC 0005). Decisions are advisory — a human ratifies — so nothing the
+  # loop does is destructive (`approvals = never`). Local Ollama makes a tick
+  # effectively free; the budget cap is the real ceiling.
+  budget loop {
+    tokens = 2000000
+    wallClock = 1h
+    toolCalls = 300
+    approvals = "never"
+    fuel = 2000000000
+  }
+
+  # AUTHORITY graph (POLA, attenuated per role). The operator holds the strongest
+  # grants; every track receives a strictly attenuated, loopback-only subset.
+  mesh field {
+    node operator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, mem.admin, network.egress, mcp.github_read]
+    }
+    # Four concept tracks, each pinned to a self-hosted model (qwen3:8b on local
+    # Ollama in the M1 dogfood; OpenRouter models on the CI host). Read-only,
+    # recall-only, loopback-only — cannot egress, cannot publish, cannot append.
+    node trackLanguage {
+      role = "propose"
+      track = "base-language-spec"
+      model = "ollama/qwen3:8b"
+      capabilities = [fs.repo_ro, network.loopback, mem.recall]
+    }
+    node trackGraph {
+      role = "propose"
+      track = "graph-concept"
+      model = "ollama/qwen3:8b"
+      capabilities = [fs.repo_ro, network.loopback, mem.recall]
+    }
+    node trackMlir {
+      role = "propose"
+      track = "mlir-topology"
+      model = "ollama/qwen3:8b"
+      capabilities = [fs.repo_ro, network.loopback, mem.recall]
+    }
+    node trackProtocol {
+      role = "propose"
+      track = "hcp-litany"
+      model = "ollama/qwen3:8b"
+      capabilities = [fs.repo_ro, network.loopback, mem.recall]
+    }
+    # The recorder: the sole node that may append the immutable ledger.
+    node recorder {
+      role = "record"
+      capabilities = [fs.repo_ro, mem.append]
+    }
+    # The announcer: the sole egress authority — posts the ratified decision.
+    node announcer {
+      role = "announce"
+      capabilities = [network.egress]
+    }
+
+    operator -> trackLanguage
+    operator -> trackGraph
+    operator -> trackMlir
+    operator -> trackProtocol
+    operator -> recorder
+    operator -> announcer
+  }
+
+  # ORDERING graph: one track's decision tick as a checked DAG. The three model
+  # stages (rank → write → critique) are LLM steps; record appends the ledger;
+  # announce egresses. Per the #224 determinism boundary, each side-effecting step
+  # declares its effects — none are control steps, so declaring io/llm/network is
+  # legal. The fix-loop ralph actually runs is modeled as `retries`, not a
+  # back-edge, so the DAG stays acyclic.
+  workflow decide_tick {
+    on = "schedule:every-3h"
+    budget = budget.loop
+    maxDepth = 6
+
+    node rank {
+      agent = field.trackLanguage
+      output = artifacts.candidates
+      effects = ["llm"]
+    }
+    node write {
+      agent = field.trackLanguage
+      input = artifacts.candidates
+      output = artifacts.decision
+      retries = 1
+      effects = ["llm"]
+    }
+    node critique {
+      agent = field.trackLanguage
+      input = artifacts.decision
+      output = artifacts.entry
+      retries = 1
+      effects = ["llm"]
+    }
+    node record {
+      agent = field.recorder
+      input = artifacts.entry
+      output = artifacts.ledgerEntry
+      effects = ["io"]
+    }
+    node announce {
+      agent = field.announcer
+      input = artifacts.ledgerEntry
+      effects = ["network"]
+    }
+
+    rank -> write -> critique -> record -> announce
+  }
+
+  # The scheduling class: the loop ticks on an interval; the RFC 0005 `slow` verb
+  # overrides it live (the control knob).
+  runclass cadence {
+    priority = "low"
+    interval = 3h
+    maxRestarts = 3
+    window = 1h
+  }
+
+  # PARALLEL: the four tracks round-robin as supervised fibers. The OTP
+  # supervisor owns restart intensity and the live control verbs.
+  fiber tickLanguage {
+    engine = zigDaemon
+    input = stream.ledger
+    output = artifacts.entry
+    runclass = runclass.cadence
+  }
+  fiber tickGraph {
+    engine = zigDaemon
+    input = stream.ledger
+    output = artifacts.entry
+    runclass = runclass.cadence
+  }
+  fiber tickMlir {
+    engine = zigDaemon
+    input = stream.ledger
+    output = artifacts.entry
+    runclass = runclass.cadence
+  }
+  fiber tickProtocol {
+    engine = zigDaemon
+    input = stream.ledger
+    output = artifacts.entry
+    runclass = runclass.cadence
+  }
+
+  # Operator surface: the live view over the loop — the DAG, the authority
+  # topology, and the ledger replay.
+  surface ralphView {
+    mode = raylib
+    fps = 30
+    input = [stream.ledger, graph.decide_tick, graph.field]
+    views = ["workflow-dag", "mesh-topology", "ledger-replay"]
+  }
+
+  parallel "ralph-runtime" {
+    fibers = [tickLanguage, tickGraph, tickMlir, tickProtocol]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}
