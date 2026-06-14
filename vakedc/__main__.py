@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 from .lexer import VakedLexError
 from .parser import VakedSyntaxError
@@ -41,6 +42,7 @@ from .parser import parse_source
 from .emit import to_canonical_json, to_sqlite
 from .check import check_source, load_builtins, default_builtins_path
 from . import lower as lower_mod
+from . import tracing as _T
 
 
 def _cmd_lsp(args) -> int:
@@ -58,41 +60,45 @@ def _cmd_parse(args) -> int:
         print(f"vakedc: cannot read {args.file}: {e}", file=sys.stderr)
         return 1
 
-    try:
-        items = parse_source(src, args.file)
-    except (VakedLexError, VakedSyntaxError) as e:
-        print(f"vakedc: {e}", file=sys.stderr)
-        return 1
+    with _T.trace_compile("parse", args.file) as _trace:
+        try:
+            t0 = time.monotonic()
+            items = parse_source(src, args.file)
+            _T.record_parse(_trace, items, (time.monotonic() - t0) * 1000)
+        except (VakedLexError, VakedSyntaxError) as e:
+            print(f"vakedc: {e}", file=sys.stderr)
+            _T.record_error(_trace, e)
+            return 1
 
-    graph = build_graph(items, args.file)
-    canonical = to_canonical_json(graph)
+        graph = build_graph(items, args.file)
+        canonical = to_canonical_json(graph)
 
-    # Determine output targets. If neither --json/--sqlite/--print is given, use
-    # the defaults under .vaked/. --print does not suppress the default writes
-    # unless the user explicitly set output paths.
-    explicit = args.json is not None or args.sqlite is not None
-    json_path = args.json
-    sqlite_path = args.sqlite
-    if not explicit:
-        out_dir = os.path.join(os.getcwd(), ".vaked")
-        os.makedirs(out_dir, exist_ok=True)
-        json_path = os.path.join(out_dir, "graph.json")
-        sqlite_path = os.path.join(out_dir, "graph.db")
+        # Determine output targets. If neither --json/--sqlite/--print is given, use
+        # the defaults under .vaked/. --print does not suppress the default writes
+        # unless the user explicitly set output paths.
+        explicit = args.json is not None or args.sqlite is not None
+        json_path = args.json
+        sqlite_path = args.sqlite
+        if not explicit:
+            out_dir = os.path.join(os.getcwd(), ".vaked")
+            os.makedirs(out_dir, exist_ok=True)
+            json_path = os.path.join(out_dir, "graph.json")
+            sqlite_path = os.path.join(out_dir, "graph.db")
 
-    if json_path is not None:
-        with open(json_path, "w", encoding="utf-8") as fh:
-            fh.write(canonical)
-    if sqlite_path is not None:
-        if os.path.exists(sqlite_path):
-            os.remove(sqlite_path)
-        to_sqlite(graph, sqlite_path)
+        if json_path is not None:
+            with open(json_path, "w", encoding="utf-8") as fh:
+                fh.write(canonical)
+        if sqlite_path is not None:
+            if os.path.exists(sqlite_path):
+                os.remove(sqlite_path)
+            to_sqlite(graph, sqlite_path)
 
-    if args.print_:
-        sys.stdout.write(canonical)
-    elif not explicit:
-        print(f"vakedc: wrote {json_path} and {sqlite_path}", file=sys.stderr)
+        if args.print_:
+            sys.stdout.write(canonical)
+        elif not explicit:
+            print(f"vakedc: wrote {json_path} and {sqlite_path}", file=sys.stderr)
 
-    return 0
+        return 0
 
 
 def _diagnostics_json(diags) -> str:
@@ -126,26 +132,30 @@ def _cmd_check(args) -> int:
         print(f"vakedc: builtins catalog failed to parse: {e}", file=sys.stderr)
         return 2
 
-    try:
-        diags = check_source(src, args.file, builtins_cache=builtins_cache)
-    except (VakedLexError, VakedSyntaxError) as e:
-        print(f"vakedc: {e}", file=sys.stderr)
-        return 2
+    with _T.trace_compile("check", args.file) as _trace:
+        try:
+            t0 = time.monotonic()
+            diags = check_source(src, args.file, builtins_cache=builtins_cache)
+            _T.record_check(_trace, diags, (time.monotonic() - t0) * 1000)
+        except (VakedLexError, VakedSyntaxError) as e:
+            print(f"vakedc: {e}", file=sys.stderr)
+            _T.record_error(_trace, e)
+            return 2
 
-    if args.json:
-        # canonical JSON to stdout (parseable; warnings go to stderr).
-        sys.stdout.write(_diagnostics_json(diags))
-    else:
-        for d in diags:
-            print(_format_diag(d), file=sys.stderr)
-        if diags:
-            n = len(diags)
-            print(f"vakedc: {n} diagnostic{'s' if n != 1 else ''} in {args.file}",
-                  file=sys.stderr)
+        if args.json:
+            # canonical JSON to stdout (parseable; warnings go to stderr).
+            sys.stdout.write(_diagnostics_json(diags))
         else:
-            print(f"vakedc: {args.file} — no diagnostics", file=sys.stderr)
+            for d in diags:
+                print(_format_diag(d), file=sys.stderr)
+            if diags:
+                n = len(diags)
+                print(f"vakedc: {n} diagnostic{'s' if n != 1 else ''} in {args.file}",
+                      file=sys.stderr)
+            else:
+                print(f"vakedc: {args.file} — no diagnostics", file=sys.stderr)
 
-    return 1 if diags else 0
+        return 1 if diags else 0
 
 
 def _cmd_lower(args) -> int:
@@ -158,51 +168,60 @@ def _cmd_lower(args) -> int:
         print(f"vakedc: cannot read {args.file}: {e}", file=sys.stderr)
         return 1
 
-    # 1) parse
-    try:
-        items = parse_source(src, args.file)
-    except (VakedLexError, VakedSyntaxError) as e:
-        print(f"vakedc: {e}", file=sys.stderr)
-        return 1
+    with _T.trace_compile("lower", args.file) as _trace:
+        # 1) parse
+        try:
+            t0 = time.monotonic()
+            items = parse_source(src, args.file)
+            _T.record_parse(_trace, items, (time.monotonic() - t0) * 1000)
+        except (VakedLexError, VakedSyntaxError) as e:
+            print(f"vakedc: {e}", file=sys.stderr)
+            _T.record_error(_trace, e)
+            return 1
 
-    # 2) check FIRST — lowering only runs on a clean, validated graph (0012 §1).
-    #    Any diagnostic ⇒ print, emit NOTHING, exit 1.
-    builtins_path = args.builtins or default_builtins_path()
-    try:
-        builtins_cache = load_builtins(builtins_path)
-    except OSError as e:
-        print(f"vakedc: cannot read builtins {builtins_path}: {e}", file=sys.stderr)
-        return 2
-    except (VakedLexError, VakedSyntaxError) as e:
-        print(f"vakedc: builtins catalog failed to parse: {e}", file=sys.stderr)
-        return 2
+        # 2) check FIRST — lowering only runs on a clean, validated graph (0012 §1).
+        #    Any diagnostic ⇒ print, emit NOTHING, exit 1.
+        builtins_path = args.builtins or default_builtins_path()
+        try:
+            builtins_cache = load_builtins(builtins_path)
+        except OSError as e:
+            print(f"vakedc: cannot read builtins {builtins_path}: {e}", file=sys.stderr)
+            return 2
+        except (VakedLexError, VakedSyntaxError) as e:
+            print(f"vakedc: builtins catalog failed to parse: {e}", file=sys.stderr)
+            return 2
 
-    try:
-        diags = check_source(src, args.file, builtins_cache=builtins_cache)
-    except (VakedLexError, VakedSyntaxError) as e:
-        print(f"vakedc: {e}", file=sys.stderr)
-        return 1
+        try:
+            t0 = time.monotonic()
+            diags = check_source(src, args.file, builtins_cache=builtins_cache)
+            _T.record_check(_trace, diags, (time.monotonic() - t0) * 1000)
+        except (VakedLexError, VakedSyntaxError) as e:
+            print(f"vakedc: {e}", file=sys.stderr)
+            _T.record_error(_trace, e)
+            return 1
 
-    if diags:
-        for d in diags:
-            print(_format_diag(d), file=sys.stderr)
-        n = len(diags)
-        print(f"vakedc: {n} diagnostic{'s' if n != 1 else ''} in {args.file}; "
-              f"refusing to lower (nothing written)", file=sys.stderr)
-        return 1
+        if diags:
+            for d in diags:
+                print(_format_diag(d), file=sys.stderr)
+            n = len(diags)
+            print(f"vakedc: {n} diagnostic{'s' if n != 1 else ''} in {args.file}; "
+                  f"refusing to lower (nothing written)", file=sys.stderr)
+            return 1
 
-    # 3) resolve + lower. enrich_graph (config sub-blocks) runs inside lower()
-    #    when the parsed items are supplied.
-    graph = build_graph(items, args.file)
-    result = lower_mod.lower(graph, items)
+        # 3) resolve + lower. enrich_graph (config sub-blocks) runs inside lower()
+        #    when the parsed items are supplied.
+        graph = build_graph(items, args.file)
+        t0 = time.monotonic()
+        result = lower_mod.lower(graph, items)
 
-    # 4) write the tree. The manifest lands at <out>/provenance.json; the rest of
-    #    the files are relative paths under <out> (0012 §6.2 erratum).
-    out_dir = args.out or os.path.join(os.getcwd(), ".vaked", "lower")
-    written = _write_tree(out_dir, result)
-    print(f"vakedc: lowered {args.file} → {out_dir} ({written} files)",
-          file=sys.stderr)
-    return 0
+        # 4) write the tree. The manifest lands at <out>/provenance.json; the rest of
+        #    the files are relative paths under <out> (0012 §6.2 erratum).
+        out_dir = args.out or os.path.join(os.getcwd(), ".vaked", "lower")
+        written = _write_tree(out_dir, result)
+        _T.record_lower(_trace, written, (time.monotonic() - t0) * 1000)
+        print(f"vakedc: lowered {args.file} → {out_dir} ({written} files)",
+              file=sys.stderr)
+        return 0
 
 
 def _write_tree(out_dir: str, result) -> int:
