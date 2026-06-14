@@ -79,6 +79,57 @@ propagation-latency cascade and DAG property, enforced at check time over the
 existing LPG — no MLIR dependency. These codes live here until folded into a
 0011 revision (tracked on #27).
 
+## The determinism boundary (#224)
+
+Every event-sourced durable-execution runtime — Temporal
+([determinism-constraints](https://docs.temporal.io/workflow-definition#deterministic-constraints)),
+Cadence, Azure Durable Functions
+([code-constraints](https://learn.microsoft.com/azure/azure-functions/durable/durable-functions-code-constraints))
+— shares one dominant failure mode: a side effect (I/O, wall-clock time,
+randomness, network / LLM calls) placed in *replayed control flow* produces a
+non-determinism error **at runtime**, on replay, often long after deploy. Those
+runtimes can only *document* the constraint and patch around it with versioning
+markers. Vaked compiles a typed graph before anything runs, so it converts the
+footgun into a **compile-time error** — a structural advantage over code-first
+runtimes.
+
+The boundary is a per-step classification on `workflowStep`:
+
+| Step kind | Marker | May touch the world? |
+|-----------|--------|----------------------|
+| pure control-flow / coordination | `control = true` | **no** |
+| side-effecting step (default) | (no `control`) | yes — via `effects` |
+
+`effects` is a `List<String>` from the side-effecting vocabulary
+`io · time · random · network · llm` (`pure` is the sole non-side-effecting
+name — an explicit "touches nothing" assertion). The rule, enforced in
+`vakedc/check.py: _check_step_determinism`:
+
+> A step with `control = true` that declares **any** side-effecting effect is
+> rejected with **`E-DETERMINISM-EFFECT`**, naming the offending step and the
+> first side-effecting effect (declaration order — deterministic).
+
+The corrected form moves the side effect into its own non-control step. See
+[`vaked/examples/types/determinism-boundary.vaked`](../../vaked/examples/types/determinism-boundary.vaked)
+for the rejected control-flow node and the corrected `step`-wrapped version.
+
+This is the *check-stage* slice of #224. Two acceptance items remain as design,
+tracked on #224:
+
+- **Effect inference** — today `effects` is *declared*; a control-flow step that
+  performs a side effect transitively (through an `agent` whose mesh node holds a
+  network/LLM capability) is not yet inferred. The capability graph already
+  carries the grant set, so the inference (control step → agent → grant → effect)
+  is a follow-up pass over the LPG.
+- **Graph-hash pinning + migration** — a compiled `workflow` should carry a
+  stable content hash over its step roster + DAG edges + effect classification
+  (the `workflow.spec` emitter already serializes that deterministically). A live
+  execution pins to that hash so a running graph cannot be mutated underneath a
+  replay without an explicit `migration` declaration (the Temporal "versioning
+  marker" made first-class). `eventd`'s append-only hash-chained log is the
+  natural substrate: the pin is the first event of a run; a hash mismatch on
+  replay is a hard stop unless a migration edge bridges the two hashes.
+
 ## Lowering (output-first; `workflow.spec` emitter landed — 0012 §3.4)
 
 | Artifact | Target |

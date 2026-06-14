@@ -232,6 +232,15 @@ schema workflow {
 
 # the shape of a workflow's `node <step> { … }` body (open — step vocabularies
 # grow with the agent roster).  `agent` is the executing mesh node.
+#
+# Determinism boundary (#224): a step is either pure *control-flow* coordination
+# (`control = true`) or a side-effecting step (the default).  Only side-effecting
+# steps may touch the world; `effects` declares which side effects a step
+# performs.  A `control` step that declares any *side-effecting* effect
+# (io, time, random, network, llm) is rejected at check time
+# (E-DETERMINISM-EFFECT) — the durable-runtime footgun (Temporal/Cadence/Azure
+# Durable Functions) turned into a compile-time error.  `pure` is the only
+# non-side-effecting effect name (an explicit "touches nothing" assertion).
 schema workflowStep {
   field agent   : MeshNode
   field input   : I      { optional }
@@ -239,6 +248,8 @@ schema workflowStep {
   field budget  : Budget { optional }
   field runclass : RunClass { optional }
   field retries : Int    { optional >= 0 }
+  field control : Bool   { optional default = false }
+  field effects : List<String> { optional nonempty }
   open
 }
 

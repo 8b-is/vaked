@@ -943,6 +943,75 @@ def _test_determinism(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 7. Determinism boundary (#224)
+# --------------------------------------------------------------------------- #
+# A workflow step is either pure control-flow (coordination: `control = true`)
+# or a side-effecting step. A control-flow step that declares a side-effecting
+# effect (io/time/random/network/llm) is rejected with E-DETERMINISM-EFFECT,
+# naming the offending step and the effect. The corrected form drops `control`
+# (so the work runs inside a real step) — that checks clean.
+
+_DB_REJECT = '''mesh field {
+  node planner { role = "plan" }
+}
+workflow w {
+  node decide { agent = field.planner  control = true  effects = ["llm"] }
+}
+'''
+
+# Pure coordination step with no declared effects is fine.
+_DB_PURE_OK = '''mesh field {
+  node planner { role = "plan" }
+}
+workflow w {
+  node fanout { agent = field.planner  control = true }
+}
+'''
+
+# A non-control step may declare any effect — that is exactly where the world
+# is allowed to be touched.
+_DB_STEP_OK = '''mesh field {
+  node planner { role = "plan" }
+}
+workflow w {
+  node code { agent = field.planner  effects = ["llm", "network"] }
+}
+'''
+
+
+def _test_determinism_boundary(lines):
+    cache = _builtins_cache()
+
+    def codes(src, name):
+        return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
+
+    ok = True
+    cases = [
+        (_DB_REJECT, "db-reject.vaked", ["E-DETERMINISM-EFFECT"]),
+        (_DB_PURE_OK, "db-pure-ok.vaked", []),
+        (_DB_STEP_OK, "db-step-ok.vaked", []),
+    ]
+    for src, name, want in cases:
+        got = codes(src, name)
+        if got != want:
+            ok = False
+            lines.append(f"  FAIL determinism-boundary: {name} expected {want}, "
+                         f"got {got}")
+    # the diagnostic must name the offending step and effect.
+    diags = vakedc.check_source(_DB_REJECT, "db-reject.vaked", builtins_cache=cache)
+    eff = [d for d in diags if d.code == "E-DETERMINISM-EFFECT"]
+    if not eff or "decide" not in eff[0].message or "llm" not in eff[0].message:
+        ok = False
+        msg = eff[0].message if eff else "(none)"
+        lines.append(f"  FAIL determinism-boundary: diagnostic must name step "
+                     f"`decide` and effect `llm`; got: {msg}")
+    if ok:
+        lines.append("  determinism-boundary: control-flow step with a "
+                     "side-effecting effect rejected; pure coordination and "
+                     "side-effecting steps check clean")
+    return ok
+
+
 # 5d. Capability reachability — POLA / confused-deputy lints (#226, 0026)
 # --------------------------------------------------------------------------- #
 # Advisory WARNINGS over the mesh capability graph:
@@ -1084,7 +1153,8 @@ def run():
                _test_all_examples, _test_ref_resolution, _test_import_binding,
                _test_name_collision, _test_workflow, _test_namespace_checker,
                _test_network_schema, _test_ebpf_intent,
-               _test_capability_reachability, _test_determinism):
+               _test_capability_reachability, _test_determinism,
+               _test_determinism_boundary):
         try:
             ok = fn(lines) and ok
         except Exception as e:

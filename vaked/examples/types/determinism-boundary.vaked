@@ -1,0 +1,54 @@
+# v0.4 example — the determinism boundary (#224).
+#
+# Every event-sourced durable-execution runtime (Temporal, Cadence, Azure
+# Durable Functions) shares one dominant failure mode: side effects (I/O, time,
+# random, network / LLM calls) placed in *replayed control flow* produce
+# non-determinism errors at runtime. Those runtimes can only document the
+# constraint. Vaked compiles a typed graph, so it turns the footgun into a
+# compile-time error.
+#
+# A workflow step is either:
+#   * pure control-flow / coordination — `control = true` — must touch nothing;
+#   * a side-effecting `step` — the only place the world may be touched.
+#
+# A `control` step that declares a side-effecting effect is rejected with
+# E-DETERMINISM-EFFECT, naming the offending step and effect.
+
+mesh field {
+  node planner  { role = "plan" }
+  node coder    { role = "code" }
+  node reviewer { role = "review" }
+}
+
+# ----------------------------------------------------------------------------
+# REJECTED (do NOT uncomment): a control-flow node that performs a side effect.
+#
+# The `gate` step fans the work out — pure coordination — yet calls an LLM to
+# decide the branch. On replay that call is non-deterministic. vakedc rejects it:
+#
+#   E-DETERMINISM-EFFECT: step `gate` is `control = true` (pure control-flow)
+#   but declares side-effecting effect `llm`; move the side effect into a
+#   non-control step (drop `control`, or split it out)
+#
+# workflow swe_af_bad {
+#   maxDepth = 4
+#   node gate    { agent = field.planner  control = true  effects = ["llm"] }
+#   node code    { agent = field.coder    effects = ["llm", "network"] }
+#   node review  { agent = field.reviewer effects = ["llm"] }
+#   gate -> code -> review
+# }
+# ----------------------------------------------------------------------------
+
+# CORRECTED: the decision becomes its own side-effecting step (`decide`); the
+# coordination node (`gate`) is left pure (no declared effects). The world is
+# touched only inside the `effects`-bearing steps. Checks clean.
+workflow swe_af {
+  maxDepth = 5
+
+  node gate    { agent = field.planner  control = true }            # pure fan-out
+  node decide  { agent = field.planner  effects = ["llm"] }         # the world: here
+  node code    { agent = field.coder    effects = ["llm", "network"] }
+  node review  { agent = field.reviewer effects = ["llm"] }
+
+  gate -> decide -> code -> review
+}

@@ -400,6 +400,8 @@ schema workflowStep {
   field budget  : Budget { optional }
   field runclass : RunClass { optional }     # scheduling class (#28)
   field retries : Int    { optional >= 0 }   # bounded revision loop (NOT a back-edge)
+  field control : Bool   { optional default = false }   # pure control-flow step (#224)
+  field effects : List<String> { optional nonempty }    # side effects: io/time/random/network/llm
   open                                    # step vocabularies grow with the roster
 }
 ```
@@ -414,6 +416,11 @@ Checking (0015; Stage-0 Pass 1 of the topology pipeline,
 - With `maxDepth` declared, the longest step chain (counted in steps) must not
   exceed it — `E-WORKFLOW-DEPTH`. This is the O(depth) propagation-latency
   bound enforced at check time.
+- **Determinism boundary (#224):** a step with `control = true` (pure
+  control-flow / coordination) that declares a side-effecting effect
+  (`io/time/random/network/llm`) is `E-DETERMINISM-EFFECT` — only
+  non-control steps may touch the world. See
+  [`0015-workflow.md`](../../docs/language/0015-workflow.md).
 
 Conforms to `vaked/examples/agentfield-swe.vaked` (`workflow swe_af`: four steps,
 `plan -> code -> review -> publish`, depth 4 ≤ `maxDepth = 6`).

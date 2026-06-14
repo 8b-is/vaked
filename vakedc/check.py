@@ -1786,6 +1786,47 @@ def _check_capability_reachability(mesh_decl, node_decls, node_grants,
               f"Vaked-minted capabilities (0026 §2)", severity="warning")
 
 
+# Determinism boundary (#224): the side-effecting effect vocabulary a pure
+# control-flow (`control = true`) workflow step may NOT declare.  `pure` is the
+# sole non-side-effecting name (an explicit "touches nothing" assertion).
+_SIDE_EFFECTS = frozenset(("io", "time", "random", "network", "llm"))
+
+
+def _string_list_values(vprop):
+    """The string-literal values of a list-of-strings value-prop, in order.
+
+    Non-list values and non-string elements are skipped (the field's `List<...>`
+    conformance owns those type errors)."""
+    out = []
+    if isinstance(vprop, list):
+        for e in vprop:
+            if isinstance(e, dict) and (e.get("lit") or "").upper() == "STRING":
+                out.append(e.get("value"))
+    return out
+
+
+def _check_step_determinism(step_decl, bindings, wf_decl, smap, file, diags, nspan):
+    """#224: a pure control-flow step (`control = true`) must not declare any
+    side-effecting effect (io/time/random/network/llm).  Emits one
+    E-DETERMINISM-EFFECT per offending step, naming the step and the first
+    side-effecting effect in declaration order (deterministic)."""
+    ctrl = bindings.get("control")
+    is_control = (isinstance(ctrl, dict) and (ctrl.get("lit") or "").upper() == "BOOL"
+                  and str(ctrl.get("value")) == "true")
+    if not is_control:
+        return
+    for eff in _string_list_values(bindings.get("effects")):
+        if eff in _SIDE_EFFECTS:
+            span = (smap.field_value_span(step_decl.byteStart, step_decl.byteEnd,
+                                          "effects") if smap else None) or nspan
+            _emit(diags, "E-DETERMINISM-EFFECT", file, span, wf_decl,
+                  f"step `{step_decl.name}` is `control = true` (pure "
+                  f"control-flow) but declares side-effecting effect `{eff}`; "
+                  f"move the side effect into a non-control step "
+                  f"(drop `control`, or split it out)")
+            return
+
+
 def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None,
                     sibling_kinds=None):
     """#27 / 0015: a `workflow` is a typed agent-step DAG.
@@ -1794,7 +1835,9 @@ def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None,
     are step *ordering*. So: conform each `node` step body against the
     `workflowStep` schema, require the `->` edges among declared steps to form
     a DAG (E-WORKFLOW-CYCLE), and — when the record declares `maxDepth` — bound
-    the longest step chain, counted in steps (E-WORKFLOW-DEPTH). Edges with an
+    the longest step chain, counted in steps (E-WORKFLOW-DEPTH). A step marked
+    `control = true` (pure control-flow / coordination) that declares a
+    side-effecting effect is rejected (E-DETERMINISM-EFFECT, #224). Edges with an
     endpoint that is not a declared step are external and skipped, exactly like
     mesh edge handling. A step's `agent = <mesh>.<node>` ref whose head names a
     *sibling* mesh must name one of that mesh's nodes, and a head naming a
@@ -1834,6 +1877,10 @@ def _check_workflow(wf_decl, registry, smap, file, diags, sibling_meshes=None,
                                                   "agent")
                             if smap else None) or nspan
                     _emit(diags, "E-REF-UNRESOLVED", file, span, wf_decl, bad)
+            # Determinism boundary (#224): a pure control-flow step must not
+            # declare a side-effecting effect.
+            _check_step_determinism(st, bindings, wf_decl, smap, file, diags,
+                                    nspan)
     step_set = set(steps)
 
     succ = {s: [] for s in steps}
