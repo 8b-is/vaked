@@ -31,31 +31,61 @@ import test_otp_lowering as t_otp  # noqa: E402
 import test_agentfield_lowering as t_af_lower  # noqa: E402
 import test_agent_guardd as t_guardd  # noqa: E402
 import test_yardmaster as t_yardmaster  # noqa: E402
+import test_telebot as t_telebot  # noqa: E402
 
-MODULES = [
+ALL_MODULES = [
     ("grammar_selfcontained", t_grammar),
-    ("examples_parse", t_examples),
-    ("lowering_fixtures", t_lowering),
-    ("doc_links", t_links),
-    ("vakedc", t_vakedc),
-    ("vakedc_check", t_vakedc_check),
-    ("vakedc_lower", t_vakedc_lower),
-    ("agentfield_load", t_af_load),
-    ("eventd", t_eventd),
-    ("otp_lowering", t_otp),
-    ("agentfield_lowering", t_af_lower),
-    ("agent_guardd", t_guardd),
-    ("yardmaster", t_yardmaster),
+    ("examples_parse",        t_examples),
+    ("lowering_fixtures",     t_lowering),
+    ("doc_links",             t_links),
+    ("vakedc",                t_vakedc),
+    ("vakedc_check",          t_vakedc_check),
+    ("vakedc_lower",          t_vakedc_lower),
+    ("agentfield_load",       t_af_load),
+    ("eventd",                t_eventd),
+    ("otp_lowering",          t_otp),
+    ("agentfield_lowering",   t_af_lower),
+    ("agent_guardd",          t_guardd),
+    ("yardmaster",            t_yardmaster),
+    ("telebot",               t_telebot),
 ]
+
+# Tier subsets used by ci-gate:
+#   smoke    – grammar + examples + doc_links (always runs, <60s)
+#   standard – smoke + lowering + vakedc parse/check + eventd (~3 min)
+#   full     – all 14 tests (~8 min, default)
+SMOKE_NAMES = {"grammar_selfcontained", "examples_parse", "doc_links"}
+STANDARD_NAMES = SMOKE_NAMES | {"lowering_fixtures", "vakedc", "vakedc_check", "eventd"}
+
+TIER_MODULES = {
+    "smoke":    [m for m in ALL_MODULES if m[0] in SMOKE_NAMES],
+    "standard": [m for m in ALL_MODULES if m[0] in STANDARD_NAMES],
+    "full":     ALL_MODULES,
+}
+# Aliases
+TIER_MODULES["extended"] = TIER_MODULES["full"]
+MODULES = ALL_MODULES  # backwards-compat
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Vaked spec-test harness")
+    ap.add_argument(
+        "--tier",
+        choices=list(TIER_MODULES),
+        default="full",
+        help="Test subset to run (default: full)",
+    )
+    args, _ = ap.parse_known_args()
+
+    modules = TIER_MODULES[args.tier]
+
     print("=" * 72)
-    print("Vaked spec-test harness — tests/spec/run_all.py")
+    print(f"Vaked spec-test harness — tests/spec/run_all.py  [tier={args.tier}, {len(modules)} modules]")
     print("=" * 72)
 
     results = []
-    for name, mod in MODULES:
+    for name, mod in modules:
         t0 = time.time()
         try:
             ok, lines = mod.run()

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from .lexer import Token, tokenize, VakedLexError
 
-# The 28 declaration kinds (grammar `kind`).  (`input` removed in #48 — its
+# The 29 declaration kinds (grammar `kind`, v0.4).  (`input` removed in #48 — its
 # niche is covered by `index` (build-time corpus) and `stream` (runtime flow).)
 KINDS = (
     "runtime", "engine", "host",
@@ -43,6 +43,8 @@ KINDS = (
     "service", "secret", "hostResource", "ingress", "container",
     # MemPalace-shaped runtime memory (#24, 0014).
     "memory",
+    # Value-namespace roster (#8, RFC 0017, v0.4).
+    "namespace",
 )
 _KIND_SET = frozenset(KINDS)
 
@@ -128,6 +130,18 @@ class GrantDecl(Node):
 
     def __init__(self, names):
         self.names = names
+
+
+class MemberDecl(Node):
+    """``member_decl = "member" ident`` (v0.4, RFC 0017).
+
+    Names one closed member of the enclosing ``namespace`` block.  Analogous to
+    ``grant_decl`` inside a ``capability`` block: a soft-keyword statement that
+    enumerates the allowed members of the namespace head."""
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
 
 
 class OrderDecl(Node):
@@ -404,18 +418,21 @@ class Parser:
         return stmts, close
 
     def _stmt(self):
-        """stmt = field_decl | grant_decl | order_decl | assignment | open_decl
-                | inherit_stmt | edge | node_decl | decl | app   (ORDERED)."""
+        """stmt = field_decl | grant_decl | order_decl | member_decl | assignment
+                | open_decl | inherit_stmt | edge | node_decl | decl | app   (ORDERED)."""
         self._skip_nl()
         t = self.toks[self.i]
 
-        # field_decl / grant_decl / order_decl — BEFORE assignment.
+        # field_decl / grant_decl / order_decl / member_decl — BEFORE assignment.
         if self._is_ident("field", t) and self._lookahead_field():
             return self._field_decl()
         if self._is_ident("grant", t) and self._lookahead_grant():
             return self._grant_decl()
         if self._is_ident("order", t) and self._lookahead_order():
             return self._order_decl()
+        # member_decl (v0.4) — soft keyword `member` followed by ident (not assign-op).
+        if self._is_ident("member", t) and self._lookahead_member():
+            return self._member_decl()
 
         # assignment = ident assign_op expr
         if t.kind == "IDENT" and self._lookahead_assign():
@@ -480,6 +497,12 @@ class Parser:
         if self.toks[j].kind != "IDENT":
             return False
         return self._is_op("<", self.toks[j + 1])
+
+    def _lookahead_member(self):
+        # `member` ident   — but NOT `member = expr` (that is an assignment).
+        # Mirrors _lookahead_grant: the next token must be an ident, not an op.
+        nxt = self.toks[self.i + 1]
+        return nxt.kind == "IDENT"
 
     def _lookahead_assign(self):
         # ident assign_op   (assignment target is a BARE ident, not dotted)
@@ -580,6 +603,16 @@ class Parser:
             names.append(self.toks[self.i].value)
             self.i += 1
         return GrantDecl(names)
+
+    def _member_decl(self):
+        """member_decl = "member" ident  (v0.4, RFC 0017).
+
+        Names one closed member of the enclosing ``namespace`` block.  Soft-
+        keyword: only reached when ``_lookahead_member`` passes (the next token
+        is an ident, ruling out ``member = expr`` which falls to ``_assignment``)."""
+        self.i += 1                       # 'member'
+        name = self._expect_ident().value
+        return MemberDecl(name)
 
     def _order_decl(self):
         """order_decl = "order" order_chain { ";" order_chain } ;
@@ -745,9 +778,9 @@ class Parser:
             items.append(self._expr())
             while self._is_op(","):
                 self.i += 1
-                # tolerate a trailing comma before ']' (PEG `[ expr { , expr } ]`
-                # would reject it, so keep strict): require an expr.
-                items.append(self._expr())
+                # tolerate trailing comma before ']' (standard JSON/Nix/Python style)
+                if not self._is_op("]"):
+                    items.append(self._expr())
         self._expect_op("]")
         return ListLit(items)
 

@@ -23,7 +23,8 @@ import parse_support as ps  # noqa: E402
 
 REPO = ps.REPO
 
-# The 17 expected example files (explicit count, per spec).
+# The 20 expected example files (explicit count, per spec).
+# v0.4 adds vaked/examples/namespace/ (2 files: valid + error-unknown-namespace).
 VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/primitives/*.vaked",   # 10 (memory.vaked: #24)
     "vaked/examples/types/*.vaked",        # 4
@@ -31,8 +32,9 @@ VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/operator-field.vaked",  # 1
     "vaked/examples/engines/zig.vaked",     # 1
     "vaked/examples/agentfield-swe.vaked",  # 1 (#27 dogfood: swe_af workflow)
+    "vaked/examples/namespace/*.vaked",     # 2 (RFC 0017: valid + error-unknown-namespace)
 ]
-EXPECTED_VAKED_COUNT = 18
+EXPECTED_VAKED_COUNT = 20
 
 HCP_EXAMPLE = "protocol/hcplang/examples/hcp-core.hcplang"
 
@@ -54,11 +56,14 @@ def _regression_probes():
         return f'schema s {{\n  {stmt}\n}}\n'
 
     for stmt in ['open = true', 'order = 3', 'grant = "x"',
-                 'field = 1', 'engine = 1']:
+                 'field = 1', 'engine = 1', 'member = 1']:
         probes.append((f'probe: `{stmt}` parses as assignment',
                        schema_stmt(stmt), ps.parse_vaked, True))
     probes.append(('probe: bare `open` parses as open_decl',
                    'schema s {\n  open\n}\n', ps.parse_vaked, True))
+    # v0.4 (RFC 0017): bare `member ident` inside a namespace block parses as member_decl.
+    probes.append(('probe: `member ringbuf` inside namespace parses as member_decl',
+                   'namespace agentGuardd {\n  member ringbuf\n}\n', ps.parse_vaked, True))
     return probes
 
 

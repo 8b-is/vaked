@@ -1,0 +1,39 @@
+# error-unknown-namespace.vaked — namespace error cases (RFC 0017, v0.4)
+#
+# Demonstrates the two E-REF-UNRESOLVED error shapes produced by the namespace
+# checker (decision D2: hard error immediately on unknown heads/members):
+#
+#   1. Unknown namespace HEAD — `nope.thing`: the head `nope` is not declared in
+#      this runtime's namespace blocks and is not in the built-in global catalog.
+#      → E-REF-UNRESOLVED: "`nope` is not a declared namespace in runtime …"
+#
+#   2. Unknown MEMBER of a known closed namespace — `agentGuardd.ringbufff`:
+#      the head `agentGuardd` IS declared (closed, member `ringbuf`), but the
+#      member `ringbufff` is a typo (not in the declared member set).
+#      → E-REF-UNRESOLVED: "`ringbufff` is not a declared member of namespace …"
+#
+# Checker expects: exactly 2 E-REF-UNRESOLVED diagnostics (one per error case).
+# This file is intentionally INVALID — it is the negative half of the namespace
+# example pair (mirrors vaked/examples/types/rejected.vaked for the type checker).
+# DO NOT "fix" this file.
+
+runtime "broken-monitor" {
+  systems = ["x86_64-linux"]
+
+  # Declare agentGuardd with only `ringbuf` — not `ringbufff`.
+  namespace agentGuardd { member ringbuf }
+
+  # Error case 1: `nope` is a completely unknown namespace head.
+  # E-REF-UNRESOLVED: `nope` is not a declared namespace in runtime `broken-monitor`
+  stream badStream {
+    source = nope.thing
+    type = Event.Unknown
+  }
+
+  # Error case 2: `agentGuardd` is known and closed, but `ringbufff` is a typo.
+  # E-REF-UNRESOLVED: `ringbufff` is not a declared member of namespace `agentGuardd`
+  stream misspelledChannel {
+    source = agentGuardd.ringbufff
+    type = Event.Ebpf
+  }
+}

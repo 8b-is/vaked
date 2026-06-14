@@ -44,6 +44,36 @@
 #    It requires a conditional sub-language that is not yet designed; it is
 #    tracked as a post-v0.2 extension.
 #
+# ---- Design decisions (v0.4 — namespace kind, RFC 0017) ---------------------
+#
+# v0.4 adds the `namespace` kind (RFC 0017, implemented 2026-06-13).  A namespace
+# declaration names a value-namespace head (a daemon channel set, an external
+# service, or an open value-namespace like `pkgs`) and either marks it `open`
+# (any member accepted) or enumerates a closed set of `member` names.  The
+# checker (vakedc/check.py `_check_ref_resolution` branch-B arm) validates every
+# non-kind dotted ref against the in-scope namespace roster.
+#
+# v0.4 is a STRICT SUPERSET of v0.3: `namespace` is a new `kind` value, and
+# `member_decl` is a new `stmt` alternative that begins with the soft keyword
+# `member` (not a v0.3 statement head, so no existing file changes meaning).
+#
+# Design decisions (owner, 2026-06-13):
+#   D1. `artifacts.*`/`graph.*` → closed-world resolution (not the namespace roster).
+#   D2. Strictness v1 → hard error immediately on unknown namespace heads/members.
+#   D3. Daemon-channel authority → runtime-scoped (`namespace` block required).
+#   D4. Member types deferred entirely (`member ident` only, no `: Type` in v1).
+#
+# 9. Namespace declarations (v0.4).  A `namespace` block declares one value-
+#    namespace head, scoped to the enclosing `runtime`.  Its body is either a
+#    bare `open` (any member accepted, for unbounded attrsets like `pkgs`) or
+#    one or more `member_decl` statements naming the closed set of accepted
+#    members (e.g. `member log`, `member ringbuf`).  Mixing `open` with members
+#    in the same block is a load-time error.  `member` is a soft keyword exactly
+#    like `grant`/`order`/`field`: it introduces `member_decl` only when followed
+#    by an ident not preceded by an assign-op, so `member = expr` is still a
+#    valid assignment (though unusual).  A `namespace` block at the top level
+#    (outside a `runtime`) is a checker error (decision D3).
+
 # ---- Design decisions (v0.3 — the Goal-2 type layer) ------------------------
 #
 # v0.3 adds the *surface syntax* for the Vaked type system (Goal 2): the form
@@ -124,6 +154,7 @@ decl        = { annotation } kind name [ signature ] block ;
 name        = ident | string ;
 signature   = "(" [ param { "," param } ] ")" [ "->" type ] ;
 param       = ident ":" type [ "=" expr ] ;
+# v0.4 adds "namespace" as the 29th kind (RFC 0017).
 kind        = "runtime" | "engine"  | "host"
             | "network" | "filesystem" | "mcp"        | "ebpf"
             | "budget"  | "observability" | "runclass" | "workflow"
@@ -131,7 +162,8 @@ kind        = "runtime" | "engine"  | "host"
             | "surface" | "mesh"    | "device"         | "mediaPipeline"
             | "parallel" | "schema" | "capability"
             | "service" | "secret" | "hostResource"   | "ingress"
-            | "container" | "memory" ;
+            | "container" | "memory"
+            | "namespace" ;
 
 # ---- Block and statements ---------------------------------------------------
 #
@@ -145,9 +177,11 @@ kind        = "runtime" | "engine"  | "host"
 # per-kind block grammars.
 
 block       = "{" { stmt } "}" ;
+# stmt: member_decl added in v0.4 (RFC 0017) for namespace body member lists.
 stmt        = field_decl
             | grant_decl
             | order_decl
+            | member_decl
             | assignment
             | open_decl
             | inherit_stmt
@@ -202,6 +236,17 @@ range_ref   = "in" number ".." number ;
 grant_decl  = "grant" ident { ident } ;
 order_decl  = "order" order_chain { ";" order_chain } ;
 order_chain = ident "<" ident { "<" ident } ;
+
+# ---- Namespace member declarations (v0.4) ------------------------------------
+#
+# A `namespace` block body is `open_decl` XOR `{ member_decl }`.  Mixing is a
+# load-time error (checked, not grammatical).  `member` is a soft keyword: only
+# begins `member_decl` when followed by an ident (not an assign-op), so
+# `member = expr` is still parsed as an `assignment` (via ordered fallthrough).
+# A `namespace` outside a `runtime` is a checker error (decision D3, RFC 0017).
+
+# member_decl (v0.4, RFC 0017): names one closed member of a namespace block.
+member_decl = "member" ident ;
 
 # ---- Expressions ------------------------------------------------------------
 

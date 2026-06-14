@@ -1,0 +1,115 @@
+use "./engines/zig.vaked"
+
+# Load test: parallel worker pool with fan-out and convergence
+# Tests compiler scalability with many fibers and delegation edges
+
+runtime "swe-swarm" {
+  systems = ["x86_64-linux"]
+
+  # Coordinator fiber (orchestrator)
+  fiber coordinator {
+    engine = zigDaemon
+    input = stream.workQueue
+    output = artifacts.coordinatorResults
+    policy { role = "coordinator" }
+  }
+
+  # Worker pool (8 parallel workers, fan-out pattern)
+  fiber worker_001 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_002 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_003 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_004 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_005 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_006 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_007 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+  fiber worker_008 {
+    engine = zigDaemon
+    input = artifacts.codeSnapshot
+    output = artifacts.workerResults
+    policy { role = "worker" }
+  }
+
+  # Aggregator fiber (convergence point)
+  fiber aggregator {
+    engine = zigDaemon
+    input = artifacts.workerResults
+    output = artifacts.aggregatedResults
+    policy { role = "aggregator" }
+  }
+
+  # Index: codebase snapshot
+  index codebase {
+    source = github("example/codebase")
+    emit = [nix.derivation]
+  }
+
+  # Stream: work queue for coordinator to workers
+  stream workQueue {
+    source = agentGuardd.ringbuf
+    type = Event.WorkItem
+    retention = 1h
+  }
+
+  # Mesh topology: fan-out (coordinator to workers)
+  mesh coordinator -> worker_001
+  mesh coordinator -> worker_002
+  mesh coordinator -> worker_003
+  mesh coordinator -> worker_004
+  mesh coordinator -> worker_005
+  mesh coordinator -> worker_006
+  mesh coordinator -> worker_007
+  mesh coordinator -> worker_008
+
+  # Mesh topology: convergence (workers to aggregator)
+  mesh worker_001 -> aggregator
+  mesh worker_002 -> aggregator
+  mesh worker_003 -> aggregator
+  mesh worker_004 -> aggregator
+  mesh worker_005 -> aggregator
+  mesh worker_006 -> aggregator
+  mesh worker_007 -> aggregator
+  mesh worker_008 -> aggregator
+
+  # Parallel group: explicit worker pool
+  parallel "worker-pool" {
+    fibers = [worker_001, worker_002, worker_003, worker_004,
+              worker_005, worker_006, worker_007, worker_008]
+    strategy = "concurrent"
+    supervisor = otp
+  }
+}
