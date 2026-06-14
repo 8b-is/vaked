@@ -238,6 +238,21 @@ class CapabilitySpec:
     decl_span: tuple
 
 
+@dataclass
+class NamespaceSpec:
+    """A value-namespace head, parsed from a ``namespace <name> { … }`` block.
+
+    ``open=True`` means any member is accepted (e.g. ``pkgs``, ``nix``); when
+    ``open=False``, ``members`` is the exhaustive closed set.  Mixing ``open``
+    with explicit ``member`` declarations is a load-time error (reported by
+    ``_check_namespace_wellformed``)."""
+    head: str                   # the namespace name (e.g. "pkgs", "eventd")
+    open: bool                  # True ⇒ any member accepted
+    members: set                # member names (empty if open)
+    origin_file: str
+    decl_span: tuple            # (byteStart, byteEnd, line, col)
+
+
 def _presence_of(refinements):
     """Derive ('required'|'optional', has_default) from a field's refinements,
     per 0011 §3.3 (default = required unless `optional` or a `default` is given)."""
@@ -333,12 +348,38 @@ class _Registry:
     def __init__(self):
         self.schemas: "dict[str, SchemaSpec]" = {}
         self.caps: "dict[str, CapabilitySpec]" = {}
+        self.namespaces: "dict[str, NamespaceSpec]" = {}   # head -> NamespaceSpec (builtins)
 
     def add_schema(self, spec: SchemaSpec):
         self.schemas[spec.name] = spec      # later (user) overrides earlier (builtin)
 
     def add_capability(self, spec: CapabilitySpec):
         self.caps[spec.domain] = spec
+
+    def add_namespace(self, spec: NamespaceSpec):
+        self.namespaces[spec.head] = spec   # later overrides earlier
+
+
+def _namespace_from_decl(decl, filename) -> NamespaceSpec:
+    """Build a :class:`NamespaceSpec` from a parsed ``namespace`` declaration.
+
+    The body is either a bare ``open`` (``OpenDecl``) or a sequence of
+    ``MemberDecl`` statements.  Mixing is flagged by
+    ``_check_namespace_wellformed`` at load time."""
+    is_open = False
+    members = set()
+    for st in decl.body:
+        if isinstance(st, P.OpenDecl):
+            is_open = True
+        elif isinstance(st, P.MemberDecl):
+            members.add(st.name)
+    return NamespaceSpec(
+        head=decl.name,
+        open=is_open,
+        members=members,
+        origin_file=filename,
+        decl_span=(decl.byteStart, decl.byteEnd, decl.line, decl.col),
+    )
 
 
 def _load_decls_into(registry: _Registry, items, filename):
@@ -348,6 +389,8 @@ def _load_decls_into(registry: _Registry, items, filename):
                 registry.add_schema(_schema_from_decl(it, filename))
             elif it.kind == "capability":
                 registry.add_capability(_capability_from_decl(it, filename))
+            elif it.kind == "namespace":
+                registry.add_namespace(_namespace_from_decl(it, filename))
 
 
 # --------------------------------------------------------------------------- #
@@ -497,6 +540,22 @@ def _check_schema_wellformed(spec: SchemaSpec, smap_for, diags):
             _emit(diags, "E-SCHEMA-REFINEMENT", spec.origin_file, span, spec,
                   f"field `{fname}`: `required` cannot be combined with "
                   f"`optional`/`default`")
+
+
+def _check_namespace_wellformed(spec: NamespaceSpec, smap_for, diags):
+    """RFC 0017 load-time well-formedness: a namespace body must be open XOR closed.
+
+    Mixing ``open`` with explicit ``member`` declarations is an error: once a
+    namespace is open, enumerating members is contradictory (the members would be
+    subsumed, and the intent is unclear).  Reported as ``E-SCHEMA-REFINEMENT``
+    (reuse; a load-time structural error on a declaration body)."""
+    if spec.open and spec.members:
+        smap = smap_for(spec.origin_file)
+        ds, de, dl, dc = spec.decl_span
+        span = (ds, de, dl, dc)
+        _emit(diags, "E-SCHEMA-REFINEMENT", spec.origin_file, span, spec,
+              f"namespace `{spec.head}`: body mixes `open` with `member` declarations; "
+              f"use `open` alone (any member) or `member <name>` alone (closed set)")
 
 
 def _check_capability_wellformed(spec: CapabilitySpec, smap_for, diags):
@@ -850,6 +909,8 @@ def _decl_label(d):
         return f"schema {d.name}"
     if isinstance(d, CapabilitySpec):
         return f"capability {d.domain}"
+    if isinstance(d, NamespaceSpec):
+        return f"namespace {d.head}"
     if isinstance(d, str):
         return d
     return ""
@@ -1180,12 +1241,15 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None,
 
     diags = []
 
-    # Stage 4a — load-time well-formedness of EVERY schema & capability in scope
-    # (built-in + user).  Per 0011 §6.4a these are reported against the decl.
+    # Stage 4a — load-time well-formedness of EVERY schema, capability, and
+    # namespace in scope (built-in + user).  Per 0011 §6.4a these are reported
+    # against the decl.
     for spec in sorted(registry.schemas.values(), key=lambda s: (s.origin_file, s.name)):
         _check_schema_wellformed(spec, smap_for, diags)
     for spec in sorted(registry.caps.values(), key=lambda c: (c.origin_file, c.domain)):
         _check_capability_wellformed(spec, smap_for, diags)
+    for spec in sorted(registry.namespaces.values(), key=lambda n: (n.origin_file, n.head)):
+        _check_namespace_wellformed(spec, smap_for, diags)
 
     # Index in-file decls by (kind, name) for generics resolution.
     by_name_kind = {}
@@ -1213,7 +1277,7 @@ def check_source(src, filename, builtins_path=None, builtins_cache=None,
                              top_meshes, top_kinds)
             # Stage 2 (closed-world ref resolution) for each top-level runtime.
             if it.kind == "runtime":
-                _check_ref_resolution(it, filename, diags, imported_decls)
+                _check_ref_resolution(it, filename, diags, imported_decls, registry)
 
     diags.sort(key=lambda d: d.sort_key())
     return diags
@@ -1317,11 +1381,69 @@ def _walk_accessor_refs(decl, out):
             _walk_accessor_refs(st, out)
 
 
-def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
+def _collect_runtime_namespaces(runtime_decl):
+    """Return a dict head -> NamespaceSpec for every ``namespace`` block declared
+    directly inside the runtime (decision D3, RFC 0017: runtime-scoped authority).
+
+    Only DIRECT children of the runtime are collected (namespace blocks nested
+    inside fibers/meshes etc. are not supported in v1 and would be a checker error
+    reported by ``_check_decl_tree`` when conformance runs against the ``fiber``
+    schema's closed field set).
+
+    The returned specs are built inline (not from the global registry) because they
+    are scope-local: two runtimes in the same file can declare different namespace
+    members for the same head."""
+    local_ns = {}
+    for st in runtime_decl.body:
+        if isinstance(st, P.Decl) and st.kind == "namespace":
+            is_open = any(isinstance(x, P.OpenDecl) for x in st.body)
+            members = {x.name for x in st.body if isinstance(x, P.MemberDecl)}
+            local_ns[st.name] = NamespaceSpec(
+                head=st.name, open=is_open, members=members,
+                origin_file="<runtime>", decl_span=(st.byteStart, st.byteEnd, st.line, st.col),
+            )
+    return local_ns
+
+
+def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset(),
+                          registry=None):
     """Closed-world resolution for one runtime.  ``imported`` is the set of
-    ``(kind, name)`` bound by the file's ``use`` imports."""
+    ``(kind, name)`` bound by the file's ``use`` imports.  ``registry`` is the
+    :class:`_Registry` (needed for namespace resolution — branch B, RFC 0017).
+
+    Branch B (non-kind dotted heads: ``pkgs.x``, ``agentGuardd.ringbuf``,
+    ``artifacts.plan``) is now enforced (RFC 0017, decision D2 — hard error):
+
+    * The namespace head is looked up in the *runtime-scoped* namespace roster
+      (``namespace`` blocks declared inside this runtime, decision D3).  If the
+      runtime has no inline namespace block for the head, the built-in namespace
+      catalog (``registry.namespaces``) is consulted as a fallback — this covers
+      open-value-namespaces like ``pkgs`` / ``nix`` that are global and not
+      runtime-scoped.
+    * If neither source knows the head → ``E-REF-UNRESOLVED`` (unknown namespace
+      head — hard error per D2).
+    * If the head resolves to an open namespace → accepted (any member).
+    * If the head resolves to a closed namespace and the member is not in the
+      declared set → ``E-REF-UNRESOLVED`` (unknown member, hard error per D2).
+
+    ``artifacts.*`` / ``graph.*`` (decision D1) are closed-world refs to in-
+    runtime productions, not external namespaces.  They are deliberately NOT in
+    the namespace roster; reaching the unknown-head arm for these is the right
+    signal when they are truly dangling.  (A follow-up can add dedicated
+    closed-world checking for them; for now they surface as E-REF-UNRESOLVED
+    when the head is neither a known namespace nor a capability domain.)"""
     declared = _collect_runtime_decls(runtime_decl) | set(imported)
     declared_names = {nm for (_k, nm) in declared}
+
+    # Runtime-scoped namespace blocks (decision D3).
+    runtime_ns = _collect_runtime_namespaces(runtime_decl)
+    # Global namespace catalog (open namespaces like pkgs/nix and the built-in
+    # daemon-channel roster from builtins.vaked).
+    global_ns = registry.namespaces if registry is not None else {}
+    # Capability domains are handled by the capability checker; exclude them
+    # from branch-B so we don't double-report.
+    cap_domains = set(registry.caps.keys()) if registry is not None else set()
+
     refs = []
     _walk_depends_refs(runtime_decl, refs)
     for ref, field, owner in refs:
@@ -1341,8 +1463,35 @@ def _check_ref_resolution(runtime_decl, file, diags, imported=frozenset()):
                       f"`{field}` references `{ref.dotted}` but no declaration "
                       f"named `{parts[0]}` is in scope of runtime "
                       f"`{runtime_decl.name}`")
-        # len(parts) >= 2 with a non-kind head (`pkgs.x`, `<daemon>.<channel>`,
-        # `artifacts.x`) is the deferred "branch B" — left unenforced (no roster).
+        elif len(parts) >= 2:
+            # Branch B (RFC 0017, decision D2): non-kind dotted head.
+            # Capability-domain refs (e.g. `fs.repo_rw`) are validated by the
+            # capability checker; skip them here to avoid double-reporting.
+            head = parts[0]
+            member = parts[1]
+            if head in cap_domains:
+                continue   # capability checker owns these
+            # Decision D1 (RFC 0017): `artifacts.*` / `graph.*` are closed-world
+            # refs to in-runtime productions (fiber/step output, sub-graph).  Their
+            # correct resolution requires a production registry that does not exist
+            # in v1 — they are deferred to a follow-up.  Pass them silently here;
+            # a future closed-world pass will validate them.
+            if head in ("artifacts", "graph"):
+                continue   # D1: deferred production-ref resolution
+            # Lookup order: runtime-scoped namespace first (D3), then global catalog.
+            # A runtime that declares `namespace <head> { … }` shadows the global
+            # catalog for that head (more restrictive).  If neither has it, error.
+            ns = runtime_ns.get(head) or global_ns.get(head)
+            if ns is None:
+                _emit(diags, "E-REF-UNRESOLVED", file, span, owner,
+                      f"`{field}` references `{ref.dotted}` but `{head}` is not a "
+                      f"declared namespace in runtime `{runtime_decl.name}` "
+                      f"(add `namespace {head} {{ … }}` or declare it in builtins)")
+            elif not ns.open and member not in ns.members:
+                _emit(diags, "E-REF-UNRESOLVED", file, span, owner,
+                      f"`{field}` references `{ref.dotted}` but `{member}` is not a "
+                      f"declared member of namespace `{head}` "
+                      f"(declared members: {sorted(ns.members)!r})")
 
     # 3-part accessor refs (`secret.X.path`, `hostResource.X.dsn`) — the middle
     # segment must name an in-runtime/imported decl of the head kind.  These live

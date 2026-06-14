@@ -1,0 +1,62 @@
+# valid.vaked — namespace kind example (RFC 0017, v0.4)
+#
+# Demonstrates a runtime with explicit `namespace` blocks bringing daemon channels
+# and external tools into scope (decision D3: runtime-scoped authority).
+#
+# Checker expects: zero diagnostics.
+
+use "../engines/zig.vaked"
+
+runtime "event-monitor" {
+  systems = ["x86_64-linux"]
+
+  # Bring agentGuardd's closed channel set into this runtime's scope (D3).
+  # The checker validates `agentGuardd.ringbuf` below against this declaration.
+  namespace agentGuardd { member ringbuf }
+
+  # Bring eventd's log channel into scope.
+  namespace eventd { member log }
+
+  # Open value-namespace: any member of `pkgs` is accepted (like nixpkgs attrsets).
+  namespace pkgs { open }
+
+  # External tool with a closed member set.
+  namespace crabcc { member markdown  member semantic }
+
+  # A stream sourced from the declared agentGuardd.ringbuf daemon channel.
+  stream ebpfEvents {
+    source = agentGuardd.ringbuf
+    type = Event.Ebpf
+    retention = 24h
+  }
+
+  # A stream sourced from the declared eventd.log daemon channel.
+  stream systemLog {
+    source = eventd.log
+    type = Event.System
+    retention = 7d
+  }
+
+  # An index that normalises with crabcc.semantic (a declared closed member).
+  index docs {
+    source = [crabcc.semantic]
+    normalize = crabcc.markdown
+  }
+
+  # A service using pkgs.umami (open namespace — any member accepted).
+  service analytics {
+    package = pkgs.umami
+  }
+
+  fiber logMiner {
+    engine = zigDaemon
+    input = stream.ebpfEvents
+    output = stream.systemLog
+  }
+
+  parallel "monitor-plane" {
+    fibers = [logMiner]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}

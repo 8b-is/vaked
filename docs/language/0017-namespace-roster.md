@@ -1,8 +1,35 @@
 # 0017 — Namespace & daemon-channel roster (closing branch-B)
 
-Status: **design — for review** (2026-06-13) · Series: language design notes ·
+Status: **implemented** (2026-06-13) · Series: language design notes ·
 Issue [#8](https://github.com/peterlodri-sec/vaked-base/issues/8) · closes the
 checker half of [#7](https://github.com/peterlodri-sec/vaked-base/issues/7)
+
+## Decisions
+
+Owner decisions recorded 2026-06-13 (closes the open questions from the design):
+
+1. **`artifacts.*` / `graph.*` resolution → closed-world.** These resolve to
+   declared producers only (a fiber/step output, a sub-graph); unknown heads
+   (`artifacts.x` without a matching in-runtime producer) are a hard error. They
+   do NOT go into the external namespace roster — they belong in the
+   closed-world arm of `_check_ref_resolution`.
+
+2. **Strictness v1 → hard error immediately.** Unknown namespace heads and unknown
+   members of closed namespaces are errors on first use. No warn-then-error
+   transition phase. The `severity: "warning"` alternative described in the design
+   is not used.
+
+3. **Daemon-channel authority → runtime-scoped.** A runtime only sees daemon
+   channels for daemons it has explicitly declared in its namespace block (POLA
+   alignment). There is no global roster that all runtimes implicitly inherit.
+   The builtins catalog defines the canonical channel sets per daemon; a runtime
+   must declare a `namespace <daemon> { ... }` block to bring those channels into
+   scope.
+
+4. **Member types → deferred entirely.** No `member <name> : <Type>` syntax in
+   v1. The `member_decl` form is `member ident` only; the `0015` type-link is a
+   post-v1 follow-up. Reserving the syntax now is explicitly rejected — the
+   grammar remains minimal.
 
 ## Spark
 

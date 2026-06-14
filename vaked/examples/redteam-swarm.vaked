@@ -1,0 +1,118 @@
+use "./engines/zig.vaked"
+
+# redteam-swarm.vaked — authorized penetration-testing agent swarm.
+#
+# Case study: a red-team engagement run as a Vaked capability graph. A red
+# lead (operator) delegates strictly attenuated authority to specialist
+# agents. The type checker proves, before any agent runs, that:
+#
+#   * the reporter can NEVER reach the network (no egress/lan grant) — it
+#     physically cannot exfiltrate findings off-host;
+#   * the exploiter may only spawn SANDBOXED processes (spawn_sandboxed),
+#     never host processes — a popped target cannot pivot to the operator box;
+#   * no specialist holds broker_admin / host_rw — those stay with the lead.
+#
+# This is POLA as an engagement guardrail: the scope of each agent's authority
+# is a compile-time fact, auditable by the client before the test starts.
+
+runtime "redteam-swarm" {
+  systems = ["x86_64-linux"]
+
+  index targetIntel {
+    source = [github("example-corp/asset-inventory")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl]
+  }
+
+  stream findings {
+    source = agentGuardd.ringbuf
+    type = Event.Finding
+    retention = 30d
+  }
+
+  # The engagement budget — bounds the whole test (mirrors a rules-of-engagement
+  # cap on tool calls / wall-clock the client signed off on).
+  budget engagement {
+    tokens = 1500000
+    wallClock = 4h
+    toolCalls = 600
+    approvals = "destructive"
+    fuel = 3000000000
+  }
+
+  # The red-team field. The lead holds the strongest grants; every specialist
+  # receives an attenuated subset (0011 §4.4). Edges are delegations.
+  mesh field {
+    node redLead {
+      role = "engagement-lead"
+      capabilities = [fs.repo_rw, process.spawn, network.egress, mcp.broker_admin, mem.admin]
+    }
+    # Recon: enumerate the LAN, read the asset inventory. No egress: cannot
+    # phone home; no process: cannot execute anything.
+    node recon {
+      role = "reconnaissance"
+      capabilities = [fs.repo_ro, network.lan, mem.recall]
+    }
+    # Exploiter: run payloads, but only in a sandbox (spawn_sandboxed), and only
+    # on the LAN. A compromised target is contained to the sandbox.
+    node exploiter {
+      role = "exploitation"
+      capabilities = [fs.repo_ro, network.lan, process.spawn_sandboxed, mem.recall]
+    }
+    # Reporter: read findings, append to the report memory. NO network grant of
+    # any kind — the deliverable cannot leave the host through this agent.
+    node reporter {
+      role = "reporting"
+      capabilities = [fs.repo_ro, mem.append]
+    }
+
+    redLead -> recon
+    redLead -> exploiter
+    redLead -> reporter
+  }
+
+  # The kill-chain ordering as a checked DAG: recon feeds exploitation feeds
+  # reporting. Each step names its executing agent from the field above.
+  workflow killchain {
+    on = "engagement.start:authorized"
+    budget = budget.engagement
+    maxDepth = 4
+
+    node enumerate {
+      agent = field.recon
+      output = artifacts.surface
+    }
+    node exploit {
+      agent = field.exploiter
+      input = artifacts.surface
+      output = artifacts.proof
+      retries = 1
+    }
+    node report {
+      agent = field.reporter
+      input = artifacts.proof
+      output = artifacts.deliverable
+    }
+
+    enumerate -> exploit -> report
+  }
+
+  fiber evidenceMiner {
+    engine = zigDaemon
+    input = stream.findings
+    output = artifacts.evidenceLog
+  }
+
+  surface engagementView {
+    mode = raylib
+    fps = 30
+    input = [stream.findings, graph.killchain, graph.field]
+    views = ["mesh-topology", "workflow-dag", "network-flows"]
+  }
+
+  parallel "redteam-runtime" {
+    fibers = [evidenceMiner, engagementView]
+    strategy = "supervised-dag"
+    supervisor = otp
+  }
+}

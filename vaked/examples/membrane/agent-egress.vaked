@@ -19,6 +19,9 @@
 runtime "agent-egress" {
   systems = ["x86_64-linux"]
 
+  # Daemon-channel namespace declared for this runtime (RFC 0017, D3: runtime-scoped).
+  namespace agentGuardd { member ringbuf }
+
   # eBPF testimony channel: agent-guardd publishes one event per egress decision
   # (allow/deny) onto this stream; the events land on the eventd hash chain.
   stream ebpfEvents {
