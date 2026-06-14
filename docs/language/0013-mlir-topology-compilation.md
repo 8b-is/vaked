@@ -1,165 +1,144 @@
+---
+doc: 0013
+title: "MLIR topology compilation — the vaked + hcp dialects (umbrella)"
+status: Review
+track: Language / MLIR
+created: 2026-06-12
+updated: 2026-06-14
+issue: 23
+epic: 17
+---
+
 # 0013 — MLIR topology compilation: the `vaked` + `hcp` dialects
 
-Status: **design** (2026-06-12) · Series: language design notes · Issue
+Status: **Review** (2026-06-14) · Series: language design notes · Track:
+**Language / MLIR** · Issue
 [#23](https://github.com/peterlodri-sec/vaked-base/issues/23) · Epic
 [#17](https://github.com/peterlodri-sec/vaked-base/issues/17)
 
-## Spark
+> This note began as a single design sketch. It is now the **umbrella/index**
+> for a six-part RFC-grade specification set ([0019](./0019-mlir-vaked-dialect.md)–[0024](./0024-mlir-lowering-staged-adoption.md)).
+> The architectural verdict, the terminology, and the pipeline diagram live
+> here; each dialect, pass, and the lowering contract are specified
+> normatively in their own part.
 
-> Using MLIR here is a phenomenal architectural choice, but with a specific
-> caveat: we shouldn't use it to build the real-time runtime engine. Instead,
-> we should use MLIR to construct a DSL and compiler pipeline that sits *above*
-> our architecture.
+## Abstract
 
-Captured from an owner design session. The claim: model the multi-agent
-dependency graph as custom MLIR dialects, run native compiler passes over the
-topology, and ahead-of-time compile the `agent-supervisord` routing tables and
-memory schemas — so the structural guarantees the runtime depends on are
-enforced **before the code ever runs**.
+The Vaked compiler models a multi-agent system's **state-dependency topology**
+as two custom MLIR dialects and ahead-of-time-compiles the structural
+guarantees the runtime depends on — DAG-ness, write-ahead registration
+discipline, and the supervisor routing index — **before any agent runs**. The
+high-level `vaked` dialect captures the agent dataflow graph (agents as ops,
+state as SSA values); the low-level `hcp` dialect captures the protocol
+mechanics RFC 0004 defines (write-ahead `DependencyRegistration`, rewind
+scopes). Three passes lower `vaked` → `hcp` → LLVM, computing the critical
+path, injecting the WAL sequence, and emitting the supervisor index along the
+way.
 
-This note adapts that proposal to repo reality and fixes its position in the
-pipeline. The verdict it argues for:
+Adoption is **staged**, and the staging is the load-bearing decision:
 
-| Question | Answer |
-|----------|--------|
-| Write `eventd` / the `memory` store / the daemons in MLIR? | **No.** Those are dynamic I/O systems (design: [eventd](../superpowers/specs/2026-06-12-eventd-design.md), [`memory` 0014](./0014-memory-primitive.md)). |
-| Write the agent-topology definition language + optimizer as an MLIR pipeline? | **Yes — staged.** The *semantics* land now as passes over the existing LPG; the *MLIR dialects* land when we compile agent binaries. |
+| Stage | What ships | Where |
+|-------|-----------|-------|
+| **Stage 0 — now** | the pass *semantics* as passes over the existing typed graph (LPG) inside `vakedc` — depth/cycle as a `check` diagnostic, registration injection + supervisor index as `0012` emitters | `vakedc/check.py`, `vakedc/lower.py` (shipped) |
+| **Stage 1 — with compiled agents** | the real `vaked`/`hcp` MLIR dialects + progressive lowering, when agent binaries are AOT-compiled | this RFC set (0019–0024) |
 
-## Anchoring (source conversation → repo reality)
+The Stage-0 passes are the **reference semantics** the Stage-1 dialect verifier
+must match — same typed graph in, same structural verdict out.
 
-The source analysis referenced protocol artifacts that do not exist yet. The
-real anchors:
+What **never** moves into MLIR: `eventd`, the `memory` store, the Zig
+enforcement daemons, the OTP control plane. Those are dynamic I/O systems
+(design: [eventd](../superpowers/specs/2026-06-12-eventd-design.md),
+[`memory` 0014](./0014-memory-primitive.md)); MLIR compiles the *topology* they
+run on, not the runtime itself.
 
-| Source term | What it is here |
-|-------------|-----------------|
-| "RFC 0004 / RFC 0005" | Now [RFC 0004 — Multi-Agent State Dependency](../../protocol/rfcs/0004-multi-agent-state-dependency.md) (one RFC; the design sessions' "RFC 0005" is its recorded alias). The series also has [0001-hcp](../../protocol/rfcs/0001-hcp.md), [0002-hcplang](../../protocol/rfcs/0002-hcplang.md), [0003-litany-wire](../../protocol/rfcs/0003-litany-wire.md). |
-| `DependencyRegistration` frame | The write-ahead "B depends on A's step-N output" registration — RFC 0004 §2–§3, logged via `eventd`, carrying the topology epoch. |
-| `rewind_scope` | A block vulnerable to upstream state drift — RFC 0004 §3.3/§6 (`RewindEvent` + cold-start verification) over the eventd fold + arena structural sharing (#16, #18), consumed by the Track D control plane (#20). |
-| "MemPalace schemas" | The `memory` primitive ([0014](./0014-memory-primitive.md), #24). |
-| "multi-agent dependency graph" | The **typed semantic graph** `vakedc` already produces (parse → check → lower). |
+## Terminology
 
-## 1. The two dialects
+The set's shared vocabulary. Each part repeats only the terms it uses; this
+table is the canonical home, kept aligned with RFC 0004's terminology and
+[`docs/protocol/README.md`](../protocol/README.md).
 
-MLIR's power is nested abstractions ("dialects") progressively *lowered* into
-one another. Two domain dialects:
+| Term | Definition |
+|------|------------|
+| LPG | The **typed semantic graph** (Lowered Property Graph) `vakedc` produces after parse → resolve → check — the Stage-0 substrate the pass semantics run on. |
+| `vaked` dialect | The high-level MLIR dialect modelling the agent dataflow graph: agents as structural ops, state as SSA values ([0019](./0019-mlir-vaked-dialect.md)). |
+| `hcp` dialect | The low-level MLIR dialect modelling the protocol mechanics RFC 0004 defines: write-ahead registration, canonical fetch, rewind scopes ([0020](./0020-mlir-hcp-dialect.md)). |
+| Pass 1 / topology analysis | Critical-path + cycle analysis over the `vaked` dialect; rejects the build on a forbidden cycle or an exceeded depth bound ([0021](./0021-mlir-pass-topology-analysis.md)). |
+| Pass 2 / WAL injection | Lowering that replaces every `vaked.consume` with the `hcp.*` write-ahead sequence ([0022](./0022-mlir-pass-wal-injection.md)). |
+| Pass 3 / AOT supervisor index | Emission of the packed read-only routing table `agent-supervisord` loads at boot ([0023](./0023-mlir-pass-aot-supervisor-index.md)). |
+| `state_dependency` edge | A topology edge where one agent consumes another's step output — the edge kind Pass 1 requires acyclic (RFC 0004 §5). |
+| Topology epoch | A monotonically increasing version of the state-dependency graph, carried by every `hcp` artifact (RFC 0004 §7). |
 
-### `vaked` dialect — high-level topology
+## The set
 
-Models the macro multi-agent dataflow graph: agents as structural ops, states
-as dataflow values.
+| Part | Specifies | Status |
+|------|-----------|--------|
+| [0019 — `vaked` dialect](./0019-mlir-vaked-dialect.md) | ops, types, SSA semantics, verifier — TableGen-ready | Review |
+| [0020 — `hcp` dialect](./0020-mlir-hcp-dialect.md) | ops, types, verifier; cross-linked to RFC 0004 §3.1 frames + `eventd` | Review |
+| [0021 — Pass 1: topology analysis](./0021-mlir-pass-topology-analysis.md) | critical-path/cycle analysis, `maxDepth` bound, diagnostics | Review |
+| [0022 — Pass 2: WAL injection](./0022-mlir-pass-wal-injection.md) | `vaked.consume` → `hcp.*` write-ahead lowering | Review |
+| [0023 — Pass 3: AOT supervisor index](./0023-mlir-pass-aot-supervisor-index.md) | packed routing table, `agent-supervisord` boot load | Review |
+| [0024 — lowering + staged adoption](./0024-mlir-lowering-staged-adoption.md) | `vaked→hcp→LLVM` contract; Stage 0 vs Stage 1; reference-semantics rule | Review |
 
-- `vaked.agent` — an agent boundary: its state schemas and execution logic.
-- `vaked.consume` — agent B reading agent A's output. **This is the load-bearing
-  op**: every cross-agent dependency becomes explicit dataflow.
-
-### `hcp` dialect — low-level orchestration
-
-Models the physical mechanics the protocol layer defines:
-
-- `hcp.registration` — the write-ahead `DependencyRegistration` frame.
-- `hcp.rewind_scope` — encapsulates code blocks vulnerable to state drift.
-
-## 2. SSA use-def chains as agent dependency lineages
-
-In MLIR, data flows through SSA values; use-def chains *are* the dependency
-graph. In our world they mirror agent dependency lineages exactly:
-
-```mlir
-// High-level vaked dialect representing the agent graph
-vaked.agent @agent_alpha {
-  %step_15_out = vaked.execute_step() -> !vaked.state_hash
-  vaked.yield %step_15_out
-}
-
-vaked.agent @agent_beta {
-  // B consumes A's step-15 output
-  %input_from_a = vaked.consume @agent_alpha : !vaked.state_hash
-
-  // Downstream execution built on that input
-  vaked.execute_with_dep(%input_from_a)
-}
-```
-
-Because this is a strict mathematical graph, native compiler passes apply to
-the agent topology. Note the structural rhyme with what Vaked already has: a
-`mesh` block is `node`s + `->` edges; `fiber` input/output and `parallel`
-`supervised-dag` already form the dataflow DAG in the LPG. The dialect is a
-*serialization of the same typed semantic graph* — "syntax is the mask; the
-graph is the face" holds here too.
-
-## 3. The three passes (what the pipeline buys)
-
-### Pass 1 — static DAG / critical-path analysis
-
-Dependency cascades have O(depth) propagation latency. Compute the **critical
-path** (longest dependency depth) of the whole network; if a declared bound is
-exceeded — or a cycle exists where a DAG is required — **the build is rejected**
-before a single agent is spawned. This is a checker-shaped property: it belongs
-with the 0011 pipeline as a topology diagnostic (e.g. `E-TOPO-DEPTH`,
-`E-TOPO-CYCLE`).
-
-### Pass 2 — automatic dependency-registration insertion
-
-Hand-writing write-ahead registration frames is error-prone. A lowering pass
-intercepts every `vaked.consume` and injects the structural WAL sequence
-immediately before the consumption:
-
-```mlir
-// Lowering: vaked.consume → explicit HCP actions
-%token = hcp.create_registration_token(%producer, %step, %hash)
-hcp.write_ahead_log(%token)            // write-ahead safety guarantee
-%data  = hcp.fetch_canonical_data(%producer)
-```
-
-The WAL discipline becomes structural — generated, never hand-maintained.
-(Frames per RFC 0004 §3.1; the log is `eventd`, #18.)
-
-### Pass 3 — AOT supervisor index generation
-
-The compiler knows the static graph, so `agent-supervisord` need not build its
-subscription map dynamically at runtime: compile the topology to a **read-only,
-packed routing table** loaded at boot. Runtime index lookup becomes a flat-array
-read instead of a hash-map insert. This is exactly an 0012-style artifact
-(boring, inspectable, diffable) and lands with the OTP supervision lowering
-(Track C, #19).
-
-## 4. The unified pipeline
+## The unified pipeline
 
 ```text
  [ .vaked multi-agent source ]
-             │
+             │  parse → resolve → check  (vakedc)
              ▼
-   [ vaked dialect ]  ───→  graph optimization / depth + cycle analysis   (Pass 1)
-             │
-             ▼
-    [ hcp dialect ]   ───→  auto-inject write-ahead registration frames   (Pass 2)
-             │
-             ▼
- [ lowering → LLVM / native ]
-             │
-             ▼
- [ compiled agent binaries + AOT supervisor index ]                       (Pass 3)
-             │
-             ▼
+        [ LPG ]  ── Stage 0: pass semantics run here today ──┐
+             │  serialize the typed graph                    │
+             ▼                                                │
+   [ vaked dialect ] ──→ depth + cycle analysis      (Pass 1, 0021)
+             │                                                │
+             ▼                                                │
+    [ hcp dialect ]  ──→ inject write-ahead frames    (Pass 2, 0022)
+             │                                                │
+             ▼                                                │
+ [ lowering → LLVM / native ]                         (0024)  │
+             │                                                │
+             ▼                                                │
+ [ compiled agent binaries + AOT supervisor index ]   (Pass 3, 0023)
+             │                                                │
+             ▼                                                ▼
  [ agent-supervisord + eventd + memory ]      ← the runtime; NOT in MLIR
 ```
 
-## 5. Staged adoption (the actual plan)
+In Stage 0 the three passes run as `vakedc` LPG passes (no MLIR dependency); in
+Stage 1 the same semantics run as MLIR passes over the two dialects. The
+dashed return path is the **reference-semantics contract** ([0024](./0024-mlir-lowering-staged-adoption.md) §4):
+the Stage-1 verifier MUST agree with the Stage-0 passes on every graph.
 
-MLIR is a heavyweight C++ dependency; `vakedc` is deliberately a small,
-deterministic front-end (soon a Zig port, #15). The *semantics* of the three
-passes do not need MLIR — they need the typed graph, which exists today.
+## Anchoring (source conversation → repo reality)
 
-- **Stage 0 — now.** Implement the passes as LPG passes inside `vakedc`:
-  the depth/cycle bound as a `check` diagnostic; registration-frame injection
-  and the AOT supervisor index as 0012 emitters. Pure, total, hermetic —
-  same graph ⇒ byte-identical artifacts, like every other emitter.
-- **Stage 1 — with compiled agents.** Define the real `vaked`/`hcp` MLIR
-  dialects and the progressive lowering (vaked → hcp → LLVM) when agent
-  binaries are compiled ahead-of-time. That is the point where MLIR's pass
-  infrastructure, verification, and codegen pay for their weight — and the
-  Stage-0 passes become reference semantics for the dialect verifier.
+| Source term | What it is here |
+|-------------|-----------------|
+| "RFC 0004 / RFC 0005" | [RFC 0004 — Multi-Agent State Dependency](../../protocol/rfcs/0004-multi-agent-state-dependency.md) (one RFC; "RFC 0005" is its recorded alias). |
+| `DependencyRegistration` frame | The write-ahead "B depends on A's step-N output" registration — RFC 0004 §2–§3, logged via `eventd`, carrying the topology epoch. The `hcp` dialect ([0020](./0020-mlir-hcp-dialect.md)) lowers to it. |
+| `rewind_scope` | A block vulnerable to upstream state drift — RFC 0004 §3.3/§6 (`RewindEvent` + cold-start verification). Modelled as `hcp.rewind_scope` ([0020](./0020-mlir-hcp-dialect.md) §4). |
+| "MemPalace schemas" | The `memory` primitive ([0014](./0014-memory-primitive.md), #24) — explicitly **not** an MLIR target ([0024](./0024-mlir-lowering-staged-adoption.md) §3). |
+| "multi-agent dependency graph" | The typed semantic graph `vakedc` already produces (the LPG). |
 
-What never moves into MLIR: `eventd`, the `memory` store, the Zig enforcement
-daemons, the OTP control plane — dynamic I/O stays in the runtime, supervised,
-with the compiler guaranteeing the topology it runs on.
+## Security considerations
+
+The compiler is a **trust amplifier**: a structural guarantee proven at compile
+time (acyclic state-dependency subgraph, registration-precedes-consumption) is
+worth nothing if the lowering that emits the runtime artifacts can be bypassed.
+Two set-wide invariants follow, detailed in the parts:
+
+- The `hcp` write-ahead sequence ([0022](./0022-mlir-pass-wal-injection.md)) is
+  **generated, never hand-authored** — a hand-written `DependencyRegistration`
+  is a conformance smell (RFC 0004 §3.1).
+- The AOT supervisor index ([0023](./0023-mlir-pass-aot-supervisor-index.md)) is
+  a `0012`-style artifact: pure, total, hermetic, and **diffable**, so a
+  tampered routing table is visible in review.
+
+## Open questions
+
+- **Diagnostic naming** is reconciled in [0021](./0021-mlir-pass-topology-analysis.md) §3:
+  the shipped `E-WORKFLOW-CYCLE`/`E-WORKFLOW-DEPTH` (`vakedc/check.py`, 0015),
+  the `E-TOPO-*` names this note originally proposed, and RFC 0004 §5.1's
+  `E-CYCLE-DETECTED` are unified there.
+- **When Stage 1 starts** is gated on agent binaries being AOT-compiled
+  ([0024](./0024-mlir-lowering-staged-adoption.md) §2); until then the dialects
+  are specified but unbuilt, and the Stage-0 passes are authoritative.
+- Per-part open questions live under each part's "Open questions".

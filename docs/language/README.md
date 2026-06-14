@@ -109,14 +109,32 @@ The Wasmtime / Colmena / SPIFFE / NATS / TVM / ZKP technology batch is triaged
 already-have-its named — in
 [`0016-substrate-candidates.md`](./0016-substrate-candidates.md).
 
-## Topology compilation (0013)
+## Topology compilation — the MLIR set (0013, 0019–0024)
 
 The MLIR-based multi-agent topology compilation strategy — the `vaked` (agent
 dataflow) and `hcp` (orchestration frames) dialects, the static depth/cycle
 pass, automatic write-ahead dependency-registration insertion, and AOT
-`agent-supervisord` index generation, staged over the existing typed graph —
-is designed in
-[`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md) (#23).
+`agent-supervisord` index generation, staged over the existing typed graph — is
+now an RFC-grade specification **set**. The umbrella/index +
+terminology + staged-adoption verdict is
+[`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md) (#23);
+the six parts:
+
+- [`0019-mlir-vaked-dialect.md`](./0019-mlir-vaked-dialect.md) — the `vaked`
+  dialect (agent dataflow ops, `!vaked.state_hash`, SSA semantics, verifier).
+- [`0020-mlir-hcp-dialect.md`](./0020-mlir-hcp-dialect.md) — the `hcp` dialect
+  (write-ahead registration, canonical fetch, rewind scope), cross-linked to
+  RFC 0004 §3.1.
+- [`0021-mlir-pass-topology-analysis.md`](./0021-mlir-pass-topology-analysis.md)
+  — Pass 1 (critical-path/cycle, `maxDepth`; reconciles the diagnostic naming).
+- [`0022-mlir-pass-wal-injection.md`](./0022-mlir-pass-wal-injection.md) —
+  Pass 2 (`vaked.consume` → `hcp.*` write-ahead lowering).
+- [`0023-mlir-pass-aot-supervisor-index.md`](./0023-mlir-pass-aot-supervisor-index.md)
+  — Pass 3 (packed read-only routing table for `agent-supervisord`).
+- [`0024-mlir-lowering-staged-adoption.md`](./0024-mlir-lowering-staged-adoption.md)
+  — the `vaked→hcp→LLVM` contract, Stage 0 vs Stage 1, and the reference-semantics
+  rule (the Stage-0 `vakedc` passes are authoritative until Stage 1 is proven
+  equivalent).
 
 ## Namespace & daemon-channel roster (0017)
 

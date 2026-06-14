@@ -36,8 +36,16 @@
   the built-in catalog in [`../../vaked/schema/parallel-types.md`](../../vaked/schema/parallel-types.md)
   and the surface syntax in [`../../vaked/grammar/vaked-v0-plus.ebnf`](../../vaked/grammar/vaked-v0-plus.ebnf) (v0.3).
 - **Topology compilation** — the MLIR borrowings (dialects, SSA dependency
-  graphs, passes, AOT lowering) land in
-  [`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md).
+  graphs, passes, AOT lowering) land in the RFC-grade MLIR **set**: the umbrella
+  [`0013-mlir-topology-compilation.md`](./0013-mlir-topology-compilation.md) plus
+  the `vaked` dialect [`0019-mlir-vaked-dialect.md`](./0019-mlir-vaked-dialect.md),
+  the `hcp` dialect [`0020-mlir-hcp-dialect.md`](./0020-mlir-hcp-dialect.md), the
+  three passes
+  [`0021-mlir-pass-topology-analysis.md`](./0021-mlir-pass-topology-analysis.md) /
+  [`0022-mlir-pass-wal-injection.md`](./0022-mlir-pass-wal-injection.md) /
+  [`0023-mlir-pass-aot-supervisor-index.md`](./0023-mlir-pass-aot-supervisor-index.md),
+  and the lowering + staged-adoption contract
+  [`0024-mlir-lowering-staged-adoption.md`](./0024-mlir-lowering-staged-adoption.md).
 - **Memory** — the MemPalace borrowing lands as the `memory` primitive in
   [`0014-memory-primitive.md`](./0014-memory-primitive.md).
 - **Substrate & distribution** — the Wasmtime/Colmena/SPIFFE/NATS/… batch is
