@@ -376,6 +376,23 @@ _RR_ACCESSOR_BAD = '''runtime "t" {
 '''
 
 
+# Regression for the issue-#7 MINIMAL REPRODUCER: a fiber whose `input` names an
+# UNDECLARED kind-qualified node (`stream.neverDeclared`) must be flagged
+# E-REF-UNRESOLVED — the false-green that #7 reported. The `engine = pkgs.X` ref
+# is an OPEN value-namespace (nixpkgs is unbounded, RFC 0017) and is correctly
+# accepted; `output = artifacts.X` is a producer-side write (D1, deferred). So
+# the ONE diagnostic the reproducer must surface is the undeclared input stream.
+_RR_ISSUE7_REPRO = '''runtime "repro" {
+  systems = ["x86_64-linux"]
+  fiber f {
+    engine = pkgs.doesNotExist
+    input  = stream.neverDeclared
+    output = artifacts.whatever
+  }
+}
+'''
+
+
 def _test_ref_resolution(lines):
     cache = _builtins_cache()
 
@@ -383,6 +400,17 @@ def _test_ref_resolution(lines):
         return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
 
     ok = True
+
+    # #7 reproducer: the undeclared `input = stream.neverDeclared` is the one
+    # ref that must be rejected (engine=pkgs.X is open-ns; output=artifacts.X is
+    # a producer-side write). Previously this whole file false-greened.
+    repro = [c for c in codes(_RR_ISSUE7_REPRO, "issue7-repro.vaked")
+             if c == _REF_UNRESOLVED]
+    if repro != [_REF_UNRESOLVED]:
+        ok = False
+        lines.append(f"  FAIL ref-res (#7 reproducer): `input = stream.neverDeclared` "
+                     f"must yield exactly one {_REF_UNRESOLVED} (engine=pkgs.X open-ns "
+                     f"OK, output=artifacts.X is a write), got {repro}")
 
     acc_ok = [c for c in codes(_RR_ACCESSOR_OK, "rr-accessor-ok.vaked")
               if c == _REF_UNRESOLVED]
