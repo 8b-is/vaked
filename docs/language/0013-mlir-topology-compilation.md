@@ -22,6 +22,10 @@ Status: **Review** (2026-06-14) · Series: language design notes · Track:
 > here; each dialect, pass, and the lowering contract are specified
 > normatively in their own part.
 
+> **Requirement keywords.** MUST / MUST NOT / SHOULD / SHOULD NOT / MAY across this set carry their
+> [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) + [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)
+> (BCP 14) meanings **only when in ALL CAPS**; lowercase uses are ordinary prose.
+
 ## Abstract
 
 The Vaked compiler models a multi-agent system's **state-dependency topology**

@@ -1,7 +1,7 @@
 ---
 doc: 0020
 title: "MLIR hcp dialect — write-ahead registration, fetch, rewind scope"
-status: Review
+status: Accepted
 track: Language / MLIR
 created: 2026-06-14
 issue: 23
@@ -10,7 +10,7 @@ epic: 17
 
 # 0020 — The `hcp` MLIR dialect
 
-Status: **Review** (2026-06-14) · Series: language design notes · Track:
+Status: **Accepted** (2026-06-14) · Series: language design notes · Track:
 **Language / MLIR** · Issue
 [#23](https://github.com/peterlodri-sec/vaked-base/issues/23) · Epic
 [#17](https://github.com/peterlodri-sec/vaked-base/issues/17)

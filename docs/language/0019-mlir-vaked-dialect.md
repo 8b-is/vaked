@@ -1,7 +1,7 @@
 ---
 doc: 0019
 title: "MLIR vaked dialect — agent dataflow ops, types, verifier"
-status: Review
+status: Accepted
 track: Language / MLIR
 created: 2026-06-14
 issue: 23
@@ -10,7 +10,7 @@ epic: 17
 
 # 0019 — The `vaked` MLIR dialect
 
-Status: **Review** (2026-06-14) · Series: language design notes · Track:
+Status: **Accepted** (2026-06-14) · Series: language design notes · Track:
 **Language / MLIR** · Issue
 [#23](https://github.com/peterlodri-sec/vaked-base/issues/23) · Epic
 [#17](https://github.com/peterlodri-sec/vaked-base/issues/17)
