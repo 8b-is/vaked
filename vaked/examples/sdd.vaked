@@ -77,7 +77,7 @@ runtime "sdd-field" {
   # The SDD waves. Workflow edges are step ORDERING (a checked DAG); research /
   # implement / test are fan-out stages (N agents of that role run in parallel within
   # the stage), each gated before the next stage starts.
-  workflow sdd {
+  workflow sdd_waves {
     on = "operator.invoke:subagent-driven-development"
     budget = budget.sddRun
     maxDepth = 6
