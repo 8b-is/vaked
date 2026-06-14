@@ -1574,8 +1574,24 @@ def enrich_graph(graph, items) -> None:
     no nodes/edges. Run by the lowering driver after resolve, before lower()."""
     from .resolve import _value_to_props  # local import: avoid a cycle at import
 
+    # One O(N) index pass: id-suffix ('#<chain>') -> first node carrying that
+    # suffix and a provenance. Replaces the former per-decl O(N) `_node_for_chain`
+    # scan, which made enrich_graph O(N^2) (a full-node scan per decl) and was the
+    # dominant `vakedc lower` cost at scale (the super-linear term the scalability
+    # study isolated — Risk 4). A node id is `<basename>#<chain>` with exactly one
+    # '#', and `graph.nodes` is insertion-ordered, so keeping the first node per
+    # suffix reproduces the prior `endswith` first-match exactly (byte-identical
+    # provenance/golden output).
+    index = {}
+    for _n in graph.nodes:
+        if _n.provenance is None:
+            continue
+        _h = _n.id.find("#")
+        if _h != -1:
+            index.setdefault(_n.id[_h:], _n)
+
     def walk(decl, chain):
-        node = _node_for_chain(graph, chain)
+        node = index.get("#" + "/".join(chain))
         if node is not None:
             allowed = _CONFIG_BLOCK_FIELDS.get(decl.kind, frozenset())
             for st in decl.body:
@@ -1589,17 +1605,6 @@ def enrich_graph(graph, items) -> None:
     for it in items:
         if isinstance(it, P.Decl):
             walk(it, [it.name])
-
-
-def _node_for_chain(graph, chain):
-    """Find the graph node whose id ends with the given decl-name chain. The
-    resolver keys ids by the source-file *basename*; we match on the chain
-    suffix so this works regardless of how the file path was spelled."""
-    suffix = "#" + "/".join(chain)
-    for n in graph.nodes:
-        if n.id.endswith(suffix) and n.provenance is not None:
-            return n
-    return None
 
 
 # --------------------------------------------------------------------------- #
