@@ -26,7 +26,9 @@ More precisely (§4.5 of 0011):
 4. Let `G` be the set of all capabilities held by any upstream delegator of `p` (in a mesh or routing topology).
 5. **Claim:** For all `c ∈ used(p)`, there exists `g ∈ granted(p)` such that `c ≤ g` (in the attenuation order). Additionally, every grant held by `p` is `≤` every grant held by upstream delegators (monotone attenuation along edges).
 
-If both conditions hold, the type system certifies that **authority only flows downward (or stays equal) along delegation paths**, and **no principal exercises authority it was not granted**.
+If both conditions hold, the type system verifies that **authority only flows downward (or stays equal) along delegation paths**, and **no principal exercises authority it was not granted**.
+
+> **Caveat (not yet machine-checked).** This POLA invariant rests on an **informal** soundness argument (§4.5 of 0011), hand-written and **not** verified by a proof assistant. A Lean 4 mechanization is planned (RFC 0027, `0027-pola-formalization.md`). The invariant also holds only insofar as the use check `E-CAP-USE` (§4.3 of 0011) is correctly implemented and negative-tested (Risk 6 / `feat/cap-use-check`).
 
 ### 1.2 Informal Soundness Sketch
 
@@ -182,7 +184,7 @@ An attacker compromises a Zig library that a daemon links. **Mitigation:** Nix's
 
 ### Vaked's Security Claims (for publication)
 
-1. **Static POLA Verification:** Vaked's type system certifies that authority topology is POLA-consistent before compilation. This is a *compile-time* proof, not a runtime check.
+1. **Static POLA Verification:** Vaked's type system verifies that authority topology is POLA-consistent before compilation. This is a *compile-time* verification (informal argument, not machine-checked — Lean mechanization planned, RFC 0027), not a runtime check.
 
 2. **Decidable Checking:** The constraint set is closed, making conformance and capability-flow checking decidable and terminating (no halting-problem edge cases).
 

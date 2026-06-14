@@ -381,11 +381,15 @@ Delegating a capability the sender does not itself hold, or one strictly above
 what the sender holds, is an **attenuation error**. This is POLA enforced as a
 *typing rule*: authority only ever decreases along delegation paths.
 
-### 4.5 Soundness of the POLA check
+### 4.5 Informal soundness argument for the POLA check
 
-The check is sound w.r.t. the intended semantics — "no principal ends up able to
-exercise authority that was never transitively granted to it from a strictly
-greater holder" — because:
+The check is *intended to be* sound w.r.t. the intended semantics — "no principal
+ends up able to exercise authority that was never transitively granted to it from
+a strictly greater holder" — based on the following **informal argument**. This
+argument is hand-written and **not machine-checked**; a Lean 4 mechanization is
+deferred to **RFC 0027** ([`0027-pola-formalization.md`](./0027-pola-formalization.md)).
+It also depends on the use-check (`E-CAP-USE`, §4.3) being implemented and
+negative-tested (tracked as Risk 6 / `feat/cap-use-check`). The argument:
 
 1. `≤` is a partial order (§4.2), so `⊑` is a well-defined preorder on grant
    sets (reflexive: `G ⊑ G`; transitive: `G1 ⊑ G2 ∧ G2 ⊑ G3 ⇒ G1 ⊑ G3`, since
@@ -403,8 +407,14 @@ root grant — the POLA invariant. (Cycles in the *mesh* are allowed structurall
 because `⊑` along a cycle forces all grant-sets on the cycle to be `⊑`-equal,
 the check degenerates to equality on cycles, which is sound and still total.)
 
+None of the argument above is verified by a proof assistant: it is an informal,
+hand-written argument. A machine-checked mechanization is planned in **RFC 0027**
+([`0027-pola-formalization.md`](./0027-pola-formalization.md)), and the invariant
+holds only if the use check `E-CAP-USE` (§4.3) is correctly implemented (Risk 6 /
+`feat/cap-use-check`).
+
 Runtime *enforcement* of this invariant (membranes, revocation) is out of scope
-(§Scope); the type system certifies the static authority assignment is
+(§Scope); the type system verifies the static authority assignment is
 POLA-consistent before lowering.
 
 ---

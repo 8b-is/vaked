@@ -136,6 +136,17 @@ the six parts:
   rule (the Stage-0 `vakedc` passes are authoritative until Stage 1 is proven
   equivalent).
 
+## POLA formalization (0027)
+
+The §4.5 POLA soundness argument is **informal** (hand-written, not
+machine-checked). [`0027-pola-formalization.md`](./0027-pola-formalization.md)
+is the **deferred** scaffold for mechanizing it in **Lean 4 + Mathlib** at the
+spec level — the `≤` partial order, the `⊑` preorder, the path-attenuation and
+cyclic-case lemmas, and the top `pola_invariant` theorem — with implementation
+faithfulness and runtime enforcement explicitly out of scope. Blocked on the
+`E-CAP-USE` use-check being implemented and negative-tested (Risk 6 /
+`feat/cap-use-check`).
+
 ## Namespace & daemon-channel roster (0017)
 
 Closing **branch-B** reference resolution — the checker half of
