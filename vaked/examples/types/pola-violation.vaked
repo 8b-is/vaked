@@ -1,0 +1,59 @@
+# v0.3 example — a capability graph that triggers the POLA / confused-deputy
+# WARNINGS (issue #226).  It PARSES and is type-clean (no errors), but the
+# capability-reachability pass (docs/language/0026-capability-reachability-pola.md)
+# flags two least-authority hazards as warnings:
+#
+#   (W-POLA-EXCESS)       `builder` holds fs.host_rw but its declared `needs` is
+#                         only fs.repo_rw — it is granted strictly more authority
+#                         than it declares it needs (a POLA violation).
+#
+#   (W-CONFUSED-DEPUTY)   `proxy` is a shared deputy: it is the delegation target
+#                         of two distinct callers (`worker`, `cron`) and holds a
+#                         capability of its own.  Every delegation edge here is
+#                         attenuation-clean, yet a shared deputy acting under its
+#                         own identity on behalf of multiple callers is the
+#                         classic confused-deputy shape — the network membrane
+#                         gates the channel but cannot attenuate the capability
+#                         the deputy wields inside an allowed connection (0026 §2).
+#
+# DO NOT "fix" this file — it is the negative half of the
+# pola-least-authority / pola-violation pair and must keep producing these
+# warnings.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh excessAuthority {
+  node builder {
+    role = "builder"
+    # declares it needs only repo_rw, but is GRANTED host_rw (strictly stronger).
+    needs        = [fs.repo_rw]
+    capabilities = [fs.host_rw]
+  }
+
+  node worker {
+    role         = "worker"
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_rw]
+  }
+
+  node cron {
+    role         = "cron"
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_rw]
+  }
+
+  # A shared deputy holding repo_ro — attenuation-clean from both callers
+  # (repo_ro <= repo_rw), yet two distinct callers steer the same deputy that
+  # acts under its own identity: the confused-deputy shape.
+  node proxy {
+    role         = "proxy"
+    capabilities = [fs.repo_ro]
+  }
+
+  worker -> proxy : "fetch"
+  cron   -> proxy : "fetch"
+}

@@ -235,11 +235,15 @@ def _test_all_examples(lines):
         # checker). It is verified separately (group 5c-ns below) and excluded here.
         if os.path.basename(f) == "error-unknown-namespace.vaked":
             continue
-        if diags:
+        # "Clean" means no ERRORS. Advisory warnings (e.g. the #226 POLA /
+        # confused-deputy lints on pola-violation.vaked) are non-blocking and
+        # are verified by their own group below.
+        errs = [d for d in diags if d.severity == "error"]
+        if errs:
             ok = False
             lines.append(f"  FAIL examples: {rel} expected clean, "
-                         f"got {len(diags)} {[d.code for d in diags]}")
-            for d in diags[:4]:
+                         f"got {len(errs)} {[d.code for d in errs]}")
+            for d in errs[:4]:
                 lines.append(f"      {d.code} @ {d.line}:{d.col} :: {d.message}")
         else:
             n_clean += 1
@@ -939,6 +943,77 @@ def _test_determinism(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 5d. Capability reachability — POLA / confused-deputy lints (#226, 0026)
+# --------------------------------------------------------------------------- #
+# Advisory WARNINGS over the mesh capability graph:
+#   * W-POLA-EXCESS    — a node holds a grant strictly stronger than its `needs`.
+#   * W-CONFUSED-DEPUTY — a capability-holding node is the `->` target of >=2
+#                         distinct callers (a shared deputy under its own identity).
+# pola-violation.vaked emits exactly these two (and no errors); the paired
+# pola-least-authority.vaked emits neither (and no errors).
+
+_POLA_EXCESS = "W-POLA-EXCESS"
+_CONFUSED_DEPUTY = "W-CONFUSED-DEPUTY"
+POLA_VIOLATION = os.path.join(REPO, "vaked", "examples", "types", "pola-violation.vaked")
+POLA_CLEAN = os.path.join(REPO, "vaked", "examples", "types", "pola-least-authority.vaked")
+
+
+def _test_capability_reachability(lines):
+    ok = True
+    cache = _builtins_cache()
+
+    # Violation example: exactly one W-POLA-EXCESS + one W-CONFUSED-DEPUTY, all
+    # warnings, no errors.
+    rel = os.path.relpath(POLA_VIOLATION, REPO)
+    vdiags = vakedc.check_source(open(POLA_VIOLATION, encoding="utf-8").read(), rel,
+                                 builtins_cache=cache)
+    errs = [d for d in vdiags if d.severity == "error"]
+    if errs:
+        ok = False
+        lines.append(f"  FAIL reach: pola-violation has {len(errs)} errors "
+                     f"{[d.code for d in errs]} (expected warnings only)")
+    excess = [d for d in vdiags if d.code == _POLA_EXCESS]
+    deputy = [d for d in vdiags if d.code == _CONFUSED_DEPUTY]
+    if len(excess) != 1:
+        ok = False
+        lines.append(f"  FAIL reach: expected 1 {_POLA_EXCESS}, got {len(excess)}")
+    if len(deputy) != 1:
+        ok = False
+        lines.append(f"  FAIL reach: expected 1 {_CONFUSED_DEPUTY}, got {len(deputy)}")
+    for d in excess + deputy:
+        if d.severity != "warning":
+            ok = False
+            lines.append(f"  FAIL reach: {d.code} severity is {d.severity} "
+                         f"(expected warning)")
+    # the W-POLA-EXCESS must name the offending node `builder`.
+    if excess and "builder" not in excess[0].message:
+        ok = False
+        lines.append(f"  FAIL reach: {_POLA_EXCESS} message lacks node name: "
+                     f"{excess[0].message}")
+    # the W-CONFUSED-DEPUTY must name the deputy `proxy` and both callers.
+    if deputy:
+        m = deputy[0].message
+        if "proxy" not in m or "worker" not in m or "cron" not in m:
+            ok = False
+            lines.append(f"  FAIL reach: {_CONFUSED_DEPUTY} message lacks "
+                         f"node/edge names: {m}")
+
+    # Clean example: no errors AND no POLA/confused-deputy warnings.
+    relc = os.path.relpath(POLA_CLEAN, REPO)
+    cdiags = vakedc.check_source(open(POLA_CLEAN, encoding="utf-8").read(), relc,
+                                 builtins_cache=cache)
+    noise = [d for d in cdiags
+             if d.severity == "error" or d.code in (_POLA_EXCESS, _CONFUSED_DEPUTY)]
+    if noise:
+        ok = False
+        lines.append(f"  FAIL reach: pola-least-authority expected clean, got "
+                     f"{[d.code for d in noise]}")
+    if ok:
+        lines.append("  reach: POLA-excess + confused-deputy lints fire on the "
+                     "violation example and stay silent on the clean one")
+    return ok
+
+
 # 6. `network` schema (#28) — the egress-membrane kind is now schema'd.
 #
 # Before this slice a `network` decl was schema-less: ANY body checked clean.
@@ -1008,7 +1083,8 @@ def run():
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
                _test_all_examples, _test_ref_resolution, _test_import_binding,
                _test_name_collision, _test_workflow, _test_namespace_checker,
-               _test_network_schema, _test_ebpf_intent, _test_determinism):
+               _test_network_schema, _test_ebpf_intent,
+               _test_capability_reachability, _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:

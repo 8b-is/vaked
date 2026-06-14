@@ -1,0 +1,35 @@
+# v0.3 example — a clean LEAST-AUTHORITY capability graph (passes `vaked check`
+# with NO diagnostics, including no POLA warnings).
+#
+# Pairs with `pola-violation.vaked`. See issue #226 and
+# docs/language/0026-capability-reachability-pola.md.
+#
+# Every node holds exactly the authority its declared `needs` justifies, and no
+# shared deputy wields authority a caller lacks. The capability-reachability pass
+# (0026) therefore emits neither W-POLA-EXCESS nor W-CONFUSED-DEPUTY.
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+mesh leastAuthority {
+  node author {
+    role = "author"
+    # holds exactly what it needs — repo_rw to edit, declared as the need.
+    needs        = [fs.repo_rw]
+    capabilities = [fs.repo_rw]
+  }
+
+  node reviewer {
+    role = "reviewer"
+    # read-only is sufficient and is what it holds.
+    needs        = [fs.repo_ro]
+    capabilities = [fs.repo_ro]
+  }
+
+  # Attenuation holds (granted(reviewer)=repo_ro <= granted(author)=repo_rw) and
+  # the reviewer is a single-caller sink, so no confused-deputy shape arises.
+  author -> reviewer : "handoff"
+}

@@ -23,11 +23,12 @@ import parse_support as ps  # noqa: E402
 
 REPO = ps.REPO
 
-# The 20 expected example files (explicit count, per spec).
+# The 22 expected example files (explicit count, per spec).
 # v0.4 adds vaked/examples/namespace/ (2 files: valid + error-unknown-namespace).
+# #226 adds vaked/examples/types/pola-{violation,least-authority}.vaked (2 files).
 VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/primitives/*.vaked",   # 10 (memory.vaked: #24)
-    "vaked/examples/types/*.vaked",        # 4
+    "vaked/examples/types/*.vaked",        # 6 (#226: +pola-violation, +pola-least-authority)
     "vaked/examples/membrane/*.vaked",     # 1 (network-membrane slice: agent-egress)
     "vaked/examples/operator-field.vaked",  # 1
     "vaked/examples/engines/zig.vaked",     # 1
@@ -35,7 +36,7 @@ VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/namespace/*.vaked",     # 2 (RFC 0017: valid + error-unknown-namespace)
     "vaked/examples/ebpf/*.vaked",          # 1 (#225: observe/enforce hook typing)
 ]
-EXPECTED_VAKED_COUNT = 21
+EXPECTED_VAKED_COUNT = 23
 
 HCP_EXAMPLE = "protocol/hcplang/examples/hcp-core.hcplang"
 
