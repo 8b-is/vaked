@@ -864,6 +864,66 @@ def _test_determinism(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 6. `network` schema (#28) — the egress-membrane kind is now schema'd.
+#
+# Before this slice a `network` decl was schema-less: ANY body checked clean.
+# The schema makes `network` a CLOSED kind with a required `principal`, a
+# `default` constrained to {"deny","allow"}, and optional `allow`/`observe`.
+# This guards both arms: a valid membrane stays clean; a typo'd field + a bad
+# `default` value yield exactly E-CONFORM-UNKNOWN-FIELD + E-CONSTRAINT-ONEOF.
+# --------------------------------------------------------------------------- #
+
+# Valid membrane (mirrors vaked/examples/membrane/agent-egress.vaked) — clean.
+_NET_OK = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  mesh m { node worker { role = "worker"  capabilities = [network.loopback] } }
+  network agentEgress {
+    principal = "worker"
+    default   = "deny"
+    allow = [ egress("127.0.0.1", 9) ]
+  }
+}
+'''
+
+# Invalid membrane: `principl` is a typo (unknown field of the CLOSED schema)
+# and `default = "drop"` is not one of {"deny","allow"}.
+_NET_BAD = '''runtime "t" {
+  systems = ["x86_64-linux"]
+  network agentEgress {
+    principal = "worker"
+    default   = "drop"
+    principl  = "worker"
+  }
+}
+'''
+
+
+def _test_network_schema(lines):
+    ok = True
+    cache = _builtins_cache()
+
+    diags = vakedc.check_source(_NET_OK, "net-ok.vaked", builtins_cache=cache)
+    if diags:
+        ok = False
+        lines.append(f"  FAIL network: valid membrane should be clean, got "
+                     f"{[d.code for d in diags]}")
+
+    codes = sorted(d.code for d in
+                   vakedc.check_source(_NET_BAD, "net-bad.vaked", builtins_cache=cache))
+    want = ["E-CONFORM-UNKNOWN-FIELD", "E-CONSTRAINT-ONEOF"]
+    if codes != want:
+        ok = False
+        lines.append(f"  FAIL network: invalid membrane should yield {want}, "
+                     f"got {codes}")
+
+    if ok:
+        lines.append("  network schema (#28): valid membrane clean; typo field "
+                     "+ bad `default` yield E-CONFORM-UNKNOWN-FIELD + "
+                     "E-CONSTRAINT-ONEOF")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
 
@@ -873,7 +933,7 @@ def run():
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
                _test_all_examples, _test_ref_resolution, _test_import_binding,
                _test_name_collision, _test_workflow, _test_namespace_checker,
-               _test_determinism):
+               _test_network_schema, _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:
