@@ -1,0 +1,117 @@
+# sdd.vaked — Subagent-Driven Development as a Vaked capability graph.
+#
+# The companion `.claude/skills/subagent-driven-development` skill is the human/agent
+# entrypoint; this file is its FORMAL shape — the SDD mesh (roles + attenuated
+# capabilities) and the wave DAG (research → spec → implement → test → integrate),
+# expressed the same way agentfield-swe.vaked expresses the swe_af mesh + workflow.
+#
+#   mesh     — the subagent field: orchestrator DELEGATES attenuated authority (§4.4)
+#   workflow — the SDD waves as a checked DAG (0015); each node names its agent
+#   budget   — the run bound the supervision plane enforces
+
+use "./engines/zig.vaked"
+
+runtime "sdd-field" {
+  systems = ["x86_64-linux"]
+
+  # Ground the agents against the repo corpus (same index swe_af uses).
+  index repoCorpus {
+    source = [github("peterlodri-sec/vaked-base")]
+    normalize = crabcc.markdown
+    emit = [catalog.jsonl, catalog.sqlite]
+  }
+
+  # The subagent field. Mesh edges are capability DELEGATIONS: the orchestrator holds
+  # the strongest grants; every subagent receives an attenuated subset (POLA). Only the
+  # broker may write to GitHub; only the orchestrator may merge.
+  mesh field {
+    node orchestrator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin]
+    }
+    node researcher {
+      role = "research"            # one instance per core/adjacent topic (fan-out)
+      capabilities = [net.web_ro, mem.recall]
+    }
+    node specAuthor {
+      role = "spec"
+      capabilities = [fs.repo_rw, mem.recall]
+    }
+    node coherenceCritic {
+      role = "critic"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node coder {
+      role = "implement"           # one instance per component, isolated worktree (fan-out)
+      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    }
+    node testAuthor {
+      role = "test"                # spec-only; never sees the coder's code (fan-out)
+      capabilities = [fs.repo_ro, process.spawn_sandboxed]
+    }
+    node reviewer {
+      role = "review"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node broker {
+      role = "mcp-broker"
+      capabilities = [mcp.github_write]
+    }
+    orchestrator -> researcher
+    orchestrator -> specAuthor
+    orchestrator -> coherenceCritic
+    orchestrator -> coder
+    orchestrator -> testAuthor
+    orchestrator -> reviewer
+    orchestrator -> broker
+  }
+
+  budget sdd {
+    tokens = 8000000
+    wallClock = 8h
+    toolCalls = 2000
+    approvals = "merge"          # never self-merge; human approves the final integration
+    fuel = 20000000000
+  }
+
+  # The SDD waves. Workflow edges are step ORDERING (a checked DAG); research /
+  # implement / test are fan-out stages (N agents of that role run in parallel within
+  # the stage), each gated before the next stage starts.
+  workflow sdd {
+    on = "operator.invoke:subagent-driven-development"
+    budget = budget.sdd
+    maxDepth = 6
+
+    node frame {
+      agent = field.orchestrator
+      output = artifacts.waveDag        # P0: decompose + acceptance gates
+    }
+    node research {
+      agent = field.researcher          # fan-out: one per core/adjacent topic
+      input = artifacts.waveDag
+      output = artifacts.dossier        # P1: cited, adversarially verified
+    }
+    node spec {
+      agent = field.specAuthor
+      input = artifacts.dossier
+      output = artifacts.spec           # P2: RFC/EBNF/tables (gated by the critic)
+    }
+    node implement {
+      agent = field.coder               # fan-out: one per component, own worktree
+      input = artifacts.spec
+      output = artifacts.components      # P3: builds on dev-cx53/GHA, never local
+      retries = 2
+    }
+    node test {
+      agent = field.testAuthor          # fan-out: spec-only, independent of impl
+      input = artifacts.spec
+      output = artifacts.verdict        # P4: per-component + integration, ci-gate green
+    }
+    node integrate {
+      agent = field.broker
+      input = artifacts.verdict         # P5: stacked PRs, ready-for-review
+    }
+
+    frame -> research -> spec -> implement -> test -> integrate
+  }
+}
