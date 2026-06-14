@@ -843,6 +843,81 @@ def _test_namespace_checker(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 5f. eBPF observe/enforce hook typing (#225)
+# --------------------------------------------------------------------------- #
+# The hook point decides whether you can enforce or only observe: kprobe /
+# kretprobe / tracepoint / perf are observe-only and cannot change behaviour;
+# only verdict-capable hooks (lsm, cgroup_connect, cgroup_skb, xdp, tc,
+# override_return, send_signal) may carry `intent = "enforce"`.  An `ebpf` decl
+# declaring `intent = "enforce"` on an observe-only hook is E-EBPF-ENFORCE-ON-OBSERVE.
+
+_EBPF_ENFORCE_ON_KPROBE = '''ebpf badGuard {
+  hook   = "kprobe"
+  intent = "enforce"
+}
+'''
+
+_EBPF_ENFORCE_ON_TRACEPOINT = '''ebpf badGuard {
+  hook   = "tracepoint"
+  intent = "enforce"
+}
+'''
+
+_EBPF_OBSERVE_ON_KPROBE_OK = '''ebpf okGuard {
+  hook   = "kprobe"
+  intent = "observe"
+}
+'''
+
+_EBPF_ENFORCE_ON_LSM_OK = '''ebpf lsmGuard {
+  hook   = "lsm"
+  intent = "enforce"
+}
+'''
+
+_EBPF_ENFORCE_ON_CGROUP_OK = '''ebpf egressGuard {
+  hook   = "cgroup_connect"
+  intent = "enforce"
+}
+'''
+
+_EBPF_BAD_HOOK = '''ebpf typoGuard {
+  hook   = "kprobr"
+  intent = "observe"
+}
+'''
+
+
+def _test_ebpf_intent(lines):
+    cache = _builtins_cache()
+
+    def codes(src, name):
+        return [d.code for d in vakedc.check_source(src, name, builtins_cache=cache)]
+
+    ok = True
+    cases = [
+        (_EBPF_ENFORCE_ON_KPROBE, "ebpf-enforce-kprobe.vaked",
+         ["E-EBPF-ENFORCE-ON-OBSERVE"]),
+        (_EBPF_ENFORCE_ON_TRACEPOINT, "ebpf-enforce-tracepoint.vaked",
+         ["E-EBPF-ENFORCE-ON-OBSERVE"]),
+        (_EBPF_OBSERVE_ON_KPROBE_OK, "ebpf-observe-kprobe.vaked", []),
+        (_EBPF_ENFORCE_ON_LSM_OK, "ebpf-enforce-lsm.vaked", []),
+        (_EBPF_ENFORCE_ON_CGROUP_OK, "ebpf-enforce-cgroup.vaked", []),
+        # a bad hook name is its own error, NOT a false enforce error.
+        (_EBPF_BAD_HOOK, "ebpf-bad-hook.vaked", ["E-EBPF-UNKNOWN-HOOK"]),
+    ]
+    for src, name, want in cases:
+        got = codes(src, name)
+        if got != want:
+            ok = False
+            lines.append(f"  FAIL ebpf-intent: {name} expected {want}, got {got}")
+    if ok:
+        lines.append("  ebpf-intent (#225): enforce on kprobe/tracepoint rejected; "
+                     "observe-on-kprobe and enforce-on-lsm/cgroup check clean")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # 6. Determinism
 # --------------------------------------------------------------------------- #
 
@@ -933,7 +1008,7 @@ def run():
     for fn in (_test_builtins, _test_coverage, _test_conformant, _test_rejected,
                _test_all_examples, _test_ref_resolution, _test_import_binding,
                _test_name_collision, _test_workflow, _test_namespace_checker,
-               _test_network_schema, _test_determinism):
+               _test_network_schema, _test_ebpf_intent, _test_determinism):
         try:
             ok = fn(lines) and ok
         except Exception as e:

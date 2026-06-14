@@ -1,0 +1,42 @@
+# eBPF guard typing (#225) — observe vs enforce.
+#
+# The HOOK POINT decides whether an eBPF program can enforce or only observe.
+# kprobe / kretprobe / tracepoint / perf are OBSERVE-ONLY: they cannot change
+# system behaviour. Only verdict-capable hooks — lsm, cgroup_connect /
+# cgroup_skb, xdp / tc, override_return, send_signal — may carry
+# `intent = "enforce"`. The single most common eBPF security mistake is assuming
+# a kprobe enforces; vakedc makes that a compile-time error.
+#
+# The three guards below all check clean.
+
+# A kprobe is observe-only — `intent = "observe"` is the only legal intent.
+ebpf execTrace {
+  hook   = "kprobe"
+  intent = "observe"
+  target = "sys_execve"
+}
+
+# An LSM hook is verdict-capable (return 0 = allow / -errno = deny, kernel >=5.7)
+# — it may enforce.
+ebpf fileOpenGuard {
+  hook   = "lsm"
+  intent = "enforce"
+  target = "file_open"
+}
+
+# A cgroup connect hook gates egress at connect() time — it may enforce.
+ebpf egressGuard {
+  hook   = "cgroup_connect"
+  intent = "enforce"
+  target = "/sys/fs/cgroup/agent.slice"
+}
+
+# REJECTED (do not uncomment): `intent = "enforce"` on a kprobe is
+# E-EBPF-ENFORCE-ON-OBSERVE — a kprobe cannot change system behaviour, so it
+# cannot enforce. Prefer an LSM-deny or override_return over a kprobe + SIGKILL
+# (SIGKILL is not reliable prevention).
+#
+#   ebpf wrongGuard {
+#     hook   = "kprobe"
+#     intent = "enforce"
+#   }

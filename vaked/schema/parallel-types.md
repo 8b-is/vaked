@@ -479,7 +479,11 @@ schema runclass {
 - The remaining schema-less kinds (`filesystem`, `mcp`, `ebpf`,
   `observability`) stay open under #28's audit: each gets a schema or a removal
   decision (`host` got its schema in slice 3, below; `network` got its schema in
-  the egress-membrane slice, below; `input` was removed — #48).
+  the egress-membrane slice, below; `input` was removed — #48). The `ebpf` kind
+  has no top-level `schema` (a `schema ebpf` would collide in the kind-agnostic
+  LPG with the existing `capability ebpf` domain — cf. `mem`/`memory`), but its
+  `hook` + `intent` fields are still typed by a dedicated checker pass (#225,
+  see below).
 
 ---
 
@@ -505,8 +509,47 @@ schema host {
   follow-up enforces it; a `host.system` ∈ enclosing `runtime.systems`
   membership check is a follow-up checker rule tracked on #28.
 - Audit state (#28): `input` was removed (#48); `network` got its schema (the
-  egress-membrane slice, below); `filesystem` / `mcp` / `ebpf` /
-  `observability` get schemas with their daemons' policy formats.
+  egress-membrane slice, below); `ebpf` field-typing landed via a checker pass
+  (#225, see "eBPF hook typing" below); `filesystem` / `mcp` / `observability`
+  get schemas with their daemons' policy formats.
+
+---
+
+## eBPF hook typing (`ebpf` kind) — #225
+
+The `ebpf` kind declares an eBPF guard node. The **hook point** decides whether a
+program can *enforce* or only *observe*: `kprobe` / `kretprobe` / `tracepoint` /
+`perf` are observe-only and cannot change system behaviour, whereas `lsm`,
+`cgroup_connect` / `cgroup_skb`, `xdp` / `tc`, `override_return`, and
+`send_signal` are verdict-capable. The single most common eBPF security mistake
+is assuming a kprobe enforces; vakedc makes the distinction a compile-time
+invariant.
+
+The fields (typed by a dedicated checker pass, not a top-level `schema` — a
+`schema ebpf` would collide in the kind-agnostic LPG with the existing
+`capability ebpf` domain, cf. `mem`/`memory`):
+
+- `hook` — one of `kprobe`, `kretprobe`, `tracepoint`, `perf` (observe-only) or
+  `lsm`, `cgroup_connect`, `cgroup_skb`, `xdp`, `tc`, `override_return`,
+  `send_signal` (verdict-capable). An unknown value is **`E-EBPF-UNKNOWN-HOOK`**.
+- `intent` — `"observe"` or `"enforce"`. Anything else is **`E-EBPF-BAD-INTENT`**.
+- `target` — optional symbol / cgroup / interface the program attaches to.
+
+An `ebpf` declaring `intent = "enforce"` on an observe-only hook is rejected with
+**`E-EBPF-ENFORCE-ON-OBSERVE`**.
+
+```vaked
+ebpf execTrace      { hook = "kprobe"          intent = "observe" }   # ok
+ebpf fileOpenGuard  { hook = "lsm"             intent = "enforce" }   # ok
+ebpf egressGuard    { hook = "cgroup_connect"  intent = "enforce" }   # ok
+ebpf wrongGuard     { hook = "kprobe"          intent = "enforce" }   # E-EBPF-ENFORCE-ON-OBSERVE
+```
+
+- Conforms to `vaked/examples/ebpf/guards.vaked`.
+- Doctrine (#225): keep "eBPF testifies" as the default (observe), but allow a
+  curated `lsm` / cgroup enforcement tier where userspace mediation would be too
+  slow or racy (the userspace-verdict TOCTOU gap). Prefer `override_return` /
+  LSM-deny over `send_signal` (SIGKILL is not reliable prevention).
 
 ---
 
@@ -544,9 +587,10 @@ schema networkMembrane {
   allow-rule constructor `emit_ebpf_policy` reads); `default` is the
   deny-by-default posture. The principal's lattice grant (`network.<grant>` on
   the mesh node) is carried into the membrane at lowering, not on the decl.
-- The other capability-domain-shadowed kinds (`mcp`, `ebpf`) take the same
-  `<kind>Membrane`/`_KIND_SCHEMA` route when their daemon policy formats land;
-  `filesystem` / `observability` are non-shadowed and schema with their daemons.
+- The other capability-domain-shadowed kind (`mcp`) takes the same
+  `<kind>Membrane`/`_KIND_SCHEMA` route when its daemon policy format lands;
+  `ebpf` is field-typed via a checker pass (#225, above); `filesystem` /
+  `observability` are non-shadowed and schema with their daemons.
 
 ---
 
