@@ -32,6 +32,7 @@ import test_agentfield_lowering as t_af_lower  # noqa: E402
 import test_agent_guardd as t_guardd  # noqa: E402
 import test_yardmaster as t_yardmaster  # noqa: E402
 import test_telebot as t_telebot  # noqa: E402
+import test_swe_af_workflow as t_swe_af_wf  # noqa: E402
 
 ALL_MODULES = [
     ("grammar_selfcontained", t_grammar),
@@ -48,6 +49,7 @@ ALL_MODULES = [
     ("agent_guardd",          t_guardd),
     ("yardmaster",            t_yardmaster),
     ("telebot",               t_telebot),
+    ("swe_af_workflow",       t_swe_af_wf),
 ]
 
 # Tier subsets used by ci-gate:
