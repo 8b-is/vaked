@@ -45,6 +45,8 @@ KINDS = (
     "memory",
     # Value-namespace roster (#8, RFC 0017, v0.4).
     "namespace",
+    # ARP session-log event (#arp).
+    "arp_event",
 )
 _KIND_SET = frozenset(KINDS)
 

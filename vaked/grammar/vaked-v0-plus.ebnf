@@ -163,7 +163,7 @@ kind        = "runtime" | "engine"  | "host"
             | "parallel" | "schema" | "capability"
             | "service" | "secret" | "hostResource"   | "ingress"
             | "container" | "memory"
-            | "namespace" ;
+            | "namespace" | "arp_event" ;
 
 # ---- Block and statements ---------------------------------------------------
 #

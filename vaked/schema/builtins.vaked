@@ -392,3 +392,12 @@ capability mem {
   grant none recall append admin
   order none < recall < append < admin
 }
+
+schema arp_event {
+  field ts      : String { required }
+  field command : String { required nonempty }
+  field inputs  : List<String> { optional }
+  field outputs : List<String> { optional }
+  field status  : String { required }
+  field notes   : String { optional }
+}
