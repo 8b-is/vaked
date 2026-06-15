@@ -1,0 +1,47 @@
+# oracle-re-loop.vaked — the vaked-oracle RE loop's OWN capability graph
+# (tools/oracle/, docs/oracle/v0.md), declared in Vaked so the loop's enforced
+# write-scope is LOWERED from this declaration (tools/dogfood/scope_from_vaked.py)
+# instead of hand-passed. Declaration and enforcement cannot drift — full dogfood
+# symmetry with the aegis kernel (vaked/examples/dogfood-kernel.vaked).
+#
+# POLA: the analyst (the RE ralph loop: Ghidra + llm4decompile + the producers)
+# may write ONLY inside its write-scope and reach the local llm4decompile server
+# on loopback — it cannot egress. The eBPF watcher is a read-only witness that
+# appends evidence; it never mutates the tree. The operator holds the attenuated
+# superset every node delegates from.
+#
+# NOTE on `writeScope`: `filesystem` is still a schema-less kind (no path-allow-set
+# membrane), so the per-principal path refinement rides as an open field on the
+# (open) `meshNode` schema — same stopgap documented in dogfood-kernel.vaked.
+
+runtime "oracle-re-loop" {
+  systems = ["aarch64-darwin", "x86_64-linux"]   # M3 orchestrates; dev-cx53 runs the heavy work
+
+  # AUTHORITY graph (POLA, attenuated). The operator delegates a strictly weaker
+  # subset to each node; the checker refuses any edge that escalates.
+  mesh oracle {
+    node operator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, network.loopback, mem.admin]
+    }
+    # The analyst: the RE ralph loop. Writes ONLY inside its write-scope (the
+    # .oracle runtime + docs/oracle reports); reaches llm4decompile on loopback;
+    # recalls prior findings and appends the decision ledger. Cannot egress.
+    node analyst {
+      role = "re-analyst"
+      model = "llm4decompile-6.7b-v2"
+      capabilities = [fs.repo_rw, network.loopback, mem.recall, mem.append]
+      writeScope = [".oracle", "docs/oracle"]
+    }
+    # The eBPF watcher: a read-only witness. Observes syscalls/mmaps and appends
+    # evidence; never mutates the tree it watches.
+    node watcher {
+      role = "ebpf-witness"
+      capabilities = [fs.repo_ro, mem.append]
+      writeScope = []
+    }
+
+    operator -> analyst
+    operator -> watcher
+  }
+}
