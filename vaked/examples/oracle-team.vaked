@@ -1,0 +1,88 @@
+# oracle-team.vaked — the slice-4a reverser TEAM's OWN capability graph
+# (tools/oracle/{panel,team,memory}.py, docs/oracle/v0.md), declared in Vaked so the
+# team's roster + budget + egress are LOWERED from this declaration instead of a
+# hand-written panel.example.json (tools/oracle/roster_from_vaked.py). Declaration
+# and enforcement cannot drift — dogfood symmetry with oracle-re-loop.vaked, now for
+# an agent that LEAVES the box (OpenRouter egress).
+#
+# POLA: local panelists reach their model on loopback only; the two OpenRouter nodes
+# (feketecs, anstetten) hold network.egress refined by a deny-by-default
+# networkMembrane allowing ONLY openrouter.ai:443. The operator holds the attenuated
+# superset every node delegates from.
+#
+# NOTE on roster open fields (`endpoint`, `keyEnv`, `temperature`, `reasoningEffort`,
+# `budgetCalls`): these ride the OPEN `meshNode` schema as descriptive fields — the
+# same stopgap as `writeScope` in dogfood-kernel.vaked. Follow-up: a roster-field
+# schema. The EGRESS, by contrast, is modelled properly via `networkMembrane`.
+#
+# NOTE on the cordon: agent_guardd.decide() attests IP literals only, so the
+# openrouter.ai (DNS) rule lowers descriptively but is un-attestable at the packet
+# layer; roster_from_vaked.check_roster_egress enforces it at the tool layer. A local
+# egress proxy (pinned loopback IP) is the path to full packet attestation — follow-up.
+
+runtime "oracle-team" {
+  systems = ["aarch64-darwin", "x86_64-linux"]   # M3 orchestrates; dev-cx53 runs the heavy work
+
+  mesh oracleTeam {
+    node operator {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, network.egress, mem.admin]
+    }
+    node coordinator {
+      # holds network.egress because it SUB-DELEGATES egress to feketecs/anstetten;
+      # the checker refuses an edge whose child grant exceeds the parent's (lattice
+      # none < loopback < lan < egress), so coordinator must dominate its children.
+      role = "coordinate"
+      capabilities = [fs.repo_rw, network.egress, mem.admin]
+      budgetCalls = 30
+    }
+    node infralight {
+      role = "panelist"
+      model = "qwen2.5-coder-3b-instruct"
+      capabilities = [network.loopback, mem.recall]
+      endpoint = "http://127.0.0.1:8091/v1/chat/completions"
+      temperature = 0
+    }
+    node staticarmor {
+      role = "panelist"
+      model = "llm4decompile"
+      capabilities = [network.loopback, mem.recall]
+      endpoint = "http://127.0.0.1:8090/v1/chat/completions"
+      temperature = 0
+    }
+    node feketecs {
+      role = "panelist"
+      model = "deepseek/deepseek-v4-flash"
+      capabilities = [network.egress, mem.recall]
+      endpoint = "https://openrouter.ai/api/v1/chat/completions"
+      keyEnv = "OPENROUTER_API_KEY"
+      temperature = 1
+    }
+    node anstetten {
+      role = "judge"
+      model = "deepseek/deepseek-v4-pro"
+      capabilities = [network.egress, mem.recall]
+      endpoint = "https://openrouter.ai/api/v1/chat/completions"
+      keyEnv = "OPENROUTER_API_KEY"
+      temperature = 1
+      reasoningEffort = "high"
+    }
+
+    operator -> coordinator
+    coordinator -> infralight
+    coordinator -> staticarmor
+    coordinator -> feketecs
+    coordinator -> anstetten
+  }
+
+  # Loopback cordons: deny-by-default, allow ONLY each local model's port. These
+  # lower to real IP rules (127.0.0.1/32:port) — fully eBPF-attestable.
+  network infralightCordon  { principal = "infralight"  default = "deny" allow = [ egress("127.0.0.1", 8091) ] }
+  network staticarmorCordon { principal = "staticarmor" default = "deny" allow = [ egress("127.0.0.1", 8090) ] }
+  # OpenRouter cordons: the egress() DNS host is DROPPED at lower (the 0012 emitter
+  # can't compute a CIDR for a non-IP host) → these lower to deny-all (allow []).
+  # So OpenRouter egress is un-attestable at the packet layer and is enforced ONLY by
+  # roster_from_vaked.check_roster_egress at the tool layer (the documented gap).
+  network feketecsCordon  { principal = "feketecs"  default = "deny" allow = [ egress("openrouter.ai", 443) ] }
+  network anstettenCordon { principal = "anstetten" default = "deny" allow = [ egress("openrouter.ai", 443) ] }
+}
