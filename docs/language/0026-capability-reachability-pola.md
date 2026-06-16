@@ -123,6 +123,31 @@ This deliberately fires even when every incoming edge is attenuation-clean: the
 hazard is the *aggregation* of callers onto one authority-bearing sink, which a
 per-edge rule cannot see.
 
+### `E-EGRESS-USE` & `W-EGRESS-UNREFINED` (network-membrane POLA)
+
+The **network-domain dual** of `E-CAP-USE` / `W-POLA-EXCESS`. A `networkMembrane`
+refines a principal's `network` grant into a concrete `allow = [egress(host, port)]`
+set; the membrane must not authorize egress the capability graph never granted.
+
+- **`E-EGRESS-USE`** (`severity = "error"`) — for each membrane, classify every
+  `allow` host to the network lattice level it implies (`none < loopback < lan <
+  egress`): a loopback host/IP → `loopback`; a private IP → `lan`; any other IP or a
+  DNS name → `egress`. If the principal's strongest held `network` grant does **not**
+  dominate the strongest required level — or the `principal` names no node in the mesh
+  — the membrane authorizes egress beyond the granted capability, which is unsound:
+  emit `E-EGRESS-USE`. This is the membrane-side analog of `E-CAP-USE`'s
+  `used ⊑ granted` (here: *allowed ⊑ granted*).
+
+- **`W-EGRESS-UNREFINED`** (`severity = "warning"`) — a node holds `network.egress`
+  or `network.lan` with **no** `networkMembrane` refining it: its egress is unbounded.
+  Advisory (the dual of `W-POLA-EXCESS`); never blocks. Add a `network` membrane with
+  an `allow` set to scope it.
+
+Host classification uses the stdlib `ipaddress` order; deterministic (membranes and
+nodes sorted by name). This promotes the oracle's tool-local egress drift-check
+(`tools/oracle/roster_from_vaked.check_roster_egress`, slice-4b thread 1) to a
+first-class language pass.
+
 ## §2 — The channel-vs-reference attenuation gap
 
 A network / eBPF membrane gates **channels**: it decides whether a connection from
@@ -164,6 +189,11 @@ callers are sorted before rendering, so diagnostics are byte-stable across runs
   seven negative cases (underpowered, no-caps, wrong-domain, partial, two-node,
   and combos with `W-POLA-EXCESS` / `E-CAP-ATTENUATION`) plus `cap-use-no-needs`,
   the opt-out proof (a cap-holding node with no `needs` stays clean).
+- `vaked/examples/types/egress-*.vaked` — the `E-EGRESS-USE` fixtures:
+  `egress-use-exceeds` (membrane allows public egress for a `loopback`-only
+  principal), `egress-use-bad-principal` (membrane principal names no node),
+  `egress-use-ok` (egress grant covers a public-egress cordon, clean), and
+  `egress-unrefined` (an unrefined egress grant → one `W-EGRESS-UNREFINED`).
 
 ## Status
 
@@ -172,6 +202,10 @@ callers are sorted before rendering, so diagnostics are byte-stable across runs
   grants/edges.
 - ✅ `E-CAP-USE` use-check error (Risk 6, 0011 §4.3): a node may not exercise (via
   `needs`) authority no held grant dominates; the dual of `W-POLA-EXCESS`.
+- ✅ `E-EGRESS-USE` error + `W-EGRESS-UNREFINED` warning: the network-membrane POLA
+  pass (allowed ⊑ granted) — a `networkMembrane` may not authorize egress beyond its
+  principal's `network` grant; an unrefined egress grant is flagged advisory.
+  Promotes the oracle's tool-local egress check to a language pass.
 - ✅ Design note (this document) on the channel-vs-reference attenuation gap.
 - ✅ Example pair exercising a warning case and a clean least-authority graph.
 - ⏳ Follow-up: expose the transitive reachability set to `emit_ebpf_policy` so the

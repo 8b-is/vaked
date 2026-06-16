@@ -230,6 +230,17 @@ _CAP_USE_BROKEN = frozenset((
     "cap-use-and-attenuation.vaked",
 ))
 
+# The intentionally-broken egress-use fixtures (0026, E-EGRESS-USE). Each produces
+# an ERROR (membrane over-reach / bad principal), so they are excluded from the
+# clean-examples check and verified by _test_egress_use (group 5f). The clean and
+# warning-only egress fixtures (egress-use-ok.vaked, egress-unrefined.vaked) are
+# NOT listed here: egress-use-ok is fully clean and egress-unrefined produces only
+# a non-blocking W-EGRESS-UNREFINED warning, so both stay in the clean check.
+_EGRESS_BROKEN = frozenset((
+    "egress-use-exceeds.vaked",
+    "egress-use-bad-principal.vaked",
+))
+
 
 def _test_all_examples(lines):
     ok = True
@@ -256,9 +267,17 @@ def _test_all_examples(lines):
         # and is NOT in this set, so it stays in the clean-examples check.)
         if os.path.basename(f) in _CAP_USE_BROKEN:
             continue
+        # The egress-use-* negative fixtures (0026, E-EGRESS-USE) are intentionally
+        # invalid (a membrane over-reaches its principal's grant / names no node);
+        # they are verified separately by _test_egress_use (group 5f) and excluded
+        # here. (egress-use-ok.vaked is clean and egress-unrefined.vaked is
+        # warning-only, so neither is in this set — both stay in the clean check.)
+        if os.path.basename(f) in _EGRESS_BROKEN:
+            continue
         # "Clean" means no ERRORS. Advisory warnings (e.g. the #226 POLA /
-        # confused-deputy lints on pola-violation.vaked) are non-blocking and
-        # are verified by their own group below.
+        # confused-deputy lints on pola-violation.vaked, or the 0026
+        # W-EGRESS-UNREFINED advisory on unrefined-egress nodes) are non-blocking
+        # and are verified by their own group below.
         errs = [d for d in diags if d.severity == "error"]
         if errs:
             ok = False
@@ -268,10 +287,12 @@ def _test_all_examples(lines):
                 lines.append(f"      {d.code} @ {d.line}:{d.col} :: {d.message}")
         else:
             n_clean += 1
-    n_excluded = 2 + len(_CAP_USE_BROKEN)   # rejected + error-unknown-namespace + cap-use-*
+    # rejected + error-unknown-namespace + cap-use-* + egress-use-*
+    n_excluded = 2 + len(_CAP_USE_BROKEN) + len(_EGRESS_BROKEN)
     lines.append(f"  examples: {n_clean}/{len(files) - n_excluded} non-error examples "
                  f"check clean (+ rejected.vaked + error-unknown-namespace.vaked "
-                 f"+ {len(_CAP_USE_BROKEN)} cap-use-* fixtures covered separately)")
+                 f"+ {len(_CAP_USE_BROKEN)} cap-use-* + {len(_EGRESS_BROKEN)} "
+                 f"egress-use-* fixtures covered separately)")
     return ok
 
 
@@ -1206,6 +1227,59 @@ def _test_cap_use(lines):
     return ok
 
 
+# --------------------------------------------------------------------------- #
+# 5f. E-EGRESS-USE + W-EGRESS-UNREFINED (0026) — network-domain POLA
+#
+# The network-domain dual of E-CAP-USE / W-POLA-EXCESS: a `networkMembrane`
+# may not authorize egress beyond its principal's held `network` grant
+# (E-EGRESS-USE, error), and a node holding `network.egress`/`lan` with no
+# refining membrane is flagged (W-EGRESS-UNREFINED, warning). Mirrors the
+# E-CAP-USE block (group 5e).
+# --------------------------------------------------------------------------- #
+
+_EGRESS_USE = "E-EGRESS-USE"
+_EGRESS_UNREF = "W-EGRESS-UNREFINED"
+_EGRESS_DIR = os.path.join(REPO, "vaked", "examples", "types")
+_EGRESS_CASES = [
+    ("egress-use-exceeds.vaked",       [_EGRESS_USE]),
+    ("egress-use-ok.vaked",            []),
+    ("egress-unrefined.vaked",         [_EGRESS_UNREF]),
+    ("egress-use-bad-principal.vaked", [_EGRESS_USE]),
+]
+
+
+def _test_egress_use(lines):
+    ok = True
+    cache = _builtins_cache()
+    for base, expect in _EGRESS_CASES:
+        path = os.path.join(_EGRESS_DIR, base)
+        rel = os.path.relpath(path, REPO)
+        diags = vakedc.check_source(open(path, encoding="utf-8").read(), rel, builtins_cache=cache)
+        codes = sorted(d.code for d in diags)
+        if codes != sorted(expect):
+            ok = False
+            lines.append(f"  FAIL egress-use: {base} expected {sorted(expect)}, got {codes}")
+            continue
+        for d in diags:
+            if d.code == _EGRESS_USE and d.severity != "error":
+                ok = False; lines.append(f"  FAIL egress-use: {base} {_EGRESS_USE} not error")
+            if d.code == _EGRESS_UNREF and d.severity != "warning":
+                ok = False; lines.append(f"  FAIL egress-use: {base} {_EGRESS_UNREF} not warning")
+            if d.code in (_EGRESS_USE, _EGRESS_UNREF) and (d.byteStart, d.byteEnd) == (0, 0):
+                ok = False; lines.append(f"  FAIL egress-use: {base} {d.code} not source-mapped")
+    # corpus guard: the oracle team graph must NOT raise E-EGRESS-USE (its cordons match grants)
+    ot = os.path.join(REPO, "vaked", "examples", "oracle-team.vaked")
+    d2 = vakedc.check_source(open(ot, encoding="utf-8").read(),
+                             os.path.relpath(ot, REPO), builtins_cache=cache)
+    if any(d.code == _EGRESS_USE for d in d2):
+        ok = False; lines.append("  FAIL egress-use: oracle-team.vaked raised E-EGRESS-USE")
+    if ok:
+        lines.append("  egress-use (0026): E-EGRESS-USE fires on membrane over-reach / "
+                     "bad principal; W-EGRESS-UNREFINED warns unrefined egress; "
+                     "oracle-team cordons match grants (no error)")
+    return ok
+
+
 # 6. `network` schema (#28) — the egress-membrane kind is now schema'd.
 #
 # Before this slice a `network` decl was schema-less: ANY body checked clean.
@@ -1276,7 +1350,7 @@ def run():
                _test_all_examples, _test_ref_resolution, _test_import_binding,
                _test_name_collision, _test_workflow, _test_namespace_checker,
                _test_network_schema, _test_ebpf_intent,
-               _test_capability_reachability, _test_cap_use,
+               _test_capability_reachability, _test_cap_use, _test_egress_use,
                _test_determinism, _test_determinism_boundary):
         try:
             ok = fn(lines) and ok

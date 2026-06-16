@@ -1,0 +1,13 @@
+# OK: principal holds network.egress; the membrane's public allow is within grant.
+# Both nodes hold network.egress (so the `->` edge attenuates) and both are
+# refined by a cordon, so neither raises W-EGRESS-UNREFINED.
+runtime "egress-ok" {
+  systems = ["x86_64-linux"]
+  mesh m {
+    node operator { role = "control" capabilities = [network.egress] }
+    node worker   { role = "w" capabilities = [network.egress] }
+    operator -> worker
+  }
+  network operatorCordon { principal = "operator" default = "deny" allow = [ egress("8.8.8.8", 443) ] }
+  network workerCordon   { principal = "worker"   default = "deny" allow = [ egress("8.8.8.8", 443) ] }
+}

@@ -1,0 +1,10 @@
+# E-EGRESS-USE: membrane allows public egress for a loopback-only principal.
+runtime "egress-exceeds" {
+  systems = ["x86_64-linux"]
+  mesh m {
+    node operator { role = "control" capabilities = [network.loopback] }
+    node worker   { role = "w" capabilities = [network.loopback] }
+    operator -> worker
+  }
+  network workerCordon { principal = "worker" default = "deny" allow = [ egress("8.8.8.8", 443) ] }
+}

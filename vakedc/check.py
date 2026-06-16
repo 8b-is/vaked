@@ -53,6 +53,7 @@ and with no extra IO beyond the already-read source text.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from bisect import bisect_left
 from dataclasses import dataclass, field as dc_field
@@ -1618,13 +1619,16 @@ def _decl_kind_index(stmts):
 
 
 def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
-                     sibling_meshes=None, sibling_kinds=None):
+                     sibling_meshes=None, sibling_kinds=None,
+                     sibling_networks=None):
     """Check ``decl`` and recurse into nested declarations / mesh nodes.
 
     ``sibling_meshes`` ({mesh -> node names}) and ``sibling_kinds``
     ({decl name -> kind}) index the block the decl sits in — the in-scope
     agent roster (and its shadowing decl names) for workflow agent-target
-    validation."""
+    validation.  ``sibling_networks`` ({name -> Decl}) indexes the sibling
+    `network` membrane decls of the block — the runtime-level cordons that
+    refine a mesh's network grants (E-EGRESS-USE / W-EGRESS-UNREFINED)."""
     kind = decl.kind
 
     # Conformance for kinds that have a schema (skip the meta-kinds themselves).
@@ -1635,9 +1639,11 @@ def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
         _check_generics(decl, registry, by_name_kind, smap, file, diags)
 
     # Mesh: check each node body against meshNode, validate capability refs, and
-    # enforce attenuation on delegation (`->`) edges.
+    # enforce attenuation on delegation (`->`) edges.  `sibling_networks` are the
+    # runtime-level `network` membranes that refine this mesh's network grants.
     if kind == "mesh":
-        _check_mesh(decl, registry, smap, file, diags)
+        _check_mesh(decl, registry, smap, file, diags,
+                    network_decls=sibling_networks)
 
     # Workflow (#27): check each step body against workflowStep, verify the
     # step `->` edges form a DAG, enforce a declared `maxDepth` bound, and
@@ -1653,15 +1659,20 @@ def _check_decl_tree(decl, registry, by_name_kind, smap, file, diags,
 
     # Recurse into nested declarations (e.g. a runtime's index/stream/fiber/…).
     # Meshes declared in THIS body are sibling-scope for nested workflows.
+    # `network` membranes declared in THIS body are sibling-scope for the mesh's
+    # network-domain POLA check (a membrane refines the grant of a sibling mesh
+    # node, so the cordons are collected at the parent and threaded down).
     child_meshes = _mesh_node_index(decl.body)
     child_kinds = _decl_kind_index(decl.body)
+    child_networks = {st.name: st for st in decl.body
+                      if isinstance(st, P.Decl) and st.kind == "network"}
     for st in decl.body:
         if isinstance(st, P.Decl):
             _check_decl_tree(st, registry, by_name_kind, smap, file, diags,
-                             child_meshes, child_kinds)
+                             child_meshes, child_kinds, child_networks)
 
 
-def _check_mesh(mesh_decl, registry, smap, file, diags):
+def _check_mesh(mesh_decl, registry, smap, file, diags, network_decls=None):
     mesh_schema = registry.schemas.get("meshNode")
     node_grants = {}        # node name -> list[(domain, grant)]
     node_needs = {}         # node name -> list[(domain, grant)] (declared `needs`)
@@ -1723,6 +1734,12 @@ def _check_mesh(mesh_decl, registry, smap, file, diags):
     # Capability-reachability analysis (#226 / 0026): POLA-excess + confused-deputy.
     _check_capability_reachability(
         mesh_decl, node_decls, node_grants, node_needs, registry, smap, file, diags)
+
+    # Network-domain POLA (#226 / 0026): membrane over-reach (E-EGRESS-USE) +
+    # unrefined-egress advisory (W-EGRESS-UNREFINED). The membranes are
+    # sibling `network` decls of the mesh, threaded in from `_check_decl_tree`.
+    _check_egress_use(mesh_decl, node_decls, node_grants, network_decls or {},
+                      registry, smap, file, diags)
 
 
 def _check_capability_reachability(mesh_decl, node_decls, node_grants,
@@ -1848,6 +1865,111 @@ def _check_cap_use(node_decls, node_grants, node_needs, registry, smap, file,
                       f"node `{name}` uses `{dom}.{need_grant}` (declared in "
                       f"`needs`) but holds {held_str} — a held grant must dominate "
                       f"every exercised capability (0011 §4.3)")
+
+
+# --------------------------------------------------------------------------- #
+# Network-domain POLA (#226 / 0026) — E-EGRESS-USE + W-EGRESS-UNREFINED
+# --------------------------------------------------------------------------- #
+
+_LOOPBACK_HOST_NAMES = frozenset(("localhost",))
+
+
+def _lit_str(v):
+    if isinstance(v, dict) and (v.get("lit") or "").upper() == "STRING":
+        return v.get("value")
+    return None
+
+
+def _required_egress_grant(host):
+    """The network-lattice level an allow-host implies: loopback < lan < egress."""
+    h = (host or "").strip()
+    if h in _LOOPBACK_HOST_NAMES:
+        return "loopback"
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return "egress"          # a non-loopback DNS name -> public egress (conservative)
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_private:
+        return "lan"
+    return "egress"
+
+
+def _egress_allow_hosts(allow_vprop):
+    """Hosts from a membrane `allow` value-prop (list of egress(host, port) app-calls)."""
+    hosts = []
+    if isinstance(allow_vprop, list):
+        for e in allow_vprop:
+            if isinstance(e, dict) and e.get("ref") == "egress":
+                args = e.get("args") or []
+                if args:
+                    h = _lit_str(args[0])
+                    if h is not None:
+                        hosts.append(h)
+    return hosts
+
+
+def _grant_max(cap, grants):
+    """The strongest grant under cap's order (network is a chain)."""
+    best = None
+    for g in grants:
+        if best is None or _leq(cap, best, g):
+            best = g
+    return best
+
+
+def _check_egress_use(mesh_decl, node_decls, node_grants, network_decls,
+                      registry, smap, file, diags):
+    """Network-domain POLA (the dual of E-CAP-USE / W-POLA-EXCESS):
+
+    * **E-EGRESS-USE** (error) — a `networkMembrane` `allow` set implies an egress
+      level its principal's held `network` grant does not dominate (a membrane that
+      authorizes egress the capability graph never granted), or whose `principal`
+      names no node in the mesh.
+    * **W-EGRESS-UNREFINED** (warning) — a node holds `network.egress`/`lan` with no
+      `networkMembrane` refining it (unbounded egress; least-authority advisory)."""
+    cap = registry.caps.get("network")
+    if cap is None:
+        return
+    net_grants = {n: [g for (d, g) in (node_grants.get(n) or []) if d == "network"]
+                  for n in node_decls}
+    refined = set()
+    for mname in sorted(network_decls):
+        mdecl = network_decls[mname]
+        bindings, _order = _node_bindings(mdecl)
+        principal = _lit_str(bindings.get("principal"))
+        span = (mdecl.byteStart, mdecl.byteEnd, mdecl.line, mdecl.col)
+        if principal is not None:
+            refined.add(principal)
+        hosts = _egress_allow_hosts(bindings.get("allow"))
+        if not hosts:
+            continue
+        required = _grant_max(cap, [_required_egress_grant(h) for h in hosts])
+        if principal not in node_decls:
+            _emit(diags, "E-EGRESS-USE", file, span, mesh_decl,
+                  f"membrane `{mname}` names principal `{principal}` which is not a node "
+                  f"in mesh `{mesh_decl.name}` — a membrane cannot refine a network grant "
+                  f"no node holds (0026)")
+            continue
+        held = net_grants.get(principal) or []
+        if not any(_leq(cap, required, h) for h in held):
+            held_str = ", ".join("network.%s" % h for h in held) or "no network grant"
+            _emit(diags, "E-EGRESS-USE", file, span, mesh_decl,
+                  f"membrane `{mname}` allows egress at level `{required}` for principal "
+                  f"`{principal}` which holds {held_str} — a membrane cannot authorize "
+                  f"egress beyond the principal's granted network capability (0026)")
+    for name in sorted(node_decls):
+        unrefined = sorted(g for g in (net_grants.get(name) or []) if g in ("egress", "lan"))
+        if unrefined and name not in refined:
+            st = node_decls[name]
+            nspan = (st.byteStart, st.byteEnd, st.line, st.col)
+            cspan = (smap.field_value_span(st.byteStart, st.byteEnd, "capabilities")
+                     if smap else None) or nspan
+            _emit(diags, "W-EGRESS-UNREFINED", file, cspan, mesh_decl,
+                  f"node `{name}` holds `network.{unrefined[-1]}` but no networkMembrane "
+                  f"refines it — egress is unbounded (least-authority advisory; add a "
+                  f"`network` membrane with an `allow` set)", severity="warning")
 
 
 # Determinism boundary (#224): the side-effecting effect vocabulary a pure

@@ -1,0 +1,7 @@
+# W-EGRESS-UNREFINED: node holds network.egress with no refining membrane.
+runtime "egress-unrefined" {
+  systems = ["x86_64-linux"]
+  mesh m {
+    node worker { role = "w" capabilities = [network.egress] }
+  }
+}
