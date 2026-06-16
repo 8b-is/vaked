@@ -147,6 +147,15 @@ faithfulness and runtime enforcement explicitly out of scope. Blocked on the
 `E-CAP-USE` use-check being implemented and negative-tested (Risk 6 /
 `feat/cap-use-check`).
 
+## Network-membrane POLA (0028)
+
+The **egress-layer dual** of `E-CAP-USE`: a `networkMembrane` may not authorize egress
+beyond its principal's held `network` grant (`allowed ⊑ granted`). `E-EGRESS-USE` (error)
++ `W-EGRESS-UNREFINED` (advisory) — implemented in `vakedc` (PR #282), formalized in
+[`0028-network-membrane-pola.md`](./0028-network-membrane-pola.md), which also specs the
+`vakedz` parity port (the Zig front-end lacks the whole POLA-reachability layer — its own
+cycle). Promotes the oracle's tool-local egress check to a language pass.
+
 ## Namespace & daemon-channel roster (0017)
 
 Closing **branch-B** reference resolution — the checker half of
