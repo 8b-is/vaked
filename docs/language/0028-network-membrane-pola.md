@@ -94,10 +94,31 @@ Two layers, intentionally distinct:
 ## vakedz parity (planned cycle — this note is its spec)
 
 `vakedz/src/check.zig` (the Zig front-end) currently implements the type system, schema
-conformance, capability-domain validation, and capability-ref checks — but **not** the
-POLA-reachability layer (no `E-CAP-USE`, `W-POLA-EXCESS`, `W-CONFUSED-DEPUTY`, membrane/network
-handling). Porting `E-EGRESS-USE` in isolation is incoherent; the parity work is the **whole
-reachability layer** as one WP, in this order:
+conformance, capability-domain validation, capability-ref checks, the per-node **node-grant map**
+(`checkMesh`), the lattice **`leqGrant`**, and **edge attenuation** (`E-CAP-ATTENUATION`) — but
+**not** the `needs`-based POLA use-check (`E-CAP-USE`), `W-POLA-EXCESS`, `W-CONFUSED-DEPUTY`, or
+membrane/network handling. Porting `E-EGRESS-USE` in isolation is incoherent; the parity work is
+the **whole reachability layer** as one WP.
+
+### Prerequisite blockers (found 2026-06-16 — must clear before the port verifies)
+
+A timeboxed attempt added an additive `E-CAP-USE` loop to `checkMesh` (it compiled clean and
+`zig build test` stayed green — no regression), but it could **not** be verified end-to-end, for
+two pre-existing reasons the parity cycle must fix **first**:
+
+- **A — parser-parity gap (blocking all `check`).** `vakedz parse vaked/schema/builtins.vaked`
+  fails: `parse error: expected operator` at **`builtins.vaked:91:33`**. Because `vakedz check`
+  loads `--builtins` (default `vaked/schema/builtins.vaked`) and aborts if it can't parse it, the
+  CLI checker is currently **non-functional on the live builtins** — no fixture can be checked
+  through the real path until the vakedz parser is brought up to the builtins' current syntax.
+- **B — top-level-mesh check wiring.** With a minimal stub builtins (to bypass A),
+  `vakedz check --json` on the top-level-mesh fixture `cap-use-partial.vaked` returned
+  `{"diagnostics": []}` — the additive `E-CAP-USE` did **not** fire. The `cap-use-*` fixtures are
+  **top-level** meshes (not runtime-nested); confirm `checkMesh` (and thus the reachability pass)
+  is actually invoked on a top-level `mesh` decl, or wire it so it is. vakedc's `check_source`
+  checks top-level meshes; vakedz must match.
+
+With A and B cleared, the WP is, in order:
 
 1. **Node-grant map + lattice `leq`** — build `{node → [(domain, grant)]}` from `mesh` node
    `capabilities` (the capability parsing at `check.zig:1083` already extracts these); reuse the
