@@ -85,4 +85,10 @@ runtime "oracle-team" {
   # roster_from_vaked.check_roster_egress at the tool layer (the documented gap).
   network feketecsCordon  { principal = "feketecs"  default = "deny" allow = [ egress("openrouter.ai", 443) ] }
   network anstettenCordon { principal = "anstetten" default = "deny" allow = [ egress("openrouter.ai", 443) ] }
+  # operator/coordinator hold network.egress only to DELEGATE the OpenRouter reach down to
+  # feketecs/anstetten; their own egress authority is scoped to that same destination, so they
+  # carry a matching cordon — refining the grant (no unbounded egress). Clears W-EGRESS-UNREFINED
+  # under the 0026 network-membrane POLA pass (E-EGRESS-USE stays satisfied: egress ⊒ egress).
+  network operatorCordon    { principal = "operator"    default = "deny" allow = [ egress("openrouter.ai", 443) ] }
+  network coordinatorCordon { principal = "coordinator" default = "deny" allow = [ egress("openrouter.ai", 443) ] }
 }
