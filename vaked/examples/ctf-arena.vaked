@@ -1,0 +1,29 @@
+# ctf-arena.vaked — the CTF arena's competitor roster as a Vaked capability graph
+# (tools/ctf/, docs/ctf/v0.md). The deterministic simulation engine lives in Python; this
+# declares the TEAMS as POLA mesh nodes (mirrors redteam-swarm.vaked / oracle-team.vaked):
+# a referee delegates strictly attenuated, read-only authority to each competitor — a
+# team can read the repo and recall memory, but holds no write/egress/admin authority.
+#
+# The champion's reward is NON-CURRENCY: a codename honorific + a verifiable trophy (see
+# tools/ctf/reward.py). `strategy` rides the open meshNode schema (same stopgap as `model`
+# in oracle-team.vaked) — descriptive metadata the Python engine reads.
+
+runtime "ctf-arena" {
+  systems = ["aarch64-darwin", "x86_64-linux"]
+
+  mesh arena {
+    node referee {
+      role = "control-plane"
+      capabilities = [fs.repo_rw, mem.admin]
+    }
+    node team1 { role = "competitor"  strategy = "greedy_points"   capabilities = [fs.repo_ro, mem.recall] }
+    node team2 { role = "competitor"  strategy = "greedy_easy"     capabilities = [fs.repo_ro, mem.recall] }
+    node team3 { role = "competitor"  strategy = "ratio_balanced"  capabilities = [fs.repo_ro, mem.recall] }
+    node team4 { role = "competitor"  strategy = "best_response"    capabilities = [fs.repo_ro, mem.recall] }
+
+    referee -> team1
+    referee -> team2
+    referee -> team3
+    referee -> team4
+  }
+}
