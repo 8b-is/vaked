@@ -1,4 +1,5 @@
-# vaked grammar — Vaked capability-graph language, v0.3
+# vaked grammar — Vaked capability-graph language, v0.5
+# evolution_hash: 0a1b2c3d4e5f6789
 #
 # Notation:
 #   "literal"      terminal (keyword or punctuation, matched verbatim)
@@ -155,6 +156,7 @@ name        = ident | string ;
 signature   = "(" [ param { "," param } ] ")" [ "->" type ] ;
 param       = ident ":" type [ "=" expr ] ;
 # v0.4 adds "namespace" as the 29th kind (RFC 0017).
+# v0.5 adds "trust", "quorum", "probe" (3 new kinds, 32 total, RFC v0.5).
 kind        = "runtime" | "engine"  | "host"
             | "network" | "filesystem" | "mcp"        | "ebpf"
             | "budget"  | "observability" | "runclass" | "workflow"
@@ -163,7 +165,8 @@ kind        = "runtime" | "engine"  | "host"
             | "parallel" | "schema" | "capability"
             | "service" | "secret" | "hostResource"   | "ingress"
             | "container" | "memory"
-            | "namespace" | "arp_event" ;
+            | "namespace" | "arp_event"
+            | "trust" | "quorum" | "probe" ;
 
 # ---- Block and statements ---------------------------------------------------
 #
@@ -247,6 +250,40 @@ order_chain = ident "<" ident { "<" ident } ;
 
 # member_decl (v0.4, RFC 0017): names one closed member of a namespace block.
 member_decl = "member" ident ;
+
+# ---- Design decisions (v0.5 — trust, quorum, probe) -------------------------
+#
+# v0.5 adds three new kinds informed by the three-continent swarm deployment:
+#
+#   trust   — First-class trust declarations with decay half-life, delegation,
+#             and taint semantics. Sentinel's dynamic trust scoring (L3) is no
+#             longer an implementation detail; it is a language primitive.
+#   quorum  — Declarative consensus thresholds for governance across partitions.
+#             Specifies minimum votes, node set, timeout, and failure fallback.
+#   probe   — Synthetic request–response cycles that trigger compaction
+#             safeguards and log adjustments before real capability flows.
+#
+# These are STRICT ADDITIONS to the grammar. No existing v0.4 file changes
+# meaning. Total kinds: 32 (was 29 in v0.4).
+#
+# ---- v0.5 primitives --------------------------------------------------------
+#
+# trust_decl (v0.5): attaches a composite trust score modifier with decay.
+trust_decl  = "trust" ident "{" "score" "(" signed_decimal ")"
+              [ "half_life" "(" time_span ")" ]
+              [ "delegate" ident [ "taint" "as" "false" ] ]
+              "}" ;
+# quorum_decl (v0.5): declarative consensus for capability activation.
+quorum_decl = "quorum" ident "{" "min" "(" positive_integer ")"
+              "over" "{" ident { "," ident } "}"
+              "timeout" "(" time_span ")"
+              "on_failure" ident
+              "}" ;
+# probe_decl (v0.5): injects synthetic test cycles for compaction safety.
+probe_decl  = "probe" ident "{" "from" ident "to" ident
+              "via" ident [ "with" ident ]
+              "on_result" "{" stmt { stmt } "}"
+              "}" ;
 
 # ---- Expressions ------------------------------------------------------------
 
