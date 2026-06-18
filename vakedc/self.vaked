@@ -1,0 +1,58 @@
+
+declaration vakedc_compiler {
+  kind: "compiler"
+  name: "vakedc"
+  props: {
+    language: "python"
+    version: "0.5.0"
+    stages: ["lexer", "parser", "check", "resolve", "lower", "lsp"]
+    lines: 5903
+    entry: "vakedc/__main__.py"
+  }
+}
+
+declaration vakedc_lexer {
+  kind: "module"
+  name: "lexer"
+  props: { path: "vakedc/lexer.py", lines: 310, tokens: 32 }
+}
+
+declaration vakedc_parser {
+  kind: "module"
+  name: "parser"
+  props: { path: "vakedc/parser.py", lines: 682, grammar: "recursive-descent" }
+}
+
+declaration vakedc_checker {
+  kind: "module"
+  name: "check"
+  props: { path: "vakedc/check.py", lines: 1700, diagnostics: 22 }
+}
+
+declaration vakedc_lower {
+  kind: "module"
+  name: "lower"
+  props: { path: "vakedc/lower.py", lines: 1971, targets: 19 }
+}
+
+declaration vakedc_resolver {
+  kind: "module"
+  name: "resolve"
+  props: { path: "vakedc/resolve.py", lines: 266 }
+}
+
+declaration co_creation_loop {
+  kind: "lifecycle"
+  name: "ai_native_provenance"
+  props: {
+    generator: "deepseek-v4-pro"
+    orchestrator: "gemini-2.5-flash"
+    human: "peter@cabotage.pm.me"
+    genesis: "7c242080"
+    session: "2026-06-18"
+    commits: 95
+    domains: 14
+    cost_usd: 5.15
+    tokens_billion: 1.84
+  }
+}

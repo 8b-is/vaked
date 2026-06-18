@@ -354,3 +354,23 @@ char        = ? any Unicode scalar value except '"' and '\',
 path_char   = letter | digit | "/" | "_" | "-" | "." ;
 any         = ? any Unicode scalar value ? ;
 eol         = ? U+000A (line feed) or U+000D U+000A (CRLF) ? ;
+
+(* Phase 3: AI-Native / Co-Creation / Lifecycle Kinds *)
+ai_native     ::= "ai" identifier "{" ai_property* "}"
+ai_property   ::= "generator" ":" string ";"
+                | "orchestrator" ":" string ";"
+                | "model" ":" string ";"
+                | "tokens" ":" integer ";"
+                | "cost" ":" float ";"
+
+co_creation   ::= "coop" identifier "{" coop_property* "}"
+coop_property ::= "human" ":" string ";"
+                | "agent" ":" string ";"
+                | "session" ":" string ";"
+                | "provenance" ":" string ";"
+
+lifecycle     ::= "life" identifier "{" life_property* "}"
+life_property ::= "commits" ":" integer ";"
+                | "domains" ":" integer ";"
+                | "genesis" ":" string ";"
+                | "seal" ":" string ";"

@@ -173,3 +173,18 @@ def emit_shell(graph):
         lines.append(f'    std.debug.print("  {c.get("name", "?")}\n", .{{}});')
     lines.append('}')
     return "\n".join(lines) + "\n"
+
+
+# ── Mesh target emitter — generates a GossipPacket from cmd decls
+
+def emit_mesh(graph):
+    """Generate a synapsed GossipPacket from cmd nodes. Mesh-aware."""
+    cmds = [n.get("name") for n in graph.get("nodes", []) if n.get("kind") == "cmd"]
+    ai_agents = [n.get("name") for n in graph.get("nodes", []) if n.get("kind") == "ai"]
+    return {
+        "mesh_type": "gossip",
+        "genesis": "7c242080",
+        "cmds": cmds,
+        "ai_agents": ai_agents,
+        "node_count": len(cmds) + len(ai_agents),
+    }
