@@ -205,14 +205,14 @@ def _engine_projection(engine_name: str) -> dict:
 
 def _children_of(graph, parent_id):
     """Direct ``contains`` children of a node, in source order (the resolver
-    appends edges in declaration order, and we never reorder)."""
-    out = []
-    for e in graph.edges:
-        if e.label == "contains" and e.source == parent_id:
-            child = graph.get_node(e.target)
-            if child is not None:
-                out.append(child)
-    return out
+    appends edges in declaration order, and we never reorder).
+
+    Delegates to :meth:`Graph.children`, which serves this from an O(E)
+    adjacency index built once at edge-add time — O(deg) per parent instead of
+    the former O(E) full edge scan per parent. The index preserves edge
+    insertion order, so the returned child order is byte-for-byte identical to
+    the historical full-scan order."""
+    return graph.children(parent_id, "contains")
 
 
 def _by_kind(nodes, kind):

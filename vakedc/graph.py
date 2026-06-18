@@ -91,6 +91,13 @@ class Graph:
         self.source_file = source_file
         self._nodes: "dict[str, GraphNode]" = {}
         self._edges: "list[GraphEdge]" = []
+        # Adjacency index: (source_id, label) -> [target_id, ...] in edge
+        # insertion order. Populated at edge-add time so it is a single O(E)
+        # pass overall (one append per edge), giving O(deg) child lookups
+        # instead of an O(E) full scan per parent. The insertion-order list
+        # preserves the exact order a full scan of ``edges`` would yield, so
+        # downstream determinism (lowering golden bytes) is unchanged.
+        self._adjacency: "dict[tuple, list[str]]" = {}
 
     # --- nodes ----------------------------------------------------------- #
 
@@ -127,6 +134,22 @@ class Graph:
 
     def add_edge(self, edge: GraphEdge) -> None:
         self._edges.append(edge)
+        self._adjacency.setdefault((edge.source, edge.label), []).append(edge.target)
+
+    def children(self, source_id: str, label: str = "contains") -> "list[GraphNode]":
+        """Direct ``label`` children of ``source_id`` as resolved nodes, in edge
+        insertion order (the order a full scan of :attr:`edges` would yield).
+
+        O(deg(source_id)) via the adjacency index built at edge-add time, rather
+        than the O(E) full edge scan it replaces. Targets that did not resolve to
+        a node (e.g. external stubs absent from ``_nodes``) are skipped, matching
+        the historical full-scan behaviour."""
+        out = []
+        for target_id in self._adjacency.get((source_id, label), ()):
+            node = self._nodes.get(target_id)
+            if node is not None:
+                out.append(node)
+        return out
 
     # --- views ----------------------------------------------------------- #
 
