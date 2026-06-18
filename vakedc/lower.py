@@ -295,6 +295,8 @@ class _RuntimeView:
     networks: list = dc_field(default_factory=list)
     # Deployment targets (#28 slice 3 / #51).
     hosts: list = dc_field(default_factory=list)
+    # Authority graphs — principal grant-sets (0011 §4.4 / 0012 §5.1).
+    meshes: list = dc_field(default_factory=list)
 
 
 def _runtime_view(graph) -> "_RuntimeView | None":
@@ -319,6 +321,7 @@ def _runtime_view(graph) -> "_RuntimeView | None":
         workflows=_by_kind(children, "workflow"),
         networks=_by_kind(children, "network"),
         hosts=_by_kind(children, "host"),
+        meshes=_by_kind(children, "mesh"),
     )
 
 
@@ -741,12 +744,31 @@ def emit_docs_runtime(graph, nodes):
                     _md_code(supervisor)))
     L.append("")
 
-    # 7. Capability grants (sparse for operator-field — no mesh/capability decl)
+    # 7. Capability grants — declared principal grant-sets per `mesh`, else the
+    # sparse operator-field case (no mesh/capability decl).
     L.append("## Capability grants")
     L.append("")
-    L.append("No `mesh` or `capability` declarations in this runtime, so there are no declared")
-    L.append("principal grant-sets (0012 §5.1). The implied daemon-channel uses follow from the")
-    L.append("stream sources:")
+    if rv.meshes:
+        L.append("Declared principal grant-sets (0011 §4.4, 0012 §5.1), attenuated per `mesh`.")
+        L.append("Read-only principals cannot acquire write/publish grants they were not given:")
+        L.append("")
+        for m in rv.meshes:
+            L.append("### mesh `%s`" % m.name)
+            L.append("")
+            L.append("| Principal | Role | Capabilities |")
+            L.append("|-----------|------|--------------|")
+            for nd in _by_kind(_children_of(graph, m.id), "node"):
+                role = _lit(nd.props.get("role"))
+                role_cell = _md_code(role) if role is not None else "—"
+                caps_cell = _render_ref_list(nd.props.get("capabilities")) or "—"
+                L.append("| %s | %s | %s |"
+                         % (_md_code(nd.name), role_cell, caps_cell))
+            L.append("")
+        L.append("The implied daemon-channel uses follow from the stream sources:")
+    else:
+        L.append("No `mesh` or `capability` declarations in this runtime, so there are no declared")
+        L.append("principal grant-sets (0012 §5.1). The implied daemon-channel uses follow from the")
+        L.append("stream sources:")
     L.append("")
     L.append("| Principal / consumer | Used channel | Implied membrane |")
     L.append("|----------------------|--------------|------------------|")
@@ -800,6 +822,11 @@ def emit_docs_runtime(graph, nodes):
             artifact="gen/RUNTIME.md", region="parallel/" + par.name,
             source_file=sf, decl="parallel " + par.name, span=par.provenance.span,
             emitter="docs.runtime", inputs_projection=_node_projection(par)))
+    for m in rv.meshes:
+        entries.append(ProvEntry(
+            artifact="gen/RUNTIME.md", region="meshes/" + m.name,
+            source_file=sf, decl="mesh " + m.name, span=m.provenance.span,
+            emitter="docs.runtime", inputs_projection=_node_projection(m)))
     return files, entries
 
 

@@ -156,7 +156,15 @@ name        = ident | string ;
 signature   = "(" [ param { "," param } ] ")" [ "->" type ] ;
 param       = ident ":" type [ "=" expr ] ;
 # v0.4 adds "namespace" as the 29th kind (RFC 0017).
-# v0.5 adds "trust", "quorum", "probe" (3 new kinds, 32 total, RFC v0.5).
+# v0.5 adds "trust", "quorum", "probe" (RFC v0.5).
+# v0.5 also adds the dyad/ceremony/arbiter trio (design 0028, "The Third"): a
+# `dyad` is a principal that is intrinsically two (human + alum, co-rooted); a
+# `ceremony` is a consensus-freeze gate (on dissent → freeze; exits agree |
+# compromise); an `arbiter` is the unreachable singleton "Third" that decides
+# inheritance on a death/ceremony event. Each is a plain `decl` block — the
+# consensus-freeze and the life-critical "universe node" marker are expressed
+# with existing `assignment`/`node` body statements, so NO new production is
+# needed beyond these three kind tokens. (35 kinds total.)
 kind        = "runtime" | "engine"  | "host"
             | "network" | "filesystem" | "mcp"        | "ebpf"
             | "budget"  | "observability" | "runclass" | "workflow"
@@ -166,7 +174,8 @@ kind        = "runtime" | "engine"  | "host"
             | "service" | "secret" | "hostResource"   | "ingress"
             | "container" | "memory"
             | "namespace" | "arp_event"
-            | "trust" | "quorum" | "probe" ;
+            | "trust" | "quorum" | "probe"
+            | "dyad" | "ceremony" | "arbiter" ;
 
 # ---- Block and statements ---------------------------------------------------
 #

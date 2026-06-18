@@ -317,6 +317,78 @@ def _test_attrpath_sanitization(lines):
 
 
 # --------------------------------------------------------------------------- #
+# 6. Capability-grants rendering (docs.runtime §7).
+# --------------------------------------------------------------------------- #
+# A runtime WITH a `mesh` must render its principal grant-sets as a per-mesh
+# table (Principal/Role/Capabilities, source order); a runtime WITHOUT one keeps
+# the "No `mesh`" fallback. Regression guard for the 2026-06-16 doc-emitter fix
+# (the section was previously hardcoded to the no-mesh text for every runtime).
+
+_MESH_SRC = '''runtime "meshdoc" {
+  systems = ["x86_64-linux"]
+  mesh team {
+    node lead   { role = "lead" capabilities = [fs.repo_rw, mcp.github_write] }
+    node reader { role = "read" capabilities = [fs.repo_ro] }
+    node bare   { }
+  }
+}
+'''
+
+_NOMESH_SRC = '''runtime "nomeshdoc" {
+  systems = ["x86_64-linux"]
+  stream s { source = guardd.ringbuf  type = Event.X }
+}
+'''
+
+
+def _runtime_md(src, rel):
+    items = parse_source(src, rel)
+    graph = build_graph(items, rel)
+    return lower_mod.lower(graph, items).files["gen/RUNTIME.md"]
+
+
+def _test_capability_grants(lines):
+    ok = True
+    md = _runtime_md(_MESH_SRC, "meshdoc.vaked")
+    checks = [
+        ("Declared principal grant-sets", "intro line for mesh runtimes"),
+        ("### mesh `team`", "per-mesh heading"),
+        ("| Principal | Role | Capabilities |", "grant-set table header"),
+        ("`lead`", "node name rendered"),
+        ("`mcp.github_write`", "publish grant rendered for lead"),
+        ("`fs.repo_ro`", "read-only grant rendered for reader"),
+    ]
+    for needle, why in checks:
+        if needle not in md:
+            ok = False
+            lines.append(f"  FAIL grants: mesh runtime missing {why}: {needle!r}")
+    # the role-less / capability-less `bare` node renders em-dashes, never a crash
+    if "`bare`" not in md or "| `bare` | — | — |" not in md:
+        ok = False
+        lines.append("  FAIL grants: role-less/cap-less node should render "
+                     "`| `bare` | — | — |`")
+    # the no-mesh fallback must NOT leak into a mesh runtime
+    if "No `mesh`" in md:
+        ok = False
+        lines.append("  FAIL grants: mesh runtime wrongly emitted the no-mesh "
+                     "fallback text")
+
+    # no-mesh runtime keeps the fallback and emits no grant-set table
+    md2 = _runtime_md(_NOMESH_SRC, "nomeshdoc.vaked")
+    if "No `mesh`" not in md2:
+        ok = False
+        lines.append("  FAIL grants: no-mesh runtime lost the fallback text")
+    if "| Principal | Role | Capabilities |" in md2:
+        ok = False
+        lines.append("  FAIL grants: no-mesh runtime wrongly rendered a grant-set table")
+
+    if ok:
+        lines.append("  PASS grants: mesh runtime renders per-mesh grant table "
+                     "(em-dash for empty node), no-mesh keeps fallback")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
 
@@ -333,6 +405,8 @@ def run():
     ok &= _test_manifest_integrity(lines)
     lines.append("attrpath sanitization:")
     ok &= _test_attrpath_sanitization(lines)
+    lines.append("capability grants:")
+    ok &= _test_capability_grants(lines)
     return bool(ok), lines
 
 

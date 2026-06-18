@@ -47,6 +47,9 @@ KINDS = (
     "namespace",
     # ARP session-log event (#arp).
     "arp_event",
+    # The Third trio (design 0028): dyad principal, ceremony consensus-gate,
+    # arbiter singleton. Parse-layer only here — checker/resolver/lowering follow.
+    "dyad", "ceremony", "arbiter",
 )
 _KIND_SET = frozenset(KINDS)
 
