@@ -1815,6 +1815,7 @@ REGISTRY = {
 "ebpf.policy": _Registered("ebpf.policy", emit_ebpf_policy),
 "otel.config": _Registered("otel.config", emit_deferred, deferred=True),
 "systemd.units": _Registered("systemd.units", emit_deferred, deferred=True),
+"shell.cmd": _Registered("shell.cmd", emit_shell),
 "surface.launcher": _Registered("surface.launcher", emit_deferred, deferred=True),
 }
 @dataclass

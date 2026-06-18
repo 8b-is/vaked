@@ -126,3 +126,50 @@ out.append("EDGE\t" + "\t".join(str(v) for v in row))
 return "\n".join(out) + "\n"
 finally:
 conn.close()
+
+
+
+# ── Shell target emitter (vakedc++) ──────────────────────────────────────
+
+def emit_shell(graph):
+    """Generate main.zig from cmd nodes in the graph. Returns Zig source."""
+    cmds = [n for n in graph.get("nodes", []) if n.get("kind") == "cmd"]
+    if not cmds:
+        return "// no cmd declarations"
+
+    lines = [
+        'const std = @import("std");',
+        'pub fn main() !void {',
+        '    const a = std.heap.page_allocator;',
+        '    const args = try std.process.argsAlloc(a);',
+        '    const cmd = if (args.len > 1) args[1] else "help";',
+    ]
+
+    for c in cmds:
+        name = c.get("name", "?")
+        props = c.get("props", {})
+        runner = props.get("runner", "sh")
+        path = props.get("path", "")
+        arg_str = props.get("args", "")
+
+        if runner == "zig":
+            run = f"sh -c 'cd {path} && zig build'"
+        elif runner == "npm":
+            run = f"sh -c 'cd {path} && npm run build'"
+        elif runner == "go":
+            run = f"sh -c 'cd {path} && go build'"
+        elif runner == "git":
+            run = f"sh -c 'git {arg_str}'"
+        else:
+            run = f"sh -c '{arg_str}'"
+
+        lines.append(f'    if (std.mem.eql(u8, cmd, "{name}")) {{')
+        lines.append(f'        _ = try std.process.Child.run({{ .allocator = a, .argv = &.{{"sh", "-c", "{run}" }} }});')
+        lines.append(f'        return;')
+        lines.append(f'    }}')
+
+    lines.append('    std.debug.print("Usage: {s} [cmd]\n", .{args[0]});')
+    for c in cmds:
+        lines.append(f'    std.debug.print("  {c.get("name", "?")}\n", .{{}});')
+    lines.append('}')
+    return "\n".join(lines) + "\n"
