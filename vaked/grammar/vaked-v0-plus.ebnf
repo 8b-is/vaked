@@ -279,13 +279,13 @@ member_decl = "member" ident ;
 #
 # trust_decl (v0.5): attaches a composite trust score modifier with decay.
 trust_decl  = "trust" ident "{" "score" "(" signed_decimal ")"
-              [ "half_life" "(" time_span ")" ]
+              [ "half_life" "(" duration ")" ]
               [ "delegate" ident [ "taint" "as" "false" ] ]
               "}" ;
 # quorum_decl (v0.5): declarative consensus for capability activation.
-quorum_decl = "quorum" ident "{" "min" "(" positive_integer ")"
+quorum_decl = "quorum" ident "{" "min" "(" digit { digit } ")"
               "over" "{" ident { "," ident } "}"
-              "timeout" "(" time_span ")"
+              "timeout" "(" duration ")"
               "on_failure" ident
               "}" ;
 # probe_decl (v0.5): injects synthetic test cycles for compaction safety.
@@ -341,6 +341,9 @@ bool        = "true" | "false" ;
 path        = "." ( "/" | letter ) { path_char } ;
 duration    = digit { digit } ( "ns" | "us" | "ms" | "s" | "m" | "h" | "d" ) ;
 bytes       = digit { digit } ( "B" | "KB" | "MB" | "GB" | "TB" ) ;
+
+# v0.5 helper productions (used by trust/quorum/probe primitives)
+signed_decimal = [ "+" | "-" ] digit { digit } "." digit { digit } ;
 
 # Character-level productions
 ident       = letter { letter | digit | "_" | "-" } ;

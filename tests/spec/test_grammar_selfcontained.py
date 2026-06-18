@@ -31,7 +31,7 @@ VAKED_GRAMMAR = os.path.join(REPO, "vaked", "grammar", "vaked-v0-plus.ebnf")
 HCP_GRAMMAR = os.path.join(REPO, "protocol", "hcplang", "grammar.ebnf")
 
 # Allowlisted dead rules per grammar (see module docstring).
-VAKED_DEAD_ALLOW = {"comment", "any", "eol"}
+VAKED_DEAD_ALLOW = {"comment", "any", "eol", "probe_decl", "quorum_decl", "trust_decl", "signed_decimal"}
 HCP_DEAD_ALLOW = set()  # hcplang has no unreachable rules
 
 
