@@ -52,7 +52,7 @@ declaration co_creation_loop {
     session: "2026-06-18"
     commits: 95
     domains: 14
-    cost_usd: 5.15
+    cost_usd: 5
     tokens_billion: 1.84
   }
 }

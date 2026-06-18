@@ -188,7 +188,7 @@ generator-bug artifact and has been retracted.
 
 | Workers | Current (measured, end-to-end) | Target (v0.2) | Target (v1.0) |
 |---------|--------------------------------|---------------|---------------|
-| 8 | ~0.22s | ~0.15s | ~0.10s |
+| 8 | ~0.22s | ~0s | ~0.10s |
 | 64 | (not yet measured) | — | — |
 | 1024 | ~1.6s | ~0.6s | ~0.3s |
 | 10000 | ~25s (lower ~16s) | ~8s | ~2s |
