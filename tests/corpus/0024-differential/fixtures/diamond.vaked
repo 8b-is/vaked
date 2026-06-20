@@ -1,0 +1,25 @@
+# diamond.vaked — topology class: DIAMOND / FAN-IN (A -> B, A -> C, B -> D, C -> D).
+# Exercises: a non-trivial DAG where D has two predecessors. Critical-path
+# depth = 3 (A -> B -> D and A -> C -> D are equal length). Pass 1 must
+# de-duplicate the converging paths to a single depth; Pass 3 must record D's
+# two upstream subscriptions deterministically.
+runtime "diamond" {
+  systems = ["x86_64-linux"]
+
+  mesh field {
+    node a { role = "work" capabilities = [fs.repo_ro] }
+  }
+
+  workflow wf {
+    on = "e:created"
+    maxDepth = 3
+    node A { agent = field.a }
+    node B { agent = field.a }
+    node C { agent = field.a }
+    node D { agent = field.a }
+    A -> B
+    A -> C
+    B -> D
+    C -> D
+  }
+}

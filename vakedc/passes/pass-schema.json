@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vaked.dev/schemas/pass-pipeline-output.json",
+  "title": "Vaked MLIR pass pipeline output",
+  "description": "Output of vakedc passes --json or vaked-mlir validate. Documents the Stage-0 reference pipeline results that Stage-1 MLIR must reproduce.",
+  "type": "object",
+  "required": ["workflows", "diagnostics", "artifacts"],
+  "properties": {
+    "workflows": {
+      "type": "array",
+      "description": "One entry per workflow declaration in the source file",
+      "items": {
+        "type": "object",
+        "required": ["name", "depth", "criticalPath", "steps", "edges", "walFrames"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Workflow declaration name (from .vaked source)"
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Critical-path depth — longest step chain (Pass 1)",
+            "minimum": 1
+          },
+          "criticalPath": {
+            "type": "array",
+            "description": "Steps on the longest path, in order (Pass 1)",
+            "items": {"type": "string"}
+          },
+          "steps": {
+            "type": "array",
+            "description": "All workflow step names in declaration order",
+            "items": {"type": "string"}
+          },
+          "edges": {
+            "type": "array",
+            "description": "Directed edges between steps (from -> to)",
+            "items": {
+              "type": "object",
+              "required": ["from", "to"],
+              "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"}
+              }
+            }
+          },
+          "walFrames": {
+            "type": "integer",
+            "description": "Number of WAL registration frames injected (Pass 2)",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "description": "Pass diagnostics (E-WORKFLOW-CYCLE, E-WORKFLOW-DEPTH)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": ["E-WORKFLOW-CYCLE", "E-WORKFLOW-DEPTH"]
+          },
+          "message": {"type": "string"}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Paths of generated artifacts (Pass 3)",
+      "items": {"type": "string"}
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL"],
+      "description": "Overall pipeline status"
+    }
+  }
+}

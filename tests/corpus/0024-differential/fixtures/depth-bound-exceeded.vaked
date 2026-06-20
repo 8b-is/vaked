@@ -1,0 +1,21 @@
+# depth-bound-exceeded.vaked — topology class: DEPTH-BOUND (rejecting side).
+# Same shape as depth-bound-ok.vaked: a 3-step chain (depth = 3). Here maxDepth
+# is set BELOW the actual depth, so the critical-path bound is violated.
+# Stage-0 MUST reject with E-WORKFLOW-DEPTH (exit 1, no artifacts). Stage-1's
+# Pass 1 must reject the same input (soundness, §13.1).
+runtime "depth-bound-exceeded" {
+  systems = ["x86_64-linux"]
+
+  mesh field {
+    node a { role = "work" capabilities = [fs.repo_ro] }
+  }
+
+  workflow wf {
+    on = "e:created"
+    maxDepth = 2
+    node A { agent = field.a }
+    node B { agent = field.a }
+    node C { agent = field.a }
+    A -> B -> C
+  }
+}

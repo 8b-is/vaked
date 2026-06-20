@@ -1,0 +1,20 @@
+# cyclic.vaked — topology class: CYCLE (illegal back-edge).
+# A 3-step chain plus a back-edge C -> A, forming a cycle. Workflow step edges
+# must form a DAG. Stage-0 MUST reject with E-WORKFLOW-CYCLE (exit 1, no
+# artifacts). Stage-1's Pass 1 cycle detector must reject the same input.
+runtime "cyclic" {
+  systems = ["x86_64-linux"]
+
+  mesh field {
+    node a { role = "work" capabilities = [fs.repo_ro] }
+  }
+
+  workflow wf {
+    on = "e:created"
+    maxDepth = 9
+    node A { agent = field.a }
+    node B { agent = field.a }
+    node C { agent = field.a }
+    A -> B -> C -> A
+  }
+}

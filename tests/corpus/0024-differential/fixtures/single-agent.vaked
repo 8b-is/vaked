@@ -1,0 +1,17 @@
+# single-agent.vaked — topology class: SINGLE NODE (no edges).
+# Exercises: the degenerate base case. Critical-path depth = 1.
+# Stage-0 must accept and lower. Stage-1 must produce an equivalent supervisor
+# index for one agent with no dependencies.
+runtime "single-agent" {
+  systems = ["x86_64-linux"]
+
+  mesh field {
+    node solo { role = "work" capabilities = [fs.repo_ro] }
+  }
+
+  workflow wf {
+    on = "e:created"
+    maxDepth = 1
+    node s1 { agent = field.solo }
+  }
+}

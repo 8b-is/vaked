@@ -1,0 +1,20 @@
+# depth-bound-ok.vaked — topology class: DEPTH-BOUND (boundary, accepting side).
+# Same shape as depth-bound-exceeded.vaked: a 3-step chain (depth = 3). Here
+# maxDepth is set EXACTLY at the actual depth, exercising the boundary of the
+# `depth > bound` check — depth == bound must pass. Stage-0 must lower clean.
+runtime "depth-bound-ok" {
+  systems = ["x86_64-linux"]
+
+  mesh field {
+    node a { role = "work" capabilities = [fs.repo_ro] }
+  }
+
+  workflow wf {
+    on = "e:created"
+    maxDepth = 3
+    node A { agent = field.a }
+    node B { agent = field.a }
+    node C { agent = field.a }
+    A -> B -> C
+  }
+}
