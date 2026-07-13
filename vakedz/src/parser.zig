@@ -18,6 +18,9 @@ pub const KINDS = [_][]const u8{
     "surface",     "mesh",       "device",    "mediaPipeline", "parallel",
     "schema",      "capability", "service",   "secret",  "hostResource",
     "ingress",     "container",  "memory",
+    "namespace",   "arp_event",
+    "trust",       "quorum",     "probe",
+    "dyad",        "ceremony",   "arbiter",
 };
 
 pub fn isKind(s: []const u8) bool {

@@ -66,6 +66,9 @@ _KIND_KEYWORDS = [
 "catalog", "stream", "fiber", "surface", "mesh", "device", "mediaPipeline",
 "parallel", "schema", "capability", "service", "secret", "hostResource",
 "ingress", "container", "memory",
+"namespace", "arp_event",
+"trust", "quorum", "probe",
+"dyad", "ceremony", "arbiter",
 ]
 _COMMON_FIELDS = [
 "source", "normalize", "chunk", "emit", "schema", "trust",
@@ -90,6 +93,13 @@ _BUILTINS_SUMMARY: Dict[str, str] = {
 "mediaPipeline": "MediaPipeline — source→stages→sink media graph (open).\nFields: source, stages, sink",
 "parallel": "ParallelGroup — supervised group of fibers.\nFields: fibers (list of fiber refs), strategy, supervisor (otp)",
 "workflow": "Workflow — typed agent-step DAG.\nContains: steps with on/use, -> ordering edges",
+"trust": "Trust — first-class trust scoring with decay and delegation (v0.5).\nFields: score, half_life?, delegate, taint_as?\nAlso used as `trust = pinned { … }` on index nodes (v0.4).",
+"quorum": "Quorum — declarative consensus thresholds (v0.5).\nFields: min, over, timeout, on_failure",
+"probe": "Probe — synthetic request-response cycle for compaction safety (v0.5).\nFields: from, to, via, with?, on_result?",
+"namespace": "Namespace — named sub-namespace with member list (RFC 0017).\nFields: member (list of member names)",
+"dyad": "Dyad — a principal intrinsically two (human + alum, co-rooted, v0.5).\nBlock body: assignments and node decls",
+"ceremony": "Ceremony — consensus-freeze gate (v0.5).\nBlock body: assignments and node decls",
+"arbiter": "Arbiter — unreachable singleton 'Third' that decides inheritance (v0.5).\nBlock body: assignments and node decls",
 "memory": "Memory<T> — runtime-accumulated, mined, replayable store.\nFields: source (stream list), schema, mine (normalizer), scope, retention, emit",
 "schema": "Schema declaration — defines a named type with field constraints.\nFields: field declarations with : type and {refinements}",
 "capability": "Capability declaration — defines grant partial orders for a domain.\nFields: grant sets, order chains",

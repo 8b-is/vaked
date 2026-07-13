@@ -212,6 +212,9 @@ workflows: list = dc_field(default_factory=list)
 networks: list = dc_field(default_factory=list)
 hosts: list = dc_field(default_factory=list)
 meshes: list = dc_field(default_factory=list)
+trusts: list = dc_field(default_factory=list)
+quorums: list = dc_field(default_factory=list)
+probes: list = dc_field(default_factory=list)
 def _runtime_view(graph) -> "_RuntimeView | None":
 runtimes = [n for n in graph.nodes_sorted() if n.kind == "runtime"]
 if not runtimes:
@@ -235,6 +238,9 @@ workflows=_by_kind(children, "workflow"),
 networks=_by_kind(children, "network"),
 hosts=_by_kind(children, "host"),
 meshes=_by_kind(children, "mesh"),
+trusts=_by_kind(children, "trust"),
+quorums=_by_kind(children, "quorum"),
+probes=_by_kind(children, "probe"),
 )
 def _index_emit_targets(index_node) -> list:
 """The dotted ``emit`` target refs of an index node (e.g.
@@ -1302,6 +1308,80 @@ walk(it, [it.name])
 def _eventd_log_path(rv) -> str:
 """The per-runtime hash-chained log path (eventd design §"Daemon shape")."""
 return "var/lib/%s/eventd/log.jsonl" % rv.runtime.name
+def emit_trust_config(graph, nodes):
+    """Emit ``gen/trust.json`` — the trust/quorum/probe topology configuration
+    (v0.5).  Each trust, quorum, and probe declaration in the runtime lowers to
+    a config entry the runtime supervisor loads to seed the sentinel subsystem,
+    consensus engine, and compaction guard respectively."""
+    rv = _runtime_view(graph)
+    if rv is None:
+        return {}, []
+    sf = graph.source_file
+    rt = rv.runtime
+    trusts = []
+    for t in rv.trusts:
+        entry = {"name": t.name}
+        score = t.props.get("score")
+        if score is not None:
+            entry["score"] = _lit(score)
+        half_life = t.props.get("half_life")
+        if half_life is not None:
+            entry["half_life"] = _lit(half_life)
+        delegate = _ref(t.props.get("delegate"))
+        if delegate is not None:
+            entry["delegate"] = delegate
+        taint_as = _lit(t.props.get("taint_as"))
+        if taint_as is not None:
+            entry["taint_as"] = taint_as == "true"
+        trusts.append(entry)
+    quorums = []
+    for q in rv.quorums:
+        entry = {"name": q.name}
+        min_v = q.props.get("min")
+        if min_v is not None:
+            entry["min"] = int(_lit(min_v) or 0)
+        over = q.props.get("over")
+        if over is not None:
+            entry["over"] = [_ref(x) for x in over if _ref(x) is not None]
+        timeout = q.props.get("timeout")
+        if timeout is not None:
+            entry["timeout"] = _lit(timeout)
+        on_failure = _lit(q.props.get("on_failure"))
+        if on_failure is not None:
+            entry["on_failure"] = on_failure
+        quorums.append(entry)
+    probes = []
+    for p in rv.probes:
+        entry = {"name": p.name}
+        from_ref = _ref(p.props.get("from"))
+        if from_ref is not None:
+            entry["from"] = from_ref
+        to_ref = _ref(p.props.get("to"))
+        if to_ref is not None:
+            entry["to"] = to_ref
+        via_ref = _ref(p.props.get("via"))
+        if via_ref is not None:
+            entry["via"] = via_ref
+        with_ref = _ref(p.props.get("with"))
+        if with_ref is not None:
+            entry["with"] = with_ref
+        probes.append(entry)
+    cfg = _Ordered([
+        ("_generated", _header(sf, "runtime " + rt.name)),
+        ("trusts", trusts),
+        ("quorums", quorums),
+        ("probes", probes),
+    ])
+    path = "gen/trust.json"
+    files = {path: _emit_zig_json(cfg)}
+    entries = [ProvEntry(
+        artifact=path, region=None, source_file=sf,
+        decl="runtime " + rt.name, span=rt.provenance.span,
+        emitter="trust.config",
+        inputs_projection=_node_projection(rt))]
+    return files, entries
+
+
 def emit_eventd_config(graph, nodes):
 """Emit ``gen/eventd.json`` — the per-runtime log location + boot contract
 (#18: "per-runtime log path as a 0012 lowering output"). Selected when the
@@ -1807,6 +1887,7 @@ REGISTRY = {
 "host.resources": _Registered("host.resources", emit_host_resources),
 "caddy.ingress": _Registered("caddy.ingress", emit_caddy_ingress),
 "oci.containers": _Registered("oci.containers", emit_oci_containers),
+"trust.config": _Registered("trust.config", emit_trust_config),
 "eventd.config": _Registered("eventd.config", emit_eventd_config),
 "memory.store": _Registered("memory.store", emit_memory_store),
 "workflow.spec": _Registered("workflow.spec", emit_workflow_spec),
@@ -1881,8 +1962,10 @@ if rv.workflows:
 _run("workflow.spec", rv.workflows)
 if rv.memories:
 _run("memory.store", rv.memories)
+if rv.trusts or rv.quorums or rv.probes:
+    _run("trust.config", [rv.runtime])
 if rv.memories or rv.workflows:
-_run("eventd.config", [rv.runtime])
+    _run("eventd.config", [rv.runtime])
 if rv.networks:
 _run("ebpf.policy", rv.networks)
 if rv.hosts:

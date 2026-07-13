@@ -1,0 +1,81 @@
+# v0.5 — runtime with trust/quorum/probe integration
+#
+# Full example showing trust, quorum, and probe declarations inside a
+# runtime alongside their consumer (mesh, stream, etc.).
+
+use "../engines/zig.vaked"
+
+runtime "v0p5-demo" {
+  systems = ["x86_64-linux"]
+
+  # ---- v0.5 declarations ------------------------------------------------
+
+  trust primaryScore {
+    score = 0.9
+    half_life = 12h
+  }
+
+  trust delegateScore {
+    score = 0.7
+    half_life = 24h
+    delegate = primaryScore
+    taint_as = false
+  }
+
+  quorum consensus {
+    min = 2
+    over = [nodeA, nodeB, nodeC]
+    timeout = 15s
+    on_failure = retry
+  }
+
+  quorum compactionGuard {
+    min = 1
+    over = [nodeA]
+    timeout = 5s
+    on_failure = abort
+  }
+
+  probe readinessProbe {
+    from = nodeA
+    to = nodeB
+    via = edgeMain
+  }
+
+  probe preUpgradeProbe {
+    from = nodeA
+    to = nodeC
+    via = edgeMain
+    with = capability.process
+    on_result = {
+      status = "ok"
+    }
+  }
+
+  # ---- Existing constructs for context ----------------------------------
+
+  index testCorpus {
+    source = github("example/example-repo")
+    emit = [catalog.jsonl]
+  }
+
+  mesh testMesh {
+    node nodeA {
+      role = "producer"
+      capabilities = [fs.repo_ro]
+    }
+
+    node nodeB {
+      role = "processor"
+      capabilities = [fs.repo_rw]
+    }
+
+    node nodeC {
+      role = "consumer"
+      capabilities = [process.spawn_sandboxed]
+    }
+
+    nodeA -> nodeB : "pipeline"
+    nodeB -> nodeC : "delivery"
+  }
+}

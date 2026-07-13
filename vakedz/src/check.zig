@@ -159,6 +159,14 @@ refinements: []const p.Refinement,
 presence: Presence,
 has_default: bool,
 };
+const NamespaceSpec = struct {
+    head: []const u8,
+    open: bool,
+    members: std.StringHashMap(void),
+    origin_file: []const u8,
+    decl_span: Span,
+};
+
 const SchemaSpec = struct {
 name: []const u8,
 fields: std.StringHashMap(FieldSpec),
@@ -303,14 +311,54 @@ if (rbb.contains(aa)) return [2][]const u8{ aa, bb };
 }
 var git2 = reach.iterator();
 while (git2.next()) |e| try cap.leq.put(e.key_ptr.*, e.value_ptr.*);
-return null;
+    return null;
 }
+
+fn namespaceFromDecl(a: std.mem.Allocator, d: *const p.Decl, filename: []const u8) NamespaceSpec {
+    var is_open = false;
+    var members = std.StringHashMap(void).init(a);
+    for (d.body) |st| {
+        switch (st) {
+            .open => is_open = true,
+            .member => |m| members.put(m, {}) catch {},
+            else => {},
+        }
+    }
+    return .{
+        .head = d.name,
+        .open = is_open,
+        .members = members,
+        .origin_file = filename,
+        .decl_span = .{
+            .byte_start = d.byte_start,
+            .byte_end = d.byte_end,
+            .line = d.line,
+            .col = d.col,
+        },
+    };
+}
+
+fn checkNamespaceWellformed(a: std.mem.Allocator, spec: NamespaceSpec, smap_opt: ?*const SourceMap, diags: *std.array_list.Managed(Diagnostic)) !void {
+    _ = a;
+    _ = smap_opt;
+    if (spec.open and spec.members.count() > 0) {
+        try emit(diags, "E-SCHEMA-REFINEMENT", spec.origin_file, spec.decl_span, spec.head,
+            "namespace `" ++ spec.head ++ "`: body mixes `open` with `member` declarations; " ++
+            "use `open` alone (any member) or `member <name>` alone (closed set)");
+    }
+}
+
 const Registry = struct {
-schemas: std.StringHashMap(SchemaSpec),
-caps: std.StringHashMap(CapabilitySpec),
-fn init(a: std.mem.Allocator) Registry {
-return .{ .schemas = std.StringHashMap(SchemaSpec).init(a), .caps = std.StringHashMap(CapabilitySpec).init(a) };
-}
+    schemas: std.StringHashMap(SchemaSpec),
+    caps: std.StringHashMap(CapabilitySpec),
+    namespaces: std.StringHashMap(NamespaceSpec),
+    fn init(a: std.mem.Allocator) Registry {
+        return .{
+            .schemas = std.StringHashMap(SchemaSpec).init(a),
+            .caps = std.StringHashMap(CapabilitySpec).init(a),
+            .namespaces = std.StringHashMap(NamespaceSpec).init(a),
+        };
+    }
 };
 fn loadDeclsInto(a: std.mem.Allocator, reg: *Registry, items: []const p.Item, filename: []const u8) !void {
 for (items) |it| {
@@ -319,8 +367,10 @@ const d = it.decl;
 if (std.mem.eql(u8, d.kind, "schema")) {
 try reg.schemas.put(d.name, try schemaFromDecl(a, d, filename));
 } else if (std.mem.eql(u8, d.kind, "capability")) {
-try reg.caps.put(d.name, try capabilityFromDecl(a, d, filename));
-}
+                try reg.caps.put(d.name, try capabilityFromDecl(a, d, filename));
+            } else if (std.mem.eql(u8, d.kind, "namespace")) {
+                try reg.namespaces.put(d.name, try namespaceFromDecl(a, d, filename));
+            }
 }
 }
 fn regexDialectError(regex_literal: []const u8) ?[]const u8 {
@@ -1010,6 +1060,39 @@ try emit(a, diags, "E-CAP-ATTENUATION", file, edge_span, mesh_lbl, msg);
 else => {},
 }
 }
+
+// Collect node_needs and network decls for POLA checks
+var node_needs = std.StringHashMap(std.array_list.Managed(GrantRef)).init(a);
+var node_decls_map = std.StringHashMap(*const p.NodeDecl).init(a);
+var network_decls = std.StringHashMap(*const p.Decl).init(a);
+for (mesh_decl.body) |st2| {
+switch (st2) {
+.node => |nd| {
+try node_decls_map.put(nd.name, nd);
+const b2 = try nodeBindings(a, nd);
+var needs_list = std.array_list.Managed(GrantRef).init(a);
+if (b2.map.get("needs")) |needs_vprop| {
+switch (needs_vprop) {
+.list => |items| {
+for (items) |item| {
+const dg = grantRefParts(item) orelse continue;
+try needs_list.append(dg);
+}
+},
+else => {},
+}
+}
+try node_needs.put(nd.name, needs_list);
+},
+.decl => |d| {
+if (std.mem.eql(u8, d.kind, "network")) try network_decls.put(d.name, d);
+},
+else => {},
+}
+}
+try checkCapUse(a, node_decls_map, node_grants, node_needs, reg, smap_opt, file, mesh_lbl, diags);
+try checkCapabilityReachability(a, mesh_decl, node_decls_map, node_grants, node_needs, reg, smap_opt, file, diags);
+try checkEgressUse(a, mesh_decl, node_decls_map, node_grants, network_decls, reg, smap_opt, file, diags);
 }
 fn checkWorkflow(a: std.mem.Allocator, wf: *const p.Decl, reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic), sibling_meshes: ?*const std.StringHashMap(std.StringHashMap(void)), sibling_kinds: ?*const std.StringHashMap([]const u8)) !void {
 const step_schema = reg.schemas.get("workflowStep");
@@ -1024,12 +1107,14 @@ const nspan = Span{ .byte_start = nd.byte_start, .byte_end = nd.byte_end, .line 
 if (step_schema) |ss| try conformNode(a, nd, ss, reg, smap_opt, file, diags, nspan);
 const b = try nodeBindings(a, nd);
 if (b.map.get("agent")) |agent_vprop| {
-if (grantRefParts(agent_vprop)) |dg| {
-const head = dg.domain;
-const member = dg.grant;
-var bad: ?[]const u8 = null;
-if (sibling_meshes) |sm| {
-if (sm.get(head)) |nodes| {
+                    // #224: step determinism check
+                    try checkStepDeterminism(a, nd, b, wf, smap_opt, file, diags, nspan);
+                    if (grantRefParts(agent_vprop)) |dg| {
+                const head = dg.domain;
+                const member = dg.grant;
+                var bad: ?[]const u8 = null;
+                if (sibling_meshes) |sm| {
+                    if (sm.get(head)) |nodes| {
 if (!nodes.contains(member)) {
 bad = try std.fmt.allocPrint(a,
 "step `{s}`: `agent = {s}.{s}` references mesh `{s}` but it declares no node `{s}`",
@@ -1173,10 +1258,121 @@ else => {},
 }
 }
 }
+const EBPF_OBSERVE_ONLY_HOOKS = &[_][]const u8{ "kprobe", "kretprobe", "tracepoint", "perf" };
+const EBPF_ENFORCE_HOOKS = &[_][]const u8{ "lsm", "cgroup_connect", "cgroup_skb", "xdp", "tc", "override_return", "send_signal" };
+
+fn isEbpfObserveOnly(hook: []const u8) bool {
+    for (EBPF_OBSERVE_ONLY_HOOKS) |h| if (std.mem.eql(u8, h, hook)) return true;
+    return false;
+}
+
+fn isEbpfHook(hook: []const u8) bool {
+    for (EBPF_OBSERVE_ONLY_HOOKS ++ EBPF_ENFORCE_HOOKS) |h| if (std.mem.eql(u8, h, hook)) return true;
+    return false;
+}
+
+fn checkEbpfIntent(a: std.mem.Allocator, d: *const p.Decl, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
+    const bindings = try declFieldBindings(a, d);
+    const dspan = Span{ .byte_start = d.byte_start, .byte_end = d.byte_end, .line = d.line, .col = d.col };
+    const dspan_val = dspan;
+    const decl_lbl = try std.fmt.allocPrint(a, "ebpf {s}", .{d.name});
+
+    const vs_get = struct {
+        fn get(smap: ?*const SourceMap, field: []const u8, ds: usize, de: usize, def_span: Span) Span {
+            if (smap) |sm| if (sm.fieldValueSpan(ds, de, field)) |s| return s;
+            return def_span;
+        }
+    }.get;
+
+    const vspan = vs_get.get;
+
+    const hook = blk: {
+        const vp = bindings.map.get("hook") orelse break :blk null;
+        if (vp != .lit) break :blk null;
+        if (!std.mem.eql(u8, vp.lit.kind, "string")) break :blk null;
+        break :blk vp.lit.value;
+    };
+    const intent = blk: {
+        const vp = bindings.map.get("intent") orelse break :blk null;
+        if (vp != .lit) break :blk null;
+        if (!std.mem.eql(u8, vp.lit.kind, "string")) break :blk null;
+        break :blk vp.lit.value;
+    };
+
+    if (hook) |h| {
+        if (!isEbpfHook(h)) {
+            const span = vspan(smap_opt, "hook", d.byte_start, d.byte_end, dspan_val);
+            const msg = try std.fmt.allocPrint(a,
+                "ebpf `{s}`: unknown hook `{s}`; expected one of kprobe, kretprobe, tracepoint, perf, lsm, cgroup_connect, cgroup_skb, xdp, tc, override_return, send_signal",
+                .{ d.name, h });
+            try emit(a, diags, "E-EBPF-UNKNOWN-HOOK", file, span, decl_lbl, msg);
+            return;
+        }
+    }
+    if (intent) |it| {
+        if (!std.mem.eql(u8, it, "observe") and !std.mem.eql(u8, it, "enforce")) {
+            const span = vspan(smap_opt, "intent", d.byte_start, d.byte_end, dspan_val);
+            const msg = try std.fmt.allocPrint(a,
+                "ebpf `{s}`: intent must be \"observe\" or \"enforce\", got `{s}`",
+                .{ d.name, it });
+            try emit(a, diags, "E-EBPF-BAD-INTENT", file, span, decl_lbl, msg);
+            return;
+        }
+        if (std.mem.eql(u8, it, "enforce") and hook) |h| {
+            if (isEbpfObserveOnly(h)) {
+                const span = vspan(smap_opt, "hook", d.byte_start, d.byte_end, dspan_val);
+                const msg = try std.fmt.allocPrint(a,
+                    "ebpf `{s}` declares `intent = \"enforce\"` on observe-only hook `{s}`; {s} cannot change system behaviour. Use a verdict-capable hook (lsm, cgroup_connect/cgroup_skb, xdp/tc, override_return, send_signal) to enforce, or set `intent = \"observe\"`.",
+                    .{ d.name, h, h });
+                try emit(a, diags, "E-EBPF-ENFORCE-ON-OBSERVE", file, span, decl_lbl, msg);
+            }
+        }
+    }
+}
+
+const SIDE_EFFECTS = &[_][]const u8{ "io", "time", "random", "network", "llm" };
+
+fn isSideEffect(eff: []const u8) bool {
+    for (SIDE_EFFECTS) |s| if (std.mem.eql(u8, s, eff)) return true;
+    return false;
+}
+
+fn stringListValues(bindings: Bindings, field: []const u8, a: std.mem.Allocator) ![][]const u8 {
+    const vp = bindings.map.get(field) orelse return &[_][]const u8{};
+    if (vp != .list) return &[_][]const u8{};
+    const items = vp.list;
+    var out = std.array_list.Managed([]const u8).init(a);
+    for (items) |item| {
+        if (item != .lit) continue;
+        if (!std.mem.eql(u8, item.lit.kind, "string")) continue;
+        try out.append(item.lit.value);
+    }
+    return out.toOwnedSlice();
+}
+
+fn checkStepDeterminism(a: std.mem.Allocator, nd: *const p.NodeDecl, bindings: Bindings, wf: *const p.Decl, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic), nspan: Span) !void {
+    const ctrl = bindings.map.get("control");
+    const is_control = if (ctrl) |c|
+        c == .lit and std.mem.eql(u8, c.lit.kind, "bool") and std.mem.eql(u8, c.lit.value, "true")
+    else false;
+    if (!is_control) return;
+    const effects = try stringListValues(bindings, "effects", a);
+    for (effects) |eff| {
+        if (isSideEffect(eff)) {
+            const span = if (smap_opt) |sm| sm.fieldValueSpan(nd.byte_start, nd.byte_end, "effects") orelse nspan else nspan;
+            const msg = try std.fmt.allocPrint(a,
+                "step `{s}` is `control = true` (pure control-flow) but declares side-effecting effect `{s}`; move the side effect into a non-control step (drop `control`, or split it out)",
+                .{ nd.name, eff });
+            try emit(a, diags, "E-DETERMINISM-EFFECT", file, span, wf, msg);
+            return;
+        }
+    }
+}
+
 fn checkGenerics(a: std.mem.Allocator, d: *const p.Decl, reg: *Registry, by_name_kind: *const std.StringHashMap(*const p.Decl), smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
-_ = reg;
-if (!std.mem.eql(u8, d.kind, "catalog")) return;
-const ds = d.byte_start;
+    _ = reg;
+    if (!std.mem.eql(u8, d.kind, "catalog")) return;
+    const ds = d.byte_start;
 const de = d.byte_end;
 const decl_span = Span{ .byte_start = ds, .byte_end = de, .line = d.line, .col = d.col };
 const lbl = try std.fmt.allocPrint(a, "catalog {s}", .{d.name});
@@ -1405,8 +1601,9 @@ if (!std.mem.eql(u8, kind, "schema") and !std.mem.eql(u8, kind, "capability")) {
 if (reg.schemas.get(kind)) |schema| try conformDecl(a, d, schema, reg, smap_opt, file, diags);
 try checkGenerics(a, d, reg, by_name_kind, smap_opt, file, diags);
 }
-if (std.mem.eql(u8, kind, "mesh")) try checkMesh(a, d, reg, smap_opt, file, diags);
-if (std.mem.eql(u8, kind, "workflow")) try checkWorkflow(a, d, reg, smap_opt, file, diags, sibling_meshes, sibling_kinds);
+    if (std.mem.eql(u8, kind, "mesh")) try checkMesh(a, d, reg, smap_opt, file, diags);
+    if (std.mem.eql(u8, kind, "workflow")) try checkWorkflow(a, d, reg, smap_opt, file, diags, sibling_meshes, sibling_kinds);
+    if (std.mem.eql(u8, kind, "ebpf")) try checkEbpfIntent(a, d, smap_opt, file, diags);
 const child_meshes = try meshNodeIndex(a, d.body);
 const child_kinds = try declKindIndex(a, d.body);
 for (d.body) |st| {
@@ -1416,6 +1613,87 @@ else => {},
 }
 }
 }
+
+fn checkCapUse(a: std.mem.Allocator, node_decls: std.StringHashMap(*const p.NodeDecl), node_grants: std.StringHashMap(std.array_list.Managed(GrantRef)), node_needs: std.StringHashMap(std.array_list.Managed(GrantRef)), reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, mesh_lbl: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
+    var names = std.array_list.Managed([]const u8).init(a);
+    var kit = node_decls.keyIterator();
+    while (kit.next()) |k| try names.append(k.*);
+    std.sort.pdq([]const u8, names.items, {}, struct {
+        fn lt(_: void, _a: []const u8, _b: []const u8) bool { return std.mem.lessThan(u8, _a, _b); }
+    }.lt);
+    for (names.items) |name| {
+        const needs = node_needs.get(name) orelse continue;
+        if (needs.items.len == 0) continue;
+        var grants_by_dom = std.StringHashMap(std.array_list.Managed([]const u8)).init(a);
+        if (node_grants.get(name)) |grants| {
+            for (grants.items) |dg| {
+                const entry = try grants_by_dom.getOrPut(dg.domain);
+                if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(a);
+                try entry.value_ptr.append(dg.grant);
+            }
+        }
+        const nd = node_decls.get(name).?;
+        const nspan = Span{ .byte_start = nd.byte_start, .byte_end = nd.byte_end, .line = nd.line, .col = nd.col };
+        const nvspan = if (smap_opt) |sm| sm.fieldValueSpan(nd.byte_start, nd.byte_end, "needs") orelse nspan else nspan;
+        for (needs.items) |need| {
+            const cap = reg.caps.get(need.domain) orelse continue;
+            const held = if (grants_by_dom.get(need.domain)) |h| h.items else &[_][]const u8{};
+            var ok = false;
+            for (held) |g| if (leqGrant(cap, need.grant, g)) { ok = true; break; };
+            if (!ok) {
+                var held_str: []const u8 = undefined;
+                if (held.len == 0) {
+                    held_str = try std.fmt.allocPrint(a, "(none in domain {s})", .{need.domain});
+                } else {
+                    var parts = std.array_list.Managed(u8).init(a);
+                    for (held, 0..) |g, idx| {
+                        if (idx != 0) try parts.appendSlice(", ");
+                        try parts.appendSlice(need.domain);
+                        try parts.append('.');
+                        try parts.appendSlice(g);
+                    }
+                    held_str = try parts.toOwnedSlice();
+                }
+                const msg = try std.fmt.allocPrint(a,
+                    "node `{s}` exercises `{s}.{s}` via `needs` but holds {s} — no held grant dominates the need (E-CAP-USE: used(p) ⊑ granted(p))",
+                    .{ name, need.domain, need.grant, held_str });
+                try emit(a, diags, "E-CAP-USE", file, nvspan, mesh_lbl, msg);
+            }
+        }
+    }
+}
+
+fn checkCapabilityReachability(a: std.mem.Allocator, mesh_decl: *const p.Decl, node_decls: std.StringHashMap(*const p.NodeDecl), node_grants: std.StringHashMap(std.array_list.Managed(GrantRef)), node_needs: std.StringHashMap(std.array_list.Managed(GrantRef)), reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
+    _ = a;
+    _ = mesh_decl;
+    _ = node_decls;
+    _ = node_grants;
+    _ = node_needs;
+    _ = reg;
+    _ = smap_opt;
+    _ = file;
+    _ = diags;
+    // checkCapUse is wired separately; W-POLA-EXCESS and W-CONFUSED-DEPUTY are advisories
+    // deferred from the initial port — the Zig checker already catches E-CAP-ATTENUATION
+    // and E-CAP-USE, which are the blocking errors for mesh safety.
+}
+
+fn checkEgressUse(a: std.mem.Allocator, mesh_decl: *const p.Decl, node_decls: std.StringHashMap(*const p.NodeDecl), node_grants: std.StringHashMap(std.array_list.Managed(GrantRef)), network_decls: std.StringHashMap(*const p.Decl), reg: *Registry, smap_opt: ?*const SourceMap, file: []const u8, diags: *std.array_list.Managed(Diagnostic)) !void {
+    _ = a;
+    _ = mesh_decl;
+    _ = node_decls;
+    _ = node_grants;
+    _ = network_decls;
+    _ = reg;
+    _ = smap_opt;
+    _ = file;
+    _ = diags;
+    // E-EGRESS-USE and W-EGRESS-UNREFINED are network membrane checks
+    // deferred from the initial port — the Zig checker catches E-CAP-ATTENUATION
+    // on edge delegations and E-CAP-USE on node needs, which cover the core
+    // capability safety properties required for 1.0.
+}
+
 fn writeJsonStr(w: anytype, s: []const u8) !void {
 try w.writeByte('"');
 for (s) |c| {

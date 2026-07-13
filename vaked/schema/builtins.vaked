@@ -393,6 +393,35 @@ capability mem {
   order none < recall < append < admin
 }
 
+# `trust` (v0.5) — a first-class trust declaration with decay, delegation,
+# and taint semantics.  Composite trust score, optional half-life decay,
+# optional delegation to another trust policy with optional taint override.
+schema trust {
+  field score      : SignedDecimal
+  field half_life  : Duration      { optional }
+  field delegate   : TrustRef      { optional }
+  field taint_as   : Bool          { optional }
+}
+
+# `quorum` (v0.5) — declarative consensus thresholds for capability activation
+# across network partitions.  Minimum votes, node set, timeout, failure fallback.
+schema quorum {
+  field min        : Int        { > 0 }
+  field over       : List\<String\> { nonempty }
+  field timeout    : Duration
+  field on_failure : String     { nonempty }
+}
+
+# `probe` (v0.5) — synthetic request–response cycles that trigger compaction
+# safeguards before real capability flows.
+schema probe {
+  field from      : NodeRef
+  field to        : NodeRef
+  field via       : EdgeRef
+  field with      : CapabilityRef { optional }
+  field on_result : Block         { optional }
+}
+
 schema arp_event {
   field ts      : String { required }
   field command : String { required nonempty }

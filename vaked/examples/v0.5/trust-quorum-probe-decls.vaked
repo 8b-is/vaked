@@ -1,0 +1,51 @@
+# v0.5 — trust, quorum, probe declarations
+#
+# These are first-class kind declarations that define the adaptive
+# capability topology: trust scoring, consensus thresholds, and
+# compaction safety probes.
+#
+# Each appears as a top-level block inside a `runtime { }` declaration,
+# alongside index/stream/fiber/surface etc.
+
+trust builderTrust {
+  score = 0.8
+  half_life = 24h
+  delegate = sentinelDefault
+}
+
+trust deployTrust {
+  score = 0.95
+  half_life = 6h
+  delegate = builderTrust
+  taint_as = false
+}
+
+quorum deployGate {
+  min = 3
+  over = [builderNodeA, builderNodeB, builderNodeC, sentinelNode]
+  timeout = 30s
+  on_failure = abort
+}
+
+quorum compactionGate {
+  min = 2
+  over = [mnemosyneNodeA, mnemosyneNodeB]
+  timeout = 5s
+  on_failure = abort
+}
+
+probe preDeployProbe {
+  from = builderNodeA
+  to = sentinelNode
+  via = meshEdgeEgress
+  with = capability.fs
+  on_result = {
+    score = 0.0
+  }
+}
+
+probe compactionSafety {
+  from = mnemosyneNodeA
+  to = mnemosyneNodeB
+  via = meshEdgeGossip
+}
