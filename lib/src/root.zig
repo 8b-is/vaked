@@ -9,3 +9,4 @@ test { _ = @import("span_test.zig"); }
 test { _ = @import("diagnostic_test.zig"); }
 test { _ = @import("json_test.zig"); }
 test { _ = @import("cache_test.zig"); }
+test { _ = @import("graph_test.zig"); }
