@@ -22,19 +22,19 @@ pub const GraphEdge = struct {
 pub const Graph = struct {
     allocator: std.mem.Allocator,
     nodes: std.StringHashMap(GraphNode),
-    edges: std.ArrayList(GraphEdge),
+    edges: std.ArrayListUnmanaged(GraphEdge),
 
     pub fn init(allocator: std.mem.Allocator) Graph {
         return Graph{
             .allocator = allocator,
             .nodes = std.StringHashMap(GraphNode).init(allocator),
-            .edges = std.ArrayList(GraphEdge).init(allocator),
+            .edges = std.ArrayListUnmanaged(GraphEdge){},
         };
     }
 
     pub fn deinit(self: *Graph) void {
         self.nodes.deinit();
-        self.edges.deinit();
+        self.edges.deinit(self.allocator);
     }
 
     pub fn addNode(self: *Graph, node: GraphNode) !void {
@@ -50,7 +50,7 @@ pub const Graph = struct {
     }
 
     pub fn addEdge(self: *Graph, edge: GraphEdge) !void {
-        try self.edges.append(edge);
+        try self.edges.append(self.allocator, edge);
     }
 };
 
