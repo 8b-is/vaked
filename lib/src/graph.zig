@@ -28,7 +28,7 @@ pub const Graph = struct {
         return Graph{
             .allocator = allocator,
             .nodes = std.StringHashMap(GraphNode).init(allocator),
-            .edges = std.ArrayListUnmanaged(GraphEdge){},
+            .edges = .empty,
         };
     }
 
