@@ -4,3 +4,5 @@ pub const diagnostic = @import("diagnostic.zig");
 pub const json = @import("json.zig");
 pub const cache = @import("cache.zig");
 pub const graph = @import("graph.zig");
+
+test { _ = @import("span_test.zig"); }
