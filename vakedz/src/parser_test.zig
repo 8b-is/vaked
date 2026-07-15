@@ -257,6 +257,34 @@ test "parse error on bad input" {
     try testing.expectError(error.Parse, result);
 }
 
+test "parse function type in field" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "schema Cb {\n  field handler : (String, Number) -> Bool\n}";
+    const items = try parseSource(a, src);
+    const d = items[0].decl;
+    switch (d.body[0]) {
+        .field => |f| {
+            try testing.expectEqualStrings("handler", f.name);
+            try testing.expectEqualStrings("(String, Number) -> Bool", f.type_text);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse zero-arg function type" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "schema Cb {\n  field thunk : () -> String\n}";
+    const items = try parseSource(a, src);
+    switch (items[0].decl.body[0]) {
+        .field => |f| try testing.expectEqualStrings("() -> String", f.type_text),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "all 36 kinds recognized" {
     const expected = [_][]const u8{
         "runtime", "engine", "host", "network", "filesystem", "mcp", "ebpf",

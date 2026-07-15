@@ -15,6 +15,10 @@ pub const KINDS = [_][]const u8{
     "arbiter",
 };
 
+comptime {
+    std.debug.assert(KINDS.len == 36);
+}
+
 pub fn isKind(s: []const u8) bool {
     for (KINDS) |k| {
         if (std.mem.eql(u8, k, s)) return true;
@@ -638,6 +642,23 @@ pub const Parser = struct {
     }
 
     fn typeAtom(self: *Parser, out: *std.array_list.Managed(u8)) !void {
+        if (self.isOp("(")) {
+            self.i += 1;
+            try out.append('(');
+            if (!self.isOp(")")) {
+                try self.typeAtom(out);
+                while (self.isOp(",")) {
+                    self.i += 1;
+                    try out.appendSlice(", ");
+                    try self.typeAtom(out);
+                }
+            }
+            _ = try self.expectOp(")");
+            _ = try self.expectOp("->");
+            try out.appendSlice(") -> ");
+            try self.typeAtom(out);
+            return;
+        }
         const id = try self.expectIdent();
         try out.appendSlice(id.value);
         while (self.isOp(".") and self.at(1).kind == .ident) {
