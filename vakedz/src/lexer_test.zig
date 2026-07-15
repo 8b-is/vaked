@@ -1,3 +1,4 @@
+// GENESIS_SEAL: 7c242080
 const std = @import("std");
 const testing = std.testing;
 const lexer = @import("lexer.zig");

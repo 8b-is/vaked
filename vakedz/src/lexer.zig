@@ -1,5 +1,5 @@
+// GENESIS_SEAL: 7c242080
 const std = @import("std");
-const lib = @import("lib");
 
 pub const Kind = enum {
     ident,
@@ -110,28 +110,28 @@ pub const Lexer = struct {
         }
     }
 
-    fn emit(self: *Lexer, kind: Kind, value: []const u8, byte_start: usize, byte_end: usize, tline: usize, tcol: usize) void {
+    fn emit(self: *Lexer, kind: Kind, value: []const u8, byte_start: usize, byte_end: usize, tline: usize, tcol: usize) !void {
         if (self.pending_newline) {
             if (self.tokens.items.len > 0 and self.tokens.items[self.tokens.items.len - 1].kind != .newline) {
-                self.tokens.append(self.allocator, Token{
+                try self.tokens.append(self.allocator, Token{
                     .kind = .newline,
                     .value = "\\n",
                     .byte_start = self.pending_nl_byte,
                     .byte_end = self.pending_nl_byte,
                     .line = self.pending_nl_line,
                     .col = self.pending_nl_col,
-                }) catch {};
+                });
             }
             self.pending_newline = false;
         }
-        self.tokens.append(self.allocator, Token{
+        try self.tokens.append(self.allocator, Token{
             .kind = kind,
             .value = value,
             .byte_start = byte_start,
             .byte_end = byte_end,
             .line = tline,
             .col = tcol,
-        }) catch {};
+        });
     }
 
     fn lastSignificant(self: *Lexer) ?Token {
@@ -182,7 +182,7 @@ pub const Lexer = struct {
                     const ch = src[j];
                     if (ch == '\\') {
                         if (j + 1 >= n) {
-                            self.errors.append(self.allocator, LexError{ .msg = "unterminated escape in string", .line = tline, .col = tcol }) catch {};
+                            try self.errors.append(self.allocator, LexError{ .msg = "unterminated escape in string", .line = tline, .col = tcol });
                             return;
                         }
                         j += 2;
@@ -194,13 +194,13 @@ pub const Lexer = struct {
                         break;
                     }
                     if (ch == '\n') {
-                        self.errors.append(self.allocator, LexError{ .msg = "unterminated string", .line = tline, .col = tcol }) catch {};
+                        try self.errors.append(self.allocator, LexError{ .msg = "unterminated string", .line = tline, .col = tcol });
                         return;
                     }
                     j += 1;
                 }
                 if (!closed) {
-                    self.errors.append(self.allocator, LexError{ .msg = "unterminated string", .line = tline, .col = tcol }) catch {};
+                    try self.errors.append(self.allocator, LexError{ .msg = "unterminated string", .line = tline, .col = tcol });
                     return;
                 }
                 const value = src[ci..j];
@@ -219,14 +219,14 @@ pub const Lexer = struct {
                         const ch = src[j];
                         if (ch == '\\') {
                             if (j + 1 >= n) {
-                                self.errors.append(self.allocator, LexError{ .msg = "unterminated regex escape", .line = tline, .col = tcol }) catch {};
+                                try self.errors.append(self.allocator, LexError{ .msg = "unterminated regex escape", .line = tline, .col = tcol });
                                 return;
                             }
                             j += 2;
                             continue;
                         }
                         if (ch == '\n') {
-                            self.errors.append(self.allocator, LexError{ .msg = "unterminated regex", .line = tline, .col = tcol }) catch {};
+                            try self.errors.append(self.allocator, LexError{ .msg = "unterminated regex", .line = tline, .col = tcol });
                             return;
                         }
                         if (ch == '/') {
@@ -237,7 +237,7 @@ pub const Lexer = struct {
                         j += 1;
                     }
                     if (!closed) {
-                        self.errors.append(self.allocator, LexError{ .msg = "unterminated regex literal", .line = tline, .col = tcol }) catch {};
+                        try self.errors.append(self.allocator, LexError{ .msg = "unterminated regex literal", .line = tline, .col = tcol });
                         return;
                     }
                     const value = src[ci..j];
@@ -246,7 +246,7 @@ pub const Lexer = struct {
                     self.pos = j;
                     continue;
                 }
-                self.errors.append(self.allocator, LexError{ .msg = "unexpected '/' (regex only valid after matches)", .line = tline, .col = tcol }) catch {};
+                try self.errors.append(self.allocator, LexError{ .msg = "unexpected '/' (regex only valid after matches)", .line = tline, .col = tcol });
                 return;
             }
 
@@ -346,7 +346,7 @@ pub const Lexer = struct {
                 continue;
             }
 
-            self.errors.append(self.allocator, LexError{ .msg = "unexpected character", .line = tline, .col = tcol }) catch {};
+            try self.errors.append(self.allocator, LexError{ .msg = "unexpected character", .line = tline, .col = tcol });
             return;
         }
 
