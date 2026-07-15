@@ -3,6 +3,7 @@ const std = @import("std");
 
 test {
     _ = @import("lexer_test.zig");
+    _ = @import("parser_test.zig");
 }
 
 pub fn main() !void {
