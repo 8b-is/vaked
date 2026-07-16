@@ -86,24 +86,24 @@ runtime "swe-swarm" {
   }
 
   # Mesh topology: fan-out (coordinator to workers)
-  mesh coordinator -> worker_001
-  mesh coordinator -> worker_002
-  mesh coordinator -> worker_003
-  mesh coordinator -> worker_004
-  mesh coordinator -> worker_005
-  mesh coordinator -> worker_006
-  mesh coordinator -> worker_007
-  mesh coordinator -> worker_008
+  coordinator -> worker_001
+  coordinator -> worker_002
+  coordinator -> worker_003
+  coordinator -> worker_004
+  coordinator -> worker_005
+  coordinator -> worker_006
+  coordinator -> worker_007
+  coordinator -> worker_008
 
   # Mesh topology: convergence (workers to aggregator)
-  mesh worker_001 -> aggregator
-  mesh worker_002 -> aggregator
-  mesh worker_003 -> aggregator
-  mesh worker_004 -> aggregator
-  mesh worker_005 -> aggregator
-  mesh worker_006 -> aggregator
-  mesh worker_007 -> aggregator
-  mesh worker_008 -> aggregator
+  worker_001 -> aggregator
+  worker_002 -> aggregator
+  worker_003 -> aggregator
+  worker_004 -> aggregator
+  worker_005 -> aggregator
+  worker_006 -> aggregator
+  worker_007 -> aggregator
+  worker_008 -> aggregator
 
   # Parallel group: explicit worker pool
   parallel "worker-pool" {
