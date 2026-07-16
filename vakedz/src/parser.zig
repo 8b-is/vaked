@@ -153,6 +153,10 @@ pub const Parser = struct {
         while (self.cur().kind == .newline) self.i += 1;
     }
 
+    fn skipInlineComments(self: *Parser) void {
+        while (self.cur().kind == .comment) self.i += 1;
+    }
+
     fn collectComments(self: *Parser) ![]const []const u8 {
         var comments = std.array_list.Managed([]const u8).init(self.a);
         while (self.cur().kind == .comment) {
@@ -197,6 +201,7 @@ pub const Parser = struct {
             const leading = try self.collectComments();
             if (self.atEof()) break;
             try items.append(try self.itemWithComments(leading));
+            self.skipInlineComments();
             self.skipNl();
         }
         return items.toOwnedSlice();
@@ -307,6 +312,7 @@ pub const Parser = struct {
             if (self.atEof()) return self.fail("unterminated block");
             _ = try self.collectComments();
             try stmts.append(try self.stmt());
+            self.skipInlineComments();
             self.skipNl();
         }
         const close = self.cur();

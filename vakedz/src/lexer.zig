@@ -173,6 +173,7 @@ pub const Lexer = struct {
                 while (j < n and src[j] != '\n') : (j += 1) {}
                 const comment_text = src[self.pos..j];
                 self.advance(comment_text);
+                self.pending_newline = false;
                 try self.emit(.comment, comment_text, ci, j, tline, tcol);
                 self.pos = j;
                 continue;
