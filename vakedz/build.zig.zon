@@ -1,7 +1,7 @@
 .{
     .name = .vakedz,
     .version = "0.0.0",
-    .fingerprint = 0x7c242080,
+    .fingerprint = 0xdb915eca69dbda7b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
