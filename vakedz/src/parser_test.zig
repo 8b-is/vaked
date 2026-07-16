@@ -64,7 +64,7 @@ test "parse use import" {
     const items = try parseSource(a, "use \"./other.vaked\"");
     try testing.expectEqual(@as(usize, 1), items.len);
     switch (items[0]) {
-        .import => |path| try testing.expectEqualStrings("./other.vaked", path),
+        .import => |imp| try testing.expectEqualStrings("./other.vaked", imp.path),
         else => return error.TestUnexpectedResult,
     }
 }

@@ -49,9 +49,10 @@ fn writeAlwaysQuoted(a: Allocator, s: []const u8, out: *Writer) FmtError!void {
 pub fn formatFile(a: Allocator, items: []const Item, out: *Writer) FmtError!void {
     for (items, 0..) |item, i| {
         switch (item) {
-            .import => |path| {
+            .import => |imp| {
+                try formatComments(a, imp.comments, 0, out);
                 try out.appendSlice(a, "use \"");
-                try out.appendSlice(a, path);
+                try out.appendSlice(a, imp.path);
                 try out.appendSlice(a, "\"");
             },
             .decl => |d| try formatDecl(a, d, 0, out),
@@ -60,7 +61,16 @@ pub fn formatFile(a: Allocator, items: []const Item, out: *Writer) FmtError!void
     }
 }
 
+fn formatComments(a: Allocator, comments: []const []const u8, indent: usize, out: *Writer) FmtError!void {
+    for (comments) |c| {
+        try writeIndent(a, indent, out);
+        try out.appendSlice(a, c);
+        try out.append(a, '\n');
+    }
+}
+
 fn formatDecl(a: Allocator, d: *const Decl, indent: usize, out: *Writer) FmtError!void {
+    try formatComments(a, d.comments, indent, out);
     for (d.annotations) |ann| {
         try formatAnnotation(a, ann, indent, out);
         try out.append(a, '\n');
@@ -81,6 +91,7 @@ fn formatDecl(a: Allocator, d: *const Decl, indent: usize, out: *Writer) FmtErro
 }
 
 fn formatNodeDecl(a: Allocator, n: *const NodeDecl, indent: usize, out: *Writer) FmtError!void {
+    try formatComments(a, n.comments, indent, out);
     try writeIndent(a, indent, out);
     try out.appendSlice(a, "node ");
     if (n.name_quoted) {

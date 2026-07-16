@@ -11,6 +11,7 @@ pub const Kind = enum {
     regex,
     op,
     newline,
+    comment,
     eof,
 };
 
@@ -170,7 +171,9 @@ pub const Lexer = struct {
             if (c == '#') {
                 var j = self.pos;
                 while (j < n and src[j] != '\n') : (j += 1) {}
-                self.advance(src[self.pos..j]);
+                const comment_text = src[self.pos..j];
+                self.advance(comment_text);
+                try self.emit(.comment, comment_text, ci, j, tline, tcol);
                 self.pos = j;
                 continue;
             }
@@ -205,7 +208,7 @@ pub const Lexer = struct {
                 }
                 const value = src[ci..j];
                 self.advance(value);
-                self.emit(.string, value, ci, j, tline, tcol);
+                try self.emit(.string, value, ci, j, tline, tcol);
                 self.pos = j;
                 continue;
             }
@@ -242,7 +245,7 @@ pub const Lexer = struct {
                     }
                     const value = src[ci..j];
                     self.advance(value);
-                    self.emit(.regex, value, ci, j, tline, tcol);
+                    try self.emit(.regex, value, ci, j, tline, tcol);
                     self.pos = j;
                     continue;
                 }
@@ -255,7 +258,7 @@ pub const Lexer = struct {
                 const glued = ls != null and isValueKind(ls.?.kind) and ls.?.byte_end == ci;
                 if (!glued and self.pos + 1 < n and src[self.pos + 1] == '.') {
                     self.advance("..");
-                    self.emit(.op, "..", ci, ci + 2, tline, tcol);
+                    try self.emit(.op, "..", ci, ci + 2, tline, tcol);
                     self.pos += 2;
                     continue;
                 }
@@ -264,7 +267,7 @@ pub const Lexer = struct {
                     while (j < n and isPathChar(src[j])) : (j += 1) {}
                     const value = src[ci..j];
                     self.advance(value);
-                    self.emit(.path, value, ci, j, tline, tcol);
+                    try self.emit(.path, value, ci, j, tline, tcol);
                     self.pos = j;
                     continue;
                 }
@@ -280,7 +283,7 @@ pub const Lexer = struct {
                 }
                 if (matched_op) |mop| {
                     self.advance(mop);
-                    self.emit(.op, mop, ci, ci + mop.len, tline, tcol);
+                    try self.emit(.op, mop, ci, ci + mop.len, tline, tcol);
                     self.pos += mop.len;
                     continue;
                 }
@@ -293,7 +296,7 @@ pub const Lexer = struct {
                     if (self.group_depth > 0) self.group_depth -= 1;
                 }
                 self.advance(src[ci .. ci + 1]);
-                self.emit(.op, src[ci .. ci + 1], ci, ci + 1, tline, tcol);
+                try self.emit(.op, src[ci .. ci + 1], ci, ci + 1, tline, tcol);
                 self.pos += 1;
                 continue;
             }
@@ -314,7 +317,7 @@ pub const Lexer = struct {
                         if (j + unit.len >= n or !isIdentPart(src[j + unit.len])) {
                             const value = src[ci .. j + unit.len];
                             self.advance(value);
-                            self.emit(.bytes, value, ci, j + unit.len, tline, tcol);
+                            try self.emit(.bytes, value, ci, j + unit.len, tline, tcol);
                             self.pos = j + unit.len;
                             continue;
                         }
@@ -323,7 +326,7 @@ pub const Lexer = struct {
                         if (j + unit.len >= n or !isIdentPart(src[j + unit.len])) {
                             const value = src[ci .. j + unit.len];
                             self.advance(value);
-                            self.emit(.duration, value, ci, j + unit.len, tline, tcol);
+                            try self.emit(.duration, value, ci, j + unit.len, tline, tcol);
                             self.pos = j + unit.len;
                             continue;
                         }
@@ -331,7 +334,7 @@ pub const Lexer = struct {
                 }
                 const value = src[ci..j];
                 self.advance(value);
-                self.emit(.number, value, ci, j, tline, tcol);
+                try self.emit(.number, value, ci, j, tline, tcol);
                 self.pos = j;
                 continue;
             }
@@ -341,7 +344,7 @@ pub const Lexer = struct {
                 while (j < n and isIdentPart(src[j])) : (j += 1) {}
                 const value = src[ci..j];
                 self.advance(value);
-                self.emit(.ident, value, ci, j, tline, tcol);
+                try self.emit(.ident, value, ci, j, tline, tcol);
                 self.pos = j;
                 continue;
             }
@@ -353,6 +356,6 @@ pub const Lexer = struct {
         if (self.tokens.items.len > 0 and self.tokens.items[self.tokens.items.len - 1].kind == .newline) {
             _ = self.tokens.pop();
         }
-        self.emit(.eof, "<eof>", n, n, self.line, self.col);
+        try self.emit(.eof, "<eof>", n, n, self.line, self.col);
     }
 };

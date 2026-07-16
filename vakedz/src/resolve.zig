@@ -143,12 +143,12 @@ const Resolver = struct {
         for (self.items) |item| {
             switch (item) {
                 .decl => |d| try self.buildDecl(d),
-                .import => |path| {
-                    const imp_id = try std.fmt.allocPrint(self.a, "{s}#import:{s}", .{ self.basename, path });
+                .import => |imp| {
+                    const imp_id = try std.fmt.allocPrint(self.a, "{s}#import:{s}", .{ self.basename, imp.path });
                     const imp_node = graph.GraphNode{
                         .id = imp_id,
                         .kind = "external",
-                        .name = path,
+                        .name = imp.path,
                         .labels = &.{},
                         .props = .null,
                         .provenance = null,

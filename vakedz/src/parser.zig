@@ -81,6 +81,8 @@ pub const Annotation = struct { name: []const u8, args: ?[]const Expr };
 
 pub const NodeDecl = struct {
     name: []const u8,
+    name_quoted: bool,
+    comments: []const []const u8,
     body: []const Stmt,
     byte_start: usize,
     byte_end: usize,
@@ -109,7 +111,9 @@ pub const Stmt = union(enum) {
 pub const Decl = struct {
     kind: []const u8,
     name: []const u8,
+    name_quoted: bool,
     annotations: []const Annotation,
+    comments: []const []const u8,
     signature: ?Signature,
     body: []const Stmt,
     byte_start: usize,
@@ -120,7 +124,7 @@ pub const Decl = struct {
 
 pub const Item = union(enum) {
     decl: *const Decl,
-    import: []const u8,
+    import: struct { path: []const u8, comments: []const []const u8 },
 };
 
 pub const ParseError = struct { msg: []const u8, line: usize, col: usize };
@@ -147,6 +151,16 @@ pub const Parser = struct {
     }
     fn skipNl(self: *Parser) void {
         while (self.cur().kind == .newline) self.i += 1;
+    }
+
+    fn collectComments(self: *Parser) ![]const []const u8 {
+        var comments = std.array_list.Managed([]const u8).init(self.a);
+        while (self.cur().kind == .comment) {
+            try comments.append(self.cur().value);
+            self.i += 1;
+            self.skipNl();
+        }
+        return try comments.toOwnedSlice();
     }
     fn isOp(self: *Parser, v: []const u8) bool {
         const t = self.cur();
@@ -180,26 +194,29 @@ pub const Parser = struct {
         var items = std.array_list.Managed(Item).init(self.a);
         self.skipNl();
         while (!self.atEof()) {
-            try items.append(try self.item());
+            const leading = try self.collectComments();
+            if (self.atEof()) break;
+            try items.append(try self.itemWithComments(leading));
             self.skipNl();
         }
         return items.toOwnedSlice();
     }
 
-    fn item(self: *Parser) !Item {
+    fn itemWithComments(self: *Parser, leading: []const []const u8) !Item {
         if (self.isIdent("use")) {
             self.i += 1;
             if (self.cur().kind != .string) return self.fail("expected string after `use`");
             const raw = self.cur().value;
             self.i += 1;
-            return .{ .import = try unquote(self.a, raw) };
+            return .{ .import = .{ .path = try unquote(self.a, raw), .comments = leading } };
         }
-        return .{ .decl = try self.decl() };
+        return .{ .decl = try self.declWithComments(leading) };
     }
 
-    fn decl(self: *Parser) error{ Parse, OutOfMemory }!*const Decl {
+    fn declWithComments(self: *Parser, comments: []const []const u8) !*const Decl {
         var anns = std.array_list.Managed(Annotation).init(self.a);
         while (self.isOp("@")) try anns.append(try self.annotation());
+        self.skipNl();
 
         const start_tok = self.cur();
         if (start_tok.kind != .ident or !isKind(start_tok.value)) return self.fail("expected declaration kind");
@@ -213,8 +230,10 @@ pub const Parser = struct {
         const d = try self.a.create(Decl);
         d.* = .{
             .kind = kind,
-            .name = decl_name,
+            .name = decl_name.name,
+            .name_quoted = decl_name.quoted,
             .annotations = try anns.toOwnedSlice(),
+            .comments = comments,
             .signature = sig,
             .body = body_res.stmts,
             .byte_start = start_tok.byte_start,
@@ -225,15 +244,17 @@ pub const Parser = struct {
         return d;
     }
 
-    fn name(self: *Parser) ![]const u8 {
+    const NameResult = struct { name: []const u8, quoted: bool };
+
+    fn name(self: *Parser) !NameResult {
         const t = self.cur();
         if (t.kind == .ident) {
             self.i += 1;
-            return t.value;
+            return .{ .name = t.value, .quoted = false };
         }
         if (t.kind == .string) {
             self.i += 1;
-            return unquote(self.a, t.value);
+            return .{ .name = try unquote(self.a, t.value), .quoted = true };
         }
         return self.fail("expected name (identifier or string)");
     }
@@ -284,6 +305,7 @@ pub const Parser = struct {
         self.skipNl();
         while (!self.isOp("}")) {
             if (self.atEof()) return self.fail("unterminated block");
+            _ = try self.collectComments();
             try stmts.append(try self.stmt());
             self.skipNl();
         }
@@ -306,7 +328,7 @@ pub const Parser = struct {
         if (self.laEdge()) return .{ .edge = try self.edge() };
         if (self.isIdent("node") and self.laNode()) return .{ .node = try self.nodeDecl() };
         if (self.isOp("@") or (self.cur().kind == .ident and isKind(self.cur().value))) {
-            return .{ .decl = try self.decl() };
+            return .{ .decl = try self.declWithComments(&.{}) };
         }
         return .{ .app = try self.app() };
     }
@@ -481,7 +503,7 @@ pub const Parser = struct {
         const nm = try self.name();
         const body = try self.block();
         const nd = try self.a.create(NodeDecl);
-        nd.* = .{ .name = nm, .body = body.stmts, .byte_start = start.byte_start, .byte_end = body.close.byte_end, .line = start.line, .col = start.col };
+        nd.* = .{ .name = nm.name, .name_quoted = nm.quoted, .comments = &.{}, .body = body.stmts, .byte_start = start.byte_start, .byte_end = body.close.byte_end, .line = start.line, .col = start.col };
         return nd;
     }
 

@@ -77,16 +77,17 @@ test "newline suppression inside groups" {
     try testing.expectEqual(@as(usize, 0), nl_count);
 }
 
-test "comment discarded" {
+test "comment preserved as token" {
     const allocator = testing.allocator;
     var l = lexer.Lexer.init(allocator, "foo # comment\nbar");
     defer l.deinit();
     try l.run();
     try testing.expectEqual(lexer.Kind.ident, l.tokens.items[0].kind);
     try testing.expectEqualStrings("foo", l.tokens.items[0].value);
-    try testing.expectEqual(lexer.Kind.newline, l.tokens.items[1].kind);
-    try testing.expectEqual(lexer.Kind.ident, l.tokens.items[2].kind);
-    try testing.expectEqualStrings("bar", l.tokens.items[2].value);
+    try testing.expectEqual(lexer.Kind.comment, l.tokens.items[1].kind);
+    try testing.expectEqualStrings("# comment", l.tokens.items[1].value);
+    try testing.expectEqual(lexer.Kind.ident, l.tokens.items[3].kind);
+    try testing.expectEqualStrings("bar", l.tokens.items[3].value);
 }
 
 test "regex after matches" {
