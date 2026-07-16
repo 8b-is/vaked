@@ -3,12 +3,7 @@
 # NOTE: backpressure is intentionally absent — deferred post-v0.2.
 
 parallel "operator-runtime" {
-  fibers = [
-    ebpfIngest,
-    otaIndex,
-    mediaCompress,
-    operatorMap
-  ]
+  fibers = [ebpfIngest, otaIndex, mediaCompress, operatorMap]
 
   strategy = "supervised-dag"
   supervisor = otp

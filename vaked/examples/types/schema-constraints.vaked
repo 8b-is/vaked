@@ -13,22 +13,22 @@ schema zigbeeOta {
   field manufacturer : String { required nonempty }
 
   # required Int constrained to a closed range
-  field image_type   : Int { required in 0 .. 255 }
+  field image_type : Int { required in 0 .. 255 }
 
   # required Int with a lower bound only
   field file_version : Int { required >= 0 }
 
   # Path validated by a bounded regex (anchored https:// prefix)
-  field url          : Path { required matches /https:\/\/.*/ }
+  field url : Path { required matches /https:\/\/.*/ }
 
   # optional Float with an upper bound
-  field trust_score  : Float { optional <= 1.0 }
+  field trust_score : Float { optional <= 1.0 }
 
   # optional, defaulted, enumerated String  (default must satisfy oneof — it does)
-  field channel      : String { default = "stable" oneof ["stable", "beta", "dev"] }
+  field channel : String { default = "stable" oneof ["stable", "beta", "dev"] }
 
   # optional non-empty list
-  field tags         : List<String> { optional nonempty }
+  field tags : List<String> { optional nonempty }
 }
 
 # A second schema, declared `open`, that admits unknown fields (0011 §1.1 rule 5).

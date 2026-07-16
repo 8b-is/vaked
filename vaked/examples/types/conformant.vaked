@@ -18,7 +18,8 @@ mesh reviewField {
 
   node reviewer {
     role = "reviewer"
-    capabilities = [fs.repo_ro]          # repo_ro < repo_rw : strictly weaker
+    capabilities = [fs.repo_ro]
+    # repo_ro < repo_rw : strictly weaker
   }
 
   # Attenuation holds: granted(reviewer)=repo_ro <= granted(author)=repo_rw.

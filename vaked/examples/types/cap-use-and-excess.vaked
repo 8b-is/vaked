@@ -20,16 +20,16 @@ capability fs {
 
 mesh excessAndUseField {
   node builder {
-    role         = "builder"
+    role = "builder"
     # holds host_rw, needs only repo_rw → W-POLA-EXCESS (over-grant)
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.host_rw]
   }
 
   node reviewer {
-    role         = "reviewer"
+    role = "reviewer"
     # needs repo_rw, holds only repo_ro → E-CAP-USE (under-grant)
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_ro]
   }
 }

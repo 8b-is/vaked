@@ -5,16 +5,7 @@ surface operatorMap {
   mode = raylib
   fps = 60
 
-  input = [
-    stream.ebpfEvents,
-    graph.workflow,
-    graph.agentfield
-  ]
+  input = [stream.ebpfEvents, graph.workflow, graph.agentfield]
 
-  views = [
-    "network-flows",
-    "workflow-dag",
-    "filesystem-diff",
-    "mesh-topology"
-  ]
+  views = ["network-flows", "workflow-dag", "filesystem-diff", "mesh-topology"]
 }

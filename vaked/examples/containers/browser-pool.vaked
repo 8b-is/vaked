@@ -12,36 +12,35 @@ runtime "browser-pool" {
   # sops-managed env files injected into the containers (was inline sops refs).
   secret browserlessEnv {
     provider = "sops"
-    name     = "browserless_env"
+    name = "browserless_env"
   }
   secret brwsEnv {
     provider = "sops"
-    name     = "brws_env"
+    name = "brws_env"
   }
 
   container browserless {
     image = "ghcr.io/browserless/chromium:latest"
-    ports = [loopback(3030, 3000)]                 # 127.0.0.1:3030:3000
-    environment {
-      CONCURRENT = "4"
-    }
+    ports = [loopback(3030, 3000)]
+    # 127.0.0.1:3030:3000
+    environment { CONCURRENT = "4" }
     environmentFiles = [secret.browserlessEnv.path]
-    memory       = 2GB
-    healthCmd    = "curl -f http://localhost:3000/pressure || exit 1"
+    memory = 2GB
+    healthCmd = "curl -f http://localhost:3000/pressure || exit 1"
     extraOptions = ["--shm-size=1g"]
   }
 
   container lightpanda {
-    image  = "lightpanda/browser:nightly"
-    ports  = [loopback(9222, 9222)]
+    image = "lightpanda/browser:nightly"
+    ports = [loopback(9222, 9222)]
     memory = 512MB
   }
 
   container brws {
-    image            = "europe-west2-docker.pkg.dev/example/brws:latest"
-    network          = "host"
-    volumes          = ["/etc/browser-pool.json:/etc/browser-pool.json:ro"]
+    image = "europe-west2-docker.pkg.dev/example/brws:latest"
+    network = "host"
+    volumes = ["/etc/browser-pool.json:/etc/browser-pool.json:ro"]
     environmentFiles = [secret.brwsEnv.path]
-    memory           = 256MB
+    memory = 256MB
   }
 }

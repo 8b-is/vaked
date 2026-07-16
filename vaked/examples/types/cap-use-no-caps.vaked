@@ -16,7 +16,7 @@ capability fs {
 
 mesh noCapsField {
   node worker {
-    role  = "worker"
+    role = "worker"
     # exercises repo_rw but holds NOTHING → E-CAP-USE (none in domain fs)
     needs = [fs.repo_rw]
   }

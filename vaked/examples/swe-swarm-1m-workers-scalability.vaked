@@ -130,7 +130,8 @@ runtime "swe-swarm-1m" {
     }
 
     node execute {
-      agent = field.swe-worker-000001  # Representative; expands to all 1M
+      agent = field.swe-worker-000001
+      # Representative; expands to all 1M
       input = artifacts.taskAssignments
       output = artifacts.workerResults
       retries = 1

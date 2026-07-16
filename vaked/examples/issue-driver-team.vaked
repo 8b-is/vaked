@@ -32,8 +32,12 @@ use "./engines/zig.vaked"
 runtime "issue-driver" {
   systems = ["x86_64-linux"]
 
-  namespace agentpipe   { member transcripts }
-  namespace agentGuardd { member ringbuf }
+  namespace agentpipe {
+    member transcripts
+  }
+  namespace agentGuardd {
+    member ringbuf
+  }
 
   # The repo corpus every lane grounds against.
   index repoCorpus {

@@ -107,8 +107,7 @@ runtime "swe-swarm" {
 
   # Parallel group: explicit worker pool
   parallel "worker-pool" {
-    fibers = [worker_001, worker_002, worker_003, worker_004,
-              worker_005, worker_006, worker_007, worker_008]
+    fibers = [worker_001, worker_002, worker_003, worker_004, worker_005, worker_006, worker_007, worker_008]
     strategy = "concurrent"
     supervisor = otp
   }

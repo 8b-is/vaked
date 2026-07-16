@@ -18,7 +18,7 @@ capability fs {
 
 mesh noNeedsField {
   node worker {
-    role         = "worker"
+    role = "worker"
     # holds repo_rw but declares no `needs` → opts out of the POLA lints (clean)
     capabilities = [fs.repo_rw]
   }

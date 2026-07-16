@@ -31,8 +31,12 @@ runtime "pr-pipeline" {
   systems = ["x86_64-linux"]
 
   # Daemon-channel namespaces this runtime brings into scope (RFC 0017, POLA).
-  namespace agentpipe   { member transcripts }
-  namespace agentGuardd { member ringbuf }
+  namespace agentpipe {
+    member transcripts
+  }
+  namespace agentGuardd {
+    member ringbuf
+  }
 
   # The repo corpus the models ground against — the very repo this PR targets.
   index repoCorpus {

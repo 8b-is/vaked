@@ -22,9 +22,9 @@ capability network {
 
 mesh partialField {
   node worker {
-    role         = "worker"
+    role = "worker"
     # fs.repo_rw is held (need satisfied); network.egress is NOT held → 1 E-CAP-USE
-    needs        = [fs.repo_rw, network.egress]
+    needs = [fs.repo_rw, network.egress]
     capabilities = [fs.repo_rw]
   }
 }

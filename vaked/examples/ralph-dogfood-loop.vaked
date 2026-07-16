@@ -31,10 +31,13 @@
 use "./engines/zig.vaked"
 
 runtime "ralph-dogfood" {
-  systems = ["x86_64-linux", "aarch64-darwin"]   # CI host + local M1 dogfood
+  systems = ["x86_64-linux", "aarch64-darwin"]
+  # CI host + local M1 dogfood
 
   # The append-only, hash-chained decision ledger lives in the eventd daemon.
-  namespace eventd { member log }
+  namespace eventd {
+    member log
+  }
 
   # The repo corpus each track grounds its decision against (read-only).
   index repoCorpus {

@@ -30,19 +30,19 @@ mesh excessAuthority {
   node builder {
     role = "builder"
     # declares it needs only repo_rw, but is GRANTED host_rw (strictly stronger).
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.host_rw]
   }
 
   node worker {
-    role         = "worker"
-    needs        = [fs.repo_rw]
+    role = "worker"
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_rw]
   }
 
   node cron {
-    role         = "cron"
-    needs        = [fs.repo_rw]
+    role = "cron"
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_rw]
   }
 
@@ -50,10 +50,10 @@ mesh excessAuthority {
   # (repo_ro <= repo_rw), yet two distinct callers steer the same deputy that
   # acts under its own identity: the confused-deputy shape.
   node proxy {
-    role         = "proxy"
+    role = "proxy"
     capabilities = [fs.repo_ro]
   }
 
   worker -> proxy : "fetch"
-  cron   -> proxy : "fetch"
+  cron -> proxy : "fetch"
 }

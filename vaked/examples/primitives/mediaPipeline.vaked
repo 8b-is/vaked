@@ -5,16 +5,13 @@
 mediaPipeline screenCapture {
   source = device.framebuffer
 
-  stages = [
-    resize {
-      width = 1920
-      height = 1080
-    },
-    encode {
-      codec = "h264"
-      bitrate = 2000000
-    }
-  ]
+  stages = [resize {
+    width = 1920
+    height = 1080
+  }, encode {
+    codec = "h264"
+    bitrate = 2000000
+  }]
 
   sink = stream.screenrec
 }

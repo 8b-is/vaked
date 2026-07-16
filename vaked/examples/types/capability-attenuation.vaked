@@ -4,7 +4,6 @@
 #           (vaked-v0-plus.ebnf, v0.3); mesh node_decl + edge (v0.2, unchanged).
 # Rules:    docs/language/0011-type-system.md §4 (attenuation, POLA).
 # Catalog:  mirrors the built-in `fs` domain in vaked/schema/parallel-types.md.
-
 # A user-declared capability domain. `a < b` means a is the WEAKER (more
 # attenuated) grant; delegation may only go to a grant <= what the sender holds.
 # The relation is acyclic => a partial order (0011 §4.2).

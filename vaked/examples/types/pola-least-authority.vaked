@@ -18,14 +18,14 @@ mesh leastAuthority {
   node author {
     role = "author"
     # holds exactly what it needs — repo_rw to edit, declared as the need.
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_rw]
   }
 
   node reviewer {
     role = "reviewer"
     # read-only is sufficient and is what it holds.
-    needs        = [fs.repo_ro]
+    needs = [fs.repo_ro]
     capabilities = [fs.repo_ro]
   }
 

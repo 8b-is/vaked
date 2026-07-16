@@ -4,9 +4,9 @@
 # Memory<T>: runtime-accumulated, mined, replayable, capability-bound recall.
 
 schema memoryEpisode {
-  field topic   : String { nonempty }
+  field topic : String { nonempty }
   field insight : String { nonempty }
-  field weight  : Int    { optional in 0 .. 100 }
+  field weight : Int { optional in 0 .. 100 }
 }
 
 memory sessionPalace {

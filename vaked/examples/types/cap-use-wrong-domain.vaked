@@ -22,9 +22,9 @@ capability network {
 
 mesh wrongDomainField {
   node worker {
-    role         = "worker"
+    role = "worker"
     # exercises network.egress but only holds fs.repo_rw → E-CAP-USE (wrong domain)
-    needs        = [network.egress]
+    needs = [network.egress]
     capabilities = [fs.repo_rw]
   }
 }

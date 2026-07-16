@@ -4,16 +4,16 @@ runtime "operator-field" {
   systems = ["x86_64-linux", "aarch64-linux"]
 
   # Daemon-channel namespaces declared for this runtime (RFC 0017, D3: runtime-scoped).
-  namespace agentGuardd { member ringbuf }
-  namespace agentpipe   { member transcripts  member screenrec }
+  namespace agentGuardd {
+    member ringbuf
+  }
+  namespace agentpipe {
+    member transcripts
+    member screenrec
+  }
 
   index zigCorpus {
-    source = [
-      github("Sobeston/zig.guide"),
-      github("C-BJ/awesome-zig"),
-      github("raylib-zig/raylib-zig"),
-      github("zigimg/zigimg")
-    ]
+    source = [github("Sobeston/zig.guide"), github("C-BJ/awesome-zig"), github("raylib-zig/raylib-zig"), github("zigimg/zigimg")]
 
     normalize = crabcc.markdown
     emit = [catalog.jsonl, catalog.sqlite, nix.derivation]

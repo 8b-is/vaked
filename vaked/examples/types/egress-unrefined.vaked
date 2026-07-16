@@ -2,6 +2,9 @@
 runtime "egress-unrefined" {
   systems = ["x86_64-linux"]
   mesh m {
-    node worker { role = "w" capabilities = [network.egress] }
+    node worker {
+      role = "w"
+      capabilities = [network.egress]
+    }
   }
 }

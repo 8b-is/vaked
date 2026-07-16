@@ -18,16 +18,16 @@ capability fs {
 
 mesh twoNodeField {
   node author {
-    role         = "author"
+    role = "author"
     # uses repo_rw, holds repo_rw → clean (repo_rw ≤ repo_rw)
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_rw]
   }
 
   node reviewer {
-    role         = "reviewer"
+    role = "reviewer"
     # uses repo_rw but only holds repo_ro → E-CAP-USE (on this node only)
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_ro]
   }
 }

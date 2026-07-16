@@ -2,9 +2,19 @@
 runtime "egress-bad-principal" {
   systems = ["x86_64-linux"]
   mesh m {
-    node operator { role = "control" capabilities = [network.loopback] }
-    node worker   { role = "w" capabilities = [network.loopback] }
+    node operator {
+      role = "control"
+      capabilities = [network.loopback]
+    }
+    node worker {
+      role = "w"
+      capabilities = [network.loopback]
+    }
     operator -> worker
   }
-  network ghostCordon { principal = "ghost" default = "deny" allow = [ egress("8.8.8.8", 443) ] }
+  network ghostCordon {
+    principal = "ghost"
+    default = "deny"
+    allow = [egress("8.8.8.8", 443)]
+  }
 }

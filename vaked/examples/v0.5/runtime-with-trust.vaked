@@ -47,9 +47,7 @@ runtime "v0p5-demo" {
     to = nodeC
     via = edgeMain
     with = capability.process
-    on_result = {
-      status = "ok"
-    }
+    on_result = { status = "ok" }
   }
 
   # ---- Existing constructs for context ----------------------------------

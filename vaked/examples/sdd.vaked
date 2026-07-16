@@ -30,8 +30,10 @@ runtime "sdd-field" {
       capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin]
     }
     node researcher {
-      role = "research"            # one instance per core/adjacent topic (fan-out)
-      capabilities = [fs.repo_ro, mem.recall]   # web access is via the deep-research skill (no `net` cap domain in the schema yet)
+      role = "research"
+      # one instance per core/adjacent topic (fan-out)
+      capabilities = [fs.repo_ro, mem.recall]
+      # web access is via the deep-research skill (no `net` cap domain in the schema yet)
     }
     node specAuthor {
       role = "spec"
@@ -42,11 +44,13 @@ runtime "sdd-field" {
       capabilities = [fs.repo_ro, mem.recall]
     }
     node coder {
-      role = "implement"           # one instance per component, isolated worktree (fan-out)
+      role = "implement"
+      # one instance per component, isolated worktree (fan-out)
       capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
     }
     node testAuthor {
-      role = "test"                # spec-only; never sees the coder's code (fan-out)
+      role = "test"
+      # spec-only; never sees the coder's code (fan-out)
       capabilities = [fs.repo_ro, process.spawn_sandboxed]
     }
     node reviewer {
@@ -70,7 +74,8 @@ runtime "sdd-field" {
     tokens = 8000000
     wallClock = 8h
     toolCalls = 2000
-    approvals = "destructive"    # human approves the destructive integration step; never self-merge
+    approvals = "destructive"
+    # human approves the destructive integration step; never self-merge
     fuel = 20000000000
   }
 
@@ -84,32 +89,41 @@ runtime "sdd-field" {
 
     node frame {
       agent = field.orchestrator
-      output = artifacts.waveDag        # P0: decompose + acceptance gates
+      output = artifacts.waveDag
+      # P0: decompose + acceptance gates
     }
     node research {
-      agent = field.researcher          # fan-out: one per core/adjacent topic
+      agent = field.researcher
+      # fan-out: one per core/adjacent topic
       input = artifacts.waveDag
-      output = artifacts.dossier        # P1: cited, adversarially verified
+      output = artifacts.dossier
+      # P1: cited, adversarially verified
     }
     node spec {
       agent = field.specAuthor
       input = artifacts.dossier
-      output = artifacts.spec           # P2: RFC/EBNF/tables (gated by the critic)
+      output = artifacts.spec
+      # P2: RFC/EBNF/tables (gated by the critic)
     }
     node implement {
-      agent = field.coder               # fan-out: one per component, own worktree
+      agent = field.coder
+      # fan-out: one per component, own worktree
       input = artifacts.spec
-      output = artifacts.components      # P3: builds on dev-cx53/GHA, never local
+      output = artifacts.components
+      # P3: builds on dev-cx53/GHA, never local
       retries = 2
     }
     node test {
-      agent = field.testAuthor          # fan-out: spec-only, independent of impl
+      agent = field.testAuthor
+      # fan-out: spec-only, independent of impl
       input = artifacts.spec
-      output = artifacts.verdict        # P4: per-component + integration, ci-gate green
+      output = artifacts.verdict
+      # P4: per-component + integration, ci-gate green
     }
     node integrate {
       agent = field.broker
-      input = artifacts.verdict         # P5: stacked PRs, ready-for-review
+      input = artifacts.verdict
+      # P5: stacked PRs, ready-for-review
     }
 
     frame -> research -> spec -> implement -> test -> integrate

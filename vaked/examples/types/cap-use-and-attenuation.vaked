@@ -22,19 +22,21 @@ capability fs {
 
 mesh useAndAttenuationField {
   node author {
-    role         = "author"
-    capabilities = [fs.repo_ro]          # sender holds only repo_ro
+    role = "author"
+    capabilities = [fs.repo_ro]
+    # sender holds only repo_ro
   }
 
   node reviewer {
-    role         = "reviewer"
-    capabilities = [fs.repo_rw]          # receiver holds repo_rw (STRONGER)
+    role = "reviewer"
+    capabilities = [fs.repo_rw]
+    # receiver holds repo_rw (STRONGER)
   }
 
   node tool {
-    role         = "tool"
+    role = "tool"
     # uses repo_rw but only holds repo_ro → E-CAP-USE (no edges on this node)
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_ro]
   }
 

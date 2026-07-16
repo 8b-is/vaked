@@ -16,12 +16,14 @@ capability fs {
 mesh reviewField {
   node author {
     role = "author"
-    capabilities = [fs.repo_ro]          # author holds only repo_ro
+    capabilities = [fs.repo_ro]
+    # author holds only repo_ro
   }
 
   node reviewer {
     role = "reviewer"
-    capabilities = [fs.repo_rw]          # reviewer holds repo_rw (STRONGER)
+    capabilities = [fs.repo_rw]
+    # reviewer holds repo_rw (STRONGER)
   }
 
   # (1) ATTENUATION ERROR — E-CAP-ATTENUATION (0011 §4.4):

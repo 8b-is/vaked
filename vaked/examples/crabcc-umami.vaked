@@ -22,36 +22,37 @@ runtime "crabcc-umami" {
   # lowers to a sops.secrets."umami_app_secret" entry.
   secret umamiAppSecret {
     provider = "sops"
-    name     = "umami_app_secret"
-    owner    = "umami"
+    name = "umami_app_secret"
+    owner = "umami"
   }
 
   # shared host PostgreSQL (was GAP #2). Exposes hostResource.umamiDb.dsn and
   # provisions the database/user on the box's services.postgresql.
   hostResource umamiDb {
-    kind   = "postgresql"
-    name   = "umami"
+    kind = "postgresql"
+    name = "umami"
     create = true
   }
 
   # the umami systemd service (was GAP #1 + #4 + #5). nixpkgs-packaged, bound to
   # loopback, with its secret + database wired through the option set.
   service umami {
-    package  = pkgs.umami
-    bind     = loopback(3003)              # → HOSTNAME=127.0.0.1, PORT=3003
-    secrets  = [umamiAppSecret]
+    package = pkgs.umami
+    bind = loopback(3003)
+    # → HOSTNAME=127.0.0.1, PORT=3003
+    secrets = [umamiAppSecret]
     database = umamiDb
     options {
       DISABLE_TELEMETRY = true
-      APP_SECRET_FILE   = secret.umamiAppSecret.path
-      DATABASE_URL      = hostResource.umamiDb.dsn
+      APP_SECRET_FILE = secret.umamiAppSecret.path
+      DATABASE_URL = hostResource.umamiDb.dsn
     }
   }
 
   # Caddy HTTP reverse-proxy vhost (was GAP #6, a misused raylib surface).
   ingress umamiIngress {
-    domain   = "analytics.crabcc.app"
+    domain = "analytics.crabcc.app"
     upstream = loopback(3003)
-    tls      = "crabcc_sec"
+    tls = "crabcc_sec"
   }
 }

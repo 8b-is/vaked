@@ -8,10 +8,9 @@
 # a kprobe enforces; vakedc makes that a compile-time error.
 #
 # The three guards below all check clean.
-
 # A kprobe is observe-only — `intent = "observe"` is the only legal intent.
 ebpf execTrace {
-  hook   = "kprobe"
+  hook = "kprobe"
   intent = "observe"
   target = "sys_execve"
 }
@@ -19,14 +18,14 @@ ebpf execTrace {
 # An LSM hook is verdict-capable (return 0 = allow / -errno = deny, kernel >=5.7)
 # — it may enforce.
 ebpf fileOpenGuard {
-  hook   = "lsm"
+  hook = "lsm"
   intent = "enforce"
   target = "file_open"
 }
 
 # A cgroup connect hook gates egress at connect() time — it may enforce.
 ebpf egressGuard {
-  hook   = "cgroup_connect"
+  hook = "cgroup_connect"
   intent = "enforce"
   target = "/sys/fs/cgroup/agent.slice"
 }

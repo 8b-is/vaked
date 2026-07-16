@@ -16,10 +16,26 @@ runtime "ctf-arena" {
       role = "control-plane"
       capabilities = [fs.repo_rw, mem.admin]
     }
-    node team1 { role = "competitor"  strategy = "greedy_points"   capabilities = [fs.repo_ro, mem.recall] }
-    node team2 { role = "competitor"  strategy = "greedy_easy"     capabilities = [fs.repo_ro, mem.recall] }
-    node team3 { role = "competitor"  strategy = "ratio_balanced"  capabilities = [fs.repo_ro, mem.recall] }
-    node team4 { role = "competitor"  strategy = "best_response"    capabilities = [fs.repo_ro, mem.recall] }
+    node team1 {
+      role = "competitor"
+      strategy = "greedy_points"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node team2 {
+      role = "competitor"
+      strategy = "greedy_easy"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node team3 {
+      role = "competitor"
+      strategy = "ratio_balanced"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
+    node team4 {
+      role = "competitor"
+      strategy = "best_response"
+      capabilities = [fs.repo_ro, mem.recall]
+    }
 
     referee -> team1
     referee -> team2

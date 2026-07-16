@@ -22,10 +22,7 @@ runtime "editorial-desk" {
   systems = ["x86_64-linux"]
 
   index corpus {
-    source = [
-      github("example-press/style-guide"),
-      github("example-press/source-library")
-    ]
+    source = [github("example-press/style-guide"), github("example-press/source-library")]
     normalize = crabcc.markdown
     emit = [catalog.jsonl, catalog.sqlite]
   }

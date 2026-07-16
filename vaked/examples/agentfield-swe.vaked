@@ -16,8 +16,13 @@ runtime "agent-field" {
 
   # Daemon-channel namespaces declared for this runtime (RFC 0017, D3: runtime-scoped).
   # A runtime only sees daemon channels it has explicitly brought into scope (POLA).
-  namespace agentpipe   { member transcripts  member screenrec }
-  namespace agentGuardd { member ringbuf }
+  namespace agentpipe {
+    member transcripts
+    member screenrec
+  }
+  namespace agentGuardd {
+    member ringbuf
+  }
 
   # The box this runtime deploys to (#28 third slice).
   host vps {

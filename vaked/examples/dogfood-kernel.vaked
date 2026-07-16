@@ -18,7 +18,8 @@
 # `filesystem` membrane kind so the path allow-set is checked, not just carried.
 
 runtime "dogfood-kernel" {
-  systems = ["aarch64-darwin", "x86_64-linux"]   # local M1 + Linux container
+  systems = ["aarch64-darwin", "x86_64-linux"]
+  # local M1 + Linux container
 
   # AUTHORITY graph (POLA, attenuated). The operator delegates a strictly weaker
   # subset to each node; the checker refuses any edge that escalates.

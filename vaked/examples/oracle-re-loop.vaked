@@ -15,7 +15,8 @@
 # (open) `meshNode` schema — same stopgap documented in dogfood-kernel.vaked.
 
 runtime "oracle-re-loop" {
-  systems = ["aarch64-darwin", "x86_64-linux"]   # M3 orchestrates; dev-cx53 runs the heavy work
+  systems = ["aarch64-darwin", "x86_64-linux"]
+  # M3 orchestrates; dev-cx53 runs the heavy work
 
   # AUTHORITY graph (POLA, attenuated). The operator delegates a strictly weaker
   # subset to each node; the checker refuses any edge that escalates.

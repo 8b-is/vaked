@@ -39,9 +39,7 @@ probe preDeployProbe {
   to = sentinelNode
   via = meshEdgeEgress
   with = capability.fs
-  on_result = {
-    score = 0.0
-  }
+  on_result = { score = 0.0 }
 }
 
 probe compactionSafety {

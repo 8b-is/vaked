@@ -3,11 +3,7 @@
 #               emit list, pinned trust record.
 
 index zigRefs {
-  source = [
-    github("Sobeston/zig.guide"),
-    github("C-BJ/awesome-zig"),
-    github("zigimg/zigimg")
-  ]
+  source = [github("Sobeston/zig.guide"), github("C-BJ/awesome-zig"), github("zigimg/zigimg")]
 
   normalize = crabcc.markdown
   chunk = crabcc.semantic {

@@ -21,7 +21,9 @@ runtime "broken-monitor" {
   systems = ["x86_64-linux"]
 
   # Declare agentGuardd with only `ringbuf` — not `ringbufff`.
-  namespace agentGuardd { member ringbuf }
+  namespace agentGuardd {
+    member ringbuf
+  }
 
   # Error case 1: `nope` is a completely unknown namespace head.
   # E-REF-UNRESOLVED: `nope` is not a declared namespace in runtime `broken-monitor`

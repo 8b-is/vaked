@@ -17,9 +17,9 @@ capability fs {
 
 mesh underpoweredField {
   node worker {
-    role         = "worker"
+    role = "worker"
     # exercises repo_rw but only holds repo_ro (repo_ro </= repo_rw) → E-CAP-USE
-    needs        = [fs.repo_rw]
+    needs = [fs.repo_rw]
     capabilities = [fs.repo_ro]
   }
 }
