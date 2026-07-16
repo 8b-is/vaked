@@ -806,6 +806,45 @@ test "exactly one blank line between top-level decls" {
     try expectFormatted(a, "capability a {\n}\n\n\n\ncapability b {\n}", expected);
 }
 
+// --- escaping: edge labels, use paths, string values (round-trip safety) ---
+
+test "edge label with quotes and backslashes round-trips" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "mesh m {\n  codex -> broker : \"say \\\"hi\\\" \\\\ done\"\n}";
+    try expectFormatted(a, src, src);
+    try expectIdempotent(a, src);
+}
+
+test "use path with quotes and backslashes round-trips" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "use \"we\\\"ird\\\\path.vaked\"";
+    try expectFormatted(a, src, src);
+    try expectIdempotent(a, src);
+}
+
+test "string value with quotes and backslashes round-trips" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "engine e {\n  name = \"a\\\"b\\\\c\"\n}";
+    try expectFormatted(a, src, src);
+    try expectIdempotent(a, src);
+}
+
+test "control-character escapes in string values round-trip" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // \r, \b, \f are decoded by the parser and must be re-encoded on output
+    const src = "engine e {\n  name = \"a\\rb\\bc\\fd\"\n}";
+    try expectFormatted(a, src, src);
+    try expectIdempotent(a, src);
+}
+
 test "idempotent with comments and blank lines" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

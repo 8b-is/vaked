@@ -11,6 +11,37 @@ test {
     _ = @import("fmt_test.zig");
 }
 
+test "fmtSource: check-mode change detection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // unformatted source (missing trailing newline) -> changed, canonical output
+    switch (try fmtSource(a, "t.vaked", "engine foo {\n}")) {
+        .ok => |res| {
+            try std.testing.expect(res.changed);
+            try std.testing.expectEqualStrings("engine foo {\n}\n", res.formatted);
+        },
+        .fail => return error.TestUnexpectedResult,
+    }
+
+    // already-canonical source -> unchanged
+    switch (try fmtSource(a, "t.vaked", "engine foo {\n}\n")) {
+        .ok => |res| try std.testing.expect(!res.changed),
+        .fail => return error.TestUnexpectedResult,
+    }
+}
+
+test "fmtSource: parse error reported as fail" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    switch (try fmtSource(a, "bad.vaked", "not_a_kind foo {\n}")) {
+        .fail => |msg| try std.testing.expect(std.mem.indexOf(u8, msg, "parse error") != null),
+        .ok => return error.TestUnexpectedResult,
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -67,11 +98,46 @@ fn readFileAlloc(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]
     const buf = try allocator.alloc(u8, @intCast(st.size));
     errdefer allocator.free(buf);
     const n = try file.readPositionalAll(io, buf, 0);
-    return buf[0..n];
+    // Never hand the caller a slice shorter than the allocation: freeing it
+    // would violate the allocator contract. Shrink the allocation instead.
+    if (n != buf.len) return allocator.realloc(buf, n);
+    return buf;
 }
 
 fn stderrWriter(ls: std.Io.LockedStderr) *std.Io.Writer {
     return &ls.file_writer.*.interface;
+}
+
+/// Result of formatting one file's source. IO-free and exit-free so the
+/// check-mode contract is unit-testable; process.exit stays in runFmt/main.
+const FmtOutcome = union(enum) {
+    ok: struct { formatted: []const u8, changed: bool },
+    fail: []const u8, // diagnostic message, no trailing newline
+};
+
+fn fmtSource(a: std.mem.Allocator, path: []const u8, source: []const u8) std.mem.Allocator.Error!FmtOutcome {
+    var l = lex.Lexer.init(a, source);
+    try l.run();
+    if (l.errors.items.len > 0) {
+        const le = l.errors.items[0];
+        return .{ .fail = try std.fmt.allocPrint(a, "vaked fmt: lex error in '{s}': {s} at line {d} col {d}", .{ path, le.msg, le.line, le.col }) };
+    }
+
+    var p = parser_mod.Parser.init(a, l.tokens.items);
+    const items = p.parseFile() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Parse => {
+            if (p.err) |pe| {
+                return .{ .fail = try std.fmt.allocPrint(a, "vaked fmt: parse error in '{s}': {s} at line {d} col {d}", .{ path, pe.msg, pe.line, pe.col }) };
+            }
+            return .{ .fail = try std.fmt.allocPrint(a, "vaked fmt: parse error in '{s}'", .{path}) };
+        },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    try fmt_mod.formatFile(a, items, &out);
+    const formatted = try out.toOwnedSlice(a);
+    return .{ .ok = .{ .formatted = formatted, .changed = !std.mem.eql(u8, source, formatted) } };
 }
 
 fn runFmt(allocator: std.mem.Allocator, io: std.Io, opts: Args.FmtOptions) !void {
@@ -79,69 +145,51 @@ fn runFmt(allocator: std.mem.Allocator, io: std.Io, opts: Args.FmtOptions) !void
         const ls = try io.lockStderr(&.{}, null);
         defer io.unlockStderr();
         try stderrWriter(ls).writeAll("vaked fmt: no files specified\n");
-        std.process.exit(1);
+        std.process.exit(2);
     }
 
     var any_changed = false;
+    var any_error = false;
 
     for (opts.paths) |path| {
-        const source = readFileAlloc(allocator, io, path) catch |err| {
-            const ls = try io.lockStderr(&.{}, null);
-            defer io.unlockStderr();
-            try stderrWriter(ls).print("vaked fmt: cannot open '{s}': {}\n", .{ path, err });
-            std.process.exit(1);
-        };
-        defer allocator.free(source);
-
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const aa = arena.allocator();
 
-        var l = lex.Lexer.init(aa, source);
-        l.run() catch |err| {
+        const source = readFileAlloc(aa, io, path) catch |err| {
             const ls = try io.lockStderr(&.{}, null);
             defer io.unlockStderr();
-            try stderrWriter(ls).print("vaked fmt: lex error in '{s}': {}\n", .{ path, err });
-            std.process.exit(1);
+            try stderrWriter(ls).print("vaked fmt: cannot open '{s}': {}\n", .{ path, err });
+            any_error = true;
+            continue;
         };
 
-        var p = parser_mod.Parser.init(aa, l.tokens.items);
-        const items = p.parseFile() catch |err| {
-            const ls = try io.lockStderr(&.{}, null);
-            defer io.unlockStderr();
-            if (p.err) |pe| {
-                try stderrWriter(ls).print("vaked fmt: parse error in '{s}': {} at line {} col {}\n", .{ path, err, pe.line, pe.col });
-            } else {
-                try stderrWriter(ls).print("vaked fmt: parse error in '{s}': {}\n", .{ path, err });
-            }
-            std.process.exit(1);
-        };
-
-        var out: std.ArrayList(u8) = .empty;
-
-        fmt_mod.formatFile(aa, items, &out) catch |err| {
-            const ls = try io.lockStderr(&.{}, null);
-            defer io.unlockStderr();
-            try stderrWriter(ls).print("vaked fmt: format error in '{s}': {}\n", .{ path, err });
-            std.process.exit(1);
-        };
-
-        if (opts.stdout) {
-            try std.Io.File.stdout().writeStreamingAll(io, out.items);
-        } else {
-            const original_size = source.len;
-            const formatted_size = out.items.len;
-            if (original_size != formatted_size or !std.mem.eql(u8, source, out.items)) {
-                any_changed = true;
-                if (!opts.check) {
-                    const cwd = std.Io.Dir.cwd();
-                    try cwd.writeFile(io, .{ .sub_path = path, .data = out.items });
+        switch (try fmtSource(aa, path, source)) {
+            .fail => |msg| {
+                const ls = try io.lockStderr(&.{}, null);
+                defer io.unlockStderr();
+                try stderrWriter(ls).print("{s}\n", .{msg});
+                any_error = true;
+            },
+            .ok => |res| {
+                if (opts.stdout) {
+                    try std.Io.File.stdout().writeStreamingAll(io, res.formatted);
+                } else if (res.changed) {
+                    any_changed = true;
+                    if (opts.check) {
+                        // gofmt -l style: list each file that would be reformatted
+                        const line = try std.fmt.allocPrint(aa, "{s}\n", .{path});
+                        try std.Io.File.stdout().writeStreamingAll(io, line);
+                    } else {
+                        const cwd = std.Io.Dir.cwd();
+                        try cwd.writeFile(io, .{ .sub_path = path, .data = res.formatted });
+                    }
                 }
-            }
+            },
         }
     }
 
-    if (opts.check and any_changed) {
-        std.process.exit(1);
-    }
+    // exit 2: lex/parse/IO errors; exit 1: --check found unformatted files
+    if (any_error) std.process.exit(2);
+    if (opts.check and any_changed) std.process.exit(1);
 }

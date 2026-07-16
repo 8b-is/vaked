@@ -17,32 +17,26 @@ const Allocator = std.mem.Allocator;
 
 const FmtError = error{OutOfMemory};
 
-fn needsQuoting(s: []const u8) bool {
-    for (s) |c| {
-        if (c == ' ' or c == '"' or c == '\\' or c == '\n' or c == '\t') return true;
-    }
-    return s.len == 0;
-}
-
-fn writeQuoted(a: Allocator, s: []const u8, out: *Writer) FmtError!void {
-    if (!needsQuoting(s)) {
-        try out.appendSlice(a, s);
-        return;
-    }
-    try writeAlwaysQuoted(a, s, out);
-}
-
-fn writeAlwaysQuoted(a: Allocator, s: []const u8, out: *Writer) FmtError!void {
-    try out.append(a, '"');
+// Re-encode bytes the parser's unquote() decoded, so emitted strings always
+// re-lex/re-parse. Mirrors the escape table in parser.zig unquote().
+fn writeEscaped(a: Allocator, s: []const u8, out: *Writer) FmtError!void {
     for (s) |c| {
         switch (c) {
             '"' => try out.appendSlice(a, "\\\""),
             '\\' => try out.appendSlice(a, "\\\\"),
             '\n' => try out.appendSlice(a, "\\n"),
+            '\r' => try out.appendSlice(a, "\\r"),
             '\t' => try out.appendSlice(a, "\\t"),
+            0x08 => try out.appendSlice(a, "\\b"),
+            0x0c => try out.appendSlice(a, "\\f"),
             else => try out.append(a, c),
         }
     }
+}
+
+fn writeAlwaysQuoted(a: Allocator, s: []const u8, out: *Writer) FmtError!void {
+    try out.append(a, '"');
+    try writeEscaped(a, s, out);
     try out.append(a, '"');
 }
 
@@ -52,9 +46,8 @@ pub fn formatFile(a: Allocator, items: []const Item, out: *Writer) FmtError!void
         switch (item) {
             .import => |imp| {
                 try formatComments(a, imp.comments, 0, out);
-                try out.appendSlice(a, "use \"");
-                try out.appendSlice(a, imp.path);
-                try out.appendSlice(a, "\"");
+                try out.appendSlice(a, "use ");
+                try writeAlwaysQuoted(a, imp.path, out);
             },
             .decl => |d| try formatDecl(a, d, 0, out),
             .comments => |cs| {
@@ -328,9 +321,8 @@ fn formatEdge(a: Allocator, e: Edge, indent: usize, out: *Writer) !void {
         try formatRef(a, r, out);
     }
     if (e.label) |label| {
-        try out.appendSlice(a, " : \"");
-        try out.appendSlice(a, label);
-        try out.append(a, '"');
+        try out.appendSlice(a, " : ");
+        try writeAlwaysQuoted(a, label, out);
     }
 }
 
@@ -338,17 +330,7 @@ fn formatExpr(a: Allocator, e: Expr, indent: usize, out: *Writer) FmtError!void 
     switch (e) {
         .literal => |l| {
             if (l.kind == .string) {
-                try out.append(a, '"');
-                for (l.value) |c| {
-                    switch (c) {
-                        '"' => try out.appendSlice(a, "\\\""),
-                        '\\' => try out.appendSlice(a, "\\\\"),
-                        '\n' => try out.appendSlice(a, "\\n"),
-                        '\t' => try out.appendSlice(a, "\\t"),
-                        else => try out.append(a, c),
-                    }
-                }
-                try out.append(a, '"');
+                try writeAlwaysQuoted(a, l.value, out);
             } else {
                 try out.appendSlice(a, l.value);
             }
