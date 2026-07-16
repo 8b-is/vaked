@@ -106,6 +106,8 @@ pub const Stmt = union(enum) {
     node: *const NodeDecl,
     decl: *const Decl,
     app: App,
+    comment: []const u8,
+    blank,
 };
 
 pub const Decl = struct {
@@ -125,6 +127,7 @@ pub const Decl = struct {
 pub const Item = union(enum) {
     decl: *const Decl,
     import: struct { path: []const u8, comments: []const []const u8 },
+    comments: []const []const u8,
 };
 
 pub const ParseError = struct { msg: []const u8, line: usize, col: usize };
@@ -153,18 +156,18 @@ pub const Parser = struct {
         while (self.cur().kind == .newline) self.i += 1;
     }
 
-    fn skipInlineComments(self: *Parser) void {
-        while (self.cur().kind == .comment) self.i += 1;
-    }
+    const CommentGroup = struct { comments: []const []const u8, last_line: usize };
 
-    fn collectComments(self: *Parser) ![]const []const u8 {
+    fn collectCommentGroup(self: *Parser) !CommentGroup {
         var comments = std.array_list.Managed([]const u8).init(self.a);
+        var last_line: usize = 0;
         while (self.cur().kind == .comment) {
             try comments.append(self.cur().value);
+            last_line = self.cur().line;
             self.i += 1;
             self.skipNl();
         }
-        return try comments.toOwnedSlice();
+        return .{ .comments = try comments.toOwnedSlice(), .last_line = last_line };
     }
     fn isOp(self: *Parser, v: []const u8) bool {
         const t = self.cur();
@@ -198,10 +201,18 @@ pub const Parser = struct {
         var items = std.array_list.Managed(Item).init(self.a);
         self.skipNl();
         while (!self.atEof()) {
-            const leading = try self.collectComments();
-            if (self.atEof()) break;
-            try items.append(try self.itemWithComments(leading));
-            self.skipInlineComments();
+            const group = try self.collectCommentGroup();
+            if (self.atEof()) {
+                if (group.comments.len > 0) try items.append(.{ .comments = group.comments });
+                break;
+            }
+            if (group.comments.len > 0 and self.cur().line > group.last_line + 1) {
+                // blank line between comment block and next item: keep it standalone
+                try items.append(.{ .comments = group.comments });
+                try items.append(try self.itemWithComments(&.{}));
+            } else {
+                try items.append(try self.itemWithComments(group.comments));
+            }
             self.skipNl();
         }
         return items.toOwnedSlice();
@@ -305,14 +316,25 @@ pub const Parser = struct {
     const BlockResult = struct { stmts: []const Stmt, close: Token };
 
     fn block(self: *Parser) error{ Parse, OutOfMemory }!BlockResult {
-        _ = try self.expectOp("{");
+        const open = try self.expectOp("{");
         var stmts = std.array_list.Managed(Stmt).init(self.a);
+        var prev_line = open.line;
         self.skipNl();
         while (!self.isOp("}")) {
             if (self.atEof()) return self.fail("unterminated block");
-            _ = try self.collectComments();
+            // a gap of one or more blank lines separates logical groups
+            if (stmts.items.len > 0 and self.cur().line > prev_line + 1) {
+                try stmts.append(.blank);
+            }
+            if (self.cur().kind == .comment) {
+                try stmts.append(.{ .comment = self.cur().value });
+                prev_line = self.cur().line;
+                self.i += 1;
+                self.skipNl();
+                continue;
+            }
             try stmts.append(try self.stmt());
-            self.skipInlineComments();
+            prev_line = self.toks[self.i - 1].line;
             self.skipNl();
         }
         const close = self.cur();

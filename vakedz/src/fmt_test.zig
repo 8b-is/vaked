@@ -17,7 +17,10 @@ fn formatSource(a: std.mem.Allocator, src: []const u8) ![]const u8 {
 fn expectFormatted(a: std.mem.Allocator, input: []const u8, expected: []const u8) !void {
     const result = try formatSource(a, input);
     defer a.free(result);
-    try testing.expectEqualStrings(expected, result);
+    // Canonical output always ends with exactly one trailing newline.
+    const expected_nl = try std.mem.concat(a, u8, &.{ expected, "\n" });
+    defer a.free(expected_nl);
+    try testing.expectEqualStrings(expected_nl, result);
 }
 
 fn expectIdempotent(a: std.mem.Allocator, src: []const u8) !void {
@@ -405,14 +408,15 @@ test "idempotent complex" {
     );
 }
 
-test "no trailing newline at EOF" {
+test "exactly one trailing newline at EOF" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const result = try formatSource(a, "engine foo {\n}");
     defer a.free(result);
-    try testing.expect(result.len > 0);
-    try testing.expectEqual(@as(u8, '}'), result[result.len - 1]);
+    try testing.expect(result.len >= 2);
+    try testing.expectEqual(@as(u8, '\n'), result[result.len - 1]);
+    try testing.expect(result[result.len - 2] != '\n');
 }
 
 test "empty block" {
@@ -547,5 +551,275 @@ test "format preserves comment before use" {
     ,
         \\# my imports
         \\use "./foo.vaked"
+    );
+}
+
+// --- defect 1: multi-entry records must format as parseable multiline blocks ---
+
+test "multi-entry record in stmt position formats as multiline block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\fiber mediaCompress {
+        \\  policy {
+        \\    strip_metadata = true
+        \\    max_pixels = "4K"
+        \\    formats = ["png", "webp"]
+        \\  }
+        \\}
+    ,
+        \\fiber mediaCompress {
+        \\  policy {
+        \\    strip_metadata = true
+        \\    max_pixels = "4K"
+        \\    formats = ["png", "webp"]
+        \\  }
+        \\}
+    );
+}
+
+test "multi-entry record output re-parses (round-trip)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectIdempotent(a,
+        \\fiber mediaCompress {
+        \\  policy {
+        \\    strip_metadata = true
+        \\    max_pixels = "4K"
+        \\    formats = ["png", "webp"]
+        \\  }
+        \\}
+    );
+}
+
+test "single-entry record stays inline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\runtime main {
+        \\  config = { debug = true }
+        \\}
+    ,
+        \\runtime main {
+        \\  config = { debug = true }
+        \\}
+    );
+}
+
+test "multi-entry record value formats multiline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a, "runtime main {\n  config = { debug = true retries = 3 }\n}",
+        \\runtime main {
+        \\  config = {
+        \\    debug = true
+        \\    retries = 3
+        \\  }
+        \\}
+    );
+}
+
+test "app with args and multi-entry record" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\index i {
+        \\  source = github("x") {
+        \\    a = 1
+        \\    b = 2
+        \\  }
+        \\}
+    ,
+        \\index i {
+        \\  source = github("x") {
+        \\    a = 1
+        \\    b = 2
+        \\  }
+        \\}
+    );
+}
+
+// --- defect 2: comments inside blocks must be preserved ---
+
+test "comments inside blocks are preserved" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\runtime foo {
+        \\  # section
+        \\  a = 1
+        \\}
+    ,
+        \\runtime foo {
+        \\  # section
+        \\  a = 1
+        \\}
+    );
+}
+
+test "inline trailing comment moves to own line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a, "runtime foo {\n  a = 1 # note\n}",
+        \\runtime foo {
+        \\  a = 1
+        \\  # note
+        \\}
+    );
+}
+
+test "comment before closing brace preserved" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\runtime foo {
+        \\  a = 1
+        \\  # done
+        \\}
+    ,
+        \\runtime foo {
+        \\  a = 1
+        \\  # done
+        \\}
+    );
+}
+
+test "comments in nested block preserved" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\mesh m {
+        \\  node a {
+        \\    # inner note
+        \\    role = "worker"
+        \\  }
+        \\}
+    ,
+        \\mesh m {
+        \\  node a {
+        \\    # inner note
+        \\    role = "worker"
+        \\  }
+        \\}
+    );
+}
+
+test "trailing comments at EOF preserved" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a, "runtime foo {\n}\n\n# trailing note\n# more",
+        \\runtime foo {
+        \\}
+        \\
+        \\# trailing note
+        \\# more
+    );
+}
+
+test "comment block separated by blank line stays separated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\# header comment
+        \\
+        \\runtime foo {
+        \\}
+    ,
+        \\# header comment
+        \\
+        \\runtime foo {
+        \\}
+    );
+}
+
+// --- defect 3: blank lines between logical groups / top-level decls ---
+
+test "blank lines between logical groups in block preserved" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\mesh agentfield {
+        \\  node codex {
+        \\    role = "worker"
+        \\  }
+        \\
+        \\  node redteam {
+        \\    role = "reviewer"
+        \\  }
+        \\
+        \\  codex -> redteam
+        \\}
+    ,
+        \\mesh agentfield {
+        \\  node codex {
+        \\    role = "worker"
+        \\  }
+        \\
+        \\  node redteam {
+        \\    role = "reviewer"
+        \\  }
+        \\
+        \\  codex -> redteam
+        \\}
+    );
+}
+
+test "multiple blank lines in block collapse to one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a, "runtime foo {\n  a = 1\n\n\n\n  b = 2\n}",
+        \\runtime foo {
+        \\  a = 1
+        \\
+        \\  b = 2
+        \\}
+    );
+}
+
+test "exactly one blank line between top-level decls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const expected =
+        \\capability a {
+        \\}
+        \\
+        \\capability b {
+        \\}
+    ;
+    // no blank line in input -> exactly one inserted
+    try expectFormatted(a, "capability a {\n}\ncapability b {\n}", expected);
+    // many blank lines in input -> collapsed to exactly one
+    try expectFormatted(a, "capability a {\n}\n\n\n\ncapability b {\n}", expected);
+}
+
+test "idempotent with comments and blank lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectIdempotent(a,
+        \\# header
+        \\
+        \\mesh m {
+        \\  # group one
+        \\  node a {
+        \\    role = "x" # inline
+        \\  }
+        \\
+        \\  a -> b
+        \\}
     );
 }

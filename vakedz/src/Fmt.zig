@@ -48,6 +48,7 @@ fn writeAlwaysQuoted(a: Allocator, s: []const u8, out: *Writer) FmtError!void {
 
 pub fn formatFile(a: Allocator, items: []const Item, out: *Writer) FmtError!void {
     for (items, 0..) |item, i| {
+        if (i > 0) try out.appendSlice(a, "\n\n");
         switch (item) {
             .import => |imp| {
                 try formatComments(a, imp.comments, 0, out);
@@ -56,9 +57,15 @@ pub fn formatFile(a: Allocator, items: []const Item, out: *Writer) FmtError!void
                 try out.appendSlice(a, "\"");
             },
             .decl => |d| try formatDecl(a, d, 0, out),
+            .comments => |cs| {
+                for (cs, 0..) |c, j| {
+                    if (j > 0) try out.append(a, '\n');
+                    try out.appendSlice(a, c);
+                }
+            },
         }
-        if (i < items.len - 1) try out.appendSlice(a, "\n\n");
     }
+    if (items.len > 0) try out.append(a, '\n');
 }
 
 fn formatComments(a: Allocator, comments: []const []const u8, indent: usize, out: *Writer) FmtError!void {
@@ -165,30 +172,66 @@ fn formatStmt(a: Allocator, s: Stmt, indent: usize, out: *Writer) FmtError!void 
                 try out.append(a, '(');
                 for (args, 0..) |arg, i| {
                     if (i > 0) try out.appendSlice(a, ", ");
-                    try formatExpr(a, arg, 0, out);
+                    try formatExpr(a, arg, indent, out);
                 }
                 try out.append(a, ')');
             }
             if (ap.record) |entries| {
-                try out.appendSlice(a, " { ");
-                for (entries, 0..) |entry, i| {
-                    if (i > 0) try out.appendSlice(a, ", ");
-                    switch (entry) {
-                        .assign => |asgn| {
-                            try out.appendSlice(a, asgn.target);
-                            try out.appendSlice(a, " = ");
-                            try formatExpr(a, asgn.value.*, 0, out);
-                        },
-                        .inherit => |names| {
-                            try out.appendSlice(a, "inherit");
-                            for (names) |n| {
-                                try out.append(a, ' ');
-                                try out.appendSlice(a, n);
-                            }
-                        },
-                    }
-                }
-                try out.appendSlice(a, " }");
+                try out.append(a, ' ');
+                try formatRecord(a, entries, indent, out);
+            }
+        },
+        .comment => |c| {
+            try writeIndent(a, indent, out);
+            try out.appendSlice(a, c);
+        },
+        .blank => {},
+    }
+}
+
+// Records: the grammar separates record entries by newlines (no commas), so any
+// record with more than one entry must be emitted as a multiline block for the
+// output to re-parse. A single short entry stays inline: `{ key = val }`.
+fn formatRecord(a: Allocator, entries: []const RecordEntry, indent: usize, out: *Writer) FmtError!void {
+    if (entries.len == 0) {
+        try out.appendSlice(a, "{}");
+        return;
+    }
+    if (entries.len == 1) {
+        var trial: Writer = .empty;
+        defer trial.deinit(a);
+        try trial.appendSlice(a, "{ ");
+        try formatRecordEntry(a, entries[0], indent, &trial);
+        try trial.appendSlice(a, " }");
+        if (std.mem.indexOfScalar(u8, trial.items, '\n') == null) {
+            try out.appendSlice(a, trial.items);
+            return;
+        }
+    }
+    try out.appendSlice(a, "{\n");
+    for (entries) |entry| {
+        try writeIndent(a, indent + 2, out);
+        try formatRecordEntry(a, entry, indent + 2, out);
+        try out.append(a, '\n');
+    }
+    try writeIndent(a, indent, out);
+    try out.append(a, '}');
+}
+
+fn formatRecordEntry(a: Allocator, entry: RecordEntry, indent: usize, out: *Writer) FmtError!void {
+    switch (entry) {
+        .assign => |asgn| {
+            try out.appendSlice(a, asgn.target);
+            try out.append(a, ' ');
+            try out.appendSlice(a, asgn.op);
+            try out.append(a, ' ');
+            try formatExpr(a, asgn.value.*, indent, out);
+        },
+        .inherit => |names| {
+            try out.appendSlice(a, "inherit");
+            for (names) |n| {
+                try out.append(a, ' ');
+                try out.appendSlice(a, n);
             }
         },
     }
@@ -319,25 +362,7 @@ fn formatExpr(a: Allocator, e: Expr, indent: usize, out: *Writer) FmtError!void 
             try out.append(a, ']');
         },
         .record => |entries| {
-            try out.appendSlice(a, "{ ");
-            for (entries, 0..) |entry, i| {
-                if (i > 0) try out.appendSlice(a, ", ");
-                switch (entry) {
-                    .assign => |asgn| {
-                        try out.appendSlice(a, asgn.target);
-                        try out.appendSlice(a, " = ");
-                        try formatExpr(a, asgn.value.*, indent + 2, out);
-                    },
-                    .inherit => |names| {
-                        try out.appendSlice(a, "inherit");
-                        for (names) |n| {
-                            try out.append(a, ' ');
-                            try out.appendSlice(a, n);
-                        }
-                    },
-                }
-            }
-            try out.appendSlice(a, " }");
+            try formatRecord(a, entries, indent, out);
         },
         .app => |ap| {
             try formatRef(a, ap.ref, out);
@@ -345,30 +370,13 @@ fn formatExpr(a: Allocator, e: Expr, indent: usize, out: *Writer) FmtError!void 
                 try out.append(a, '(');
                 for (args, 0..) |arg, i| {
                     if (i > 0) try out.appendSlice(a, ", ");
-                    try formatExpr(a, arg, 0, out);
+                    try formatExpr(a, arg, indent, out);
                 }
                 try out.append(a, ')');
             }
             if (ap.record) |entries| {
-                try out.appendSlice(a, " { ");
-                for (entries, 0..) |entry, i| {
-                    if (i > 0) try out.appendSlice(a, ", ");
-                    switch (entry) {
-                        .assign => |asgn| {
-                            try out.appendSlice(a, asgn.target);
-                            try out.appendSlice(a, " = ");
-                            try formatExpr(a, asgn.value.*, 0, out);
-                        },
-                        .inherit => |names| {
-                            try out.appendSlice(a, "inherit");
-                            for (names) |n| {
-                                try out.append(a, ' ');
-                                try out.appendSlice(a, n);
-                            }
-                        },
-                    }
-                }
-                try out.appendSlice(a, " }");
+                try out.append(a, ' ');
+                try formatRecord(a, entries, indent, out);
             }
         },
     }

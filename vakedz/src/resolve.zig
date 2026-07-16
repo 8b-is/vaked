@@ -98,6 +98,7 @@ const Resolver = struct {
                     try self.indexBody(d, &.{d.name});
                 },
                 .import => {},
+                .comments => {},
             }
         }
     }
@@ -161,6 +162,7 @@ const Resolver = struct {
                         .props = .null,
                     });
                 },
+                .comments => {},
             }
         }
 
