@@ -30,15 +30,19 @@ pub const Cache = struct {
     allocator: std.mem.Allocator,
     root: []const u8,
 
+    /// Stub: records the cache root path only. Directory creation and CAS
+    /// I/O land with the real implementation (0.16 filesystem access goes
+    /// through `std.Io`, mirroring vakedz/src/main.zig).
     pub fn open(allocator: std.mem.Allocator, root: []const u8) !Cache {
         const cache_root = try std.fs.path.join(allocator, &.{ root, CACHE_DIR });
-        try std.fs.makeDirAbsolute(cache_root);
-        const cas_dir = try std.fs.path.join(allocator, &.{ cache_root, "cas" });
-        try std.fs.makeDirAbsolute(cas_dir);
         return Cache{
             .allocator = allocator,
             .root = cache_root,
         };
+    }
+
+    pub fn deinit(self: *Cache) void {
+        self.allocator.free(self.root);
     }
 
     pub fn lookup(self: *Cache, file: []const u8, source: []const u8, phase: Phase) !?[]u8 {

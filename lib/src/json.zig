@@ -71,21 +71,4 @@ pub const Value = union(enum) {
         try self.writeCanonical(&aw.writer);
         return aw.toOwnedSlice();
     }
-
-    pub fn sortRecursive(self: *Value, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .array => |arr| {
-                for (arr) |*v| v.sortRecursive(allocator);
-            },
-            .object => |obj| {
-                for (obj) |*e| e.value.sortRecursive(allocator);
-                std.mem.sort(Entry, obj, {}, struct {
-                    fn lessThan(_: void, a: Entry, b: Entry) bool {
-                        return std.mem.order(u8, a.key, b.key) == .lt;
-                    }
-                }.lessThan);
-            },
-            else => {},
-        }
-    }
 };

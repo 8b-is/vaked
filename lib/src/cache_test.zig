@@ -17,3 +17,23 @@ test "Phase enum" {
     try testing.expectEqualStrings("check", cache.Phase.check.str());
     try testing.expectEqualStrings("lower", cache.Phase.lower.str());
 }
+
+test "chainHex from GENESIS" {
+    var out: [64]u8 = undefined;
+    cache.chainHex(cache.GENESIS, "payload", &out);
+    try testing.expectEqualStrings(
+        "574feb55908dbb2b4c72bc2dc3e70fc1b8f1b32264e064b5a557c6e6a068b3a8",
+        &out,
+    );
+}
+
+test "Cache stub open/lookup/put/verify" {
+    var c = try cache.Cache.open(testing.allocator, "/tmp/vakedz-test-root");
+    defer c.deinit();
+    try testing.expectEqualStrings("/tmp/vakedz-test-root/.vakedz-cache", c.root);
+    try testing.expectEqual(@as(?[]u8, null), try c.lookup("a.vaked", "src", .parse));
+    try c.put("a.vaked", "src", .parse, "out");
+    const vr = try c.verify();
+    try testing.expect(vr.ok);
+    try testing.expectEqual(@as(usize, 0), vr.entries);
+}

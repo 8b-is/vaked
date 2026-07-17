@@ -37,3 +37,26 @@ test "nodeId generation" {
     const id = graph.nodeId("test.vaked", &.{ "runtime", "fiber" });
     try testing.expectEqualStrings("test#runtime/fiber", id);
 }
+
+test "Graph addEdge and hasNode" {
+    var g = graph.Graph.init(testing.allocator);
+    defer g.deinit();
+    try g.addNode(.{
+        .id = "a#x",
+        .kind = "fiber",
+        .name = "x",
+        .labels = &.{},
+        .props = json.Value{ .object = &.{} },
+        .provenance = null,
+    });
+    try testing.expect(g.hasNode("a#x"));
+    try testing.expect(!g.hasNode("a#y"));
+    try g.addEdge(.{
+        .source = "a#",
+        .target = "a#x",
+        .label = "contains",
+        .props = json.Value{ .object = &.{} },
+    });
+    try testing.expectEqual(@as(usize, 1), g.edges.items.len);
+    try testing.expectEqualStrings("contains", g.edges.items[0].label);
+}
