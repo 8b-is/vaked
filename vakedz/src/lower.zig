@@ -1638,6 +1638,331 @@ pub fn emitZigDaemoncfg(a: Allocator, g: *const graphmod.Graph, source_file: []c
 }
 
 // --------------------------------------------------------------------------- //
+// Emitter: catalog.jsonl (per index w/ emit ∋ catalog.jsonl)
+//                                              — gen/catalog/<index>.jsonl.
+// --------------------------------------------------------------------------- //
+
+/// lower.py `_CATALOG_PLACEHOLDER_ROWS` (0012 §5.3b). The REAL rows are
+/// produced by the CrabCC index derivation at build time over the pinned
+/// sources; lowering does NOT fetch or index (§2.3). For the fixture set,
+/// lowering emits the header plus these DISCLOSED placeholder rows, derived
+/// from the source list's github "owner/repo" slug — never invented from
+/// network content. Keyed by index name; an index with no entry emits the
+/// header line only.
+const CatalogRow = struct { owner_repo: []const u8, path: []const u8, text: []const u8 };
+
+fn catalogPlaceholderRows(index_name: []const u8) []const CatalogRow {
+    if (std.mem.eql(u8, index_name, "zigCorpus")) return &.{
+        .{
+            .owner_repo = "Sobeston/zig.guide",
+            .path = "chapter-1/hello-world.md",
+            .text = "# Hello World\n\nCreate a file `hello.zig` and run it with `zig run hello.zig`.",
+        },
+        .{
+            .owner_repo = "zigimg/zigimg",
+            .path = "README.md",
+            .text = "# zigimg\n\nZig library for reading and writing images in a variety of formats.",
+        },
+    };
+    return &.{};
+}
+
+/// lower.py `_catalog_row_id`: `<repo-slug>#NNNN`. The slug is the segment
+/// after the LAST '/' (`rsplit("/", 1)[-1]`) — note this is NOT
+/// `_nix_source_slug`: no `.`/`_` normalization, so `Sobeston/zig.guide`
+/// yields `zig.guide#0001`, dot intact.
+fn catalogRowId(a: Allocator, owner_repo: []const u8, n: usize) Error![]const u8 {
+    var repo = owner_repo;
+    if (std.mem.lastIndexOfScalar(u8, owner_repo, '/')) |i| repo = owner_repo[i + 1 ..];
+    return std.fmt.allocPrint(a, "{s}#{d:0>4}", .{ repo, n });
+}
+
+/// lower.py `emit_catalog_jsonl` (0012 §5.3b). Line 1 is the `_generated`
+/// header object (so the file stays valid JSONL); subsequent lines are one
+/// compact JSON object per indexed item. `json.dumps(separators=(",",":"),
+/// ensure_ascii=False)` IS `writeCanonical`, and key order is insertion order
+/// (id, source, path, chunk, text) — which writeCanonical preserves.
+pub fn emitCatalogJsonl(a: Allocator, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const sf = source_file;
+    var files: std.ArrayListUnmanaged(File) = .empty;
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    for (nodes) |idx| {
+        var L = Lines.init(a);
+        {
+            const hobj = try a.alloc(json.Value.Entry, 1);
+            hobj[0] = .{
+                .key = "_generated",
+                .value = .{ .string = try header(a, sf, try std.fmt.allocPrint(a, "index {s}", .{idx.name})) },
+            };
+            try L.add(try jsonScalar(a, .{ .object = hobj }));
+        }
+        // `per_repo` counts rows PER REPO SLUG (not per owner/repo), so two
+        // sources sharing a slug continue one another's numbering.
+        var repo_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+        var repo_counts: std.ArrayListUnmanaged(usize) = .empty;
+        for (catalogPlaceholderRows(idx.name)) |row| {
+            var repo = row.owner_repo;
+            if (std.mem.lastIndexOfScalar(u8, row.owner_repo, '/')) |i| repo = row.owner_repo[i + 1 ..];
+            var n: usize = 1;
+            var found = false;
+            for (repo_keys.items, 0..) |k, i| {
+                if (std.mem.eql(u8, k, repo)) {
+                    repo_counts.items[i] += 1;
+                    n = repo_counts.items[i];
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try repo_keys.append(a, repo);
+                try repo_counts.append(a, 1);
+            }
+            const obj = try a.alloc(json.Value.Entry, 5);
+            obj[0] = .{ .key = "id", .value = .{ .string = try catalogRowId(a, row.owner_repo, n) } };
+            obj[1] = .{ .key = "source", .value = .{ .string = try std.fmt.allocPrint(a, "github:{s}", .{row.owner_repo}) } };
+            obj[2] = .{ .key = "path", .value = .{ .string = row.path } };
+            obj[3] = .{ .key = "chunk", .value = .{ .int = 0 } };
+            obj[4] = .{ .key = "text", .value = .{ .string = row.text } };
+            try L.add(try jsonScalar(a, .{ .object = obj }));
+        }
+        const path = try std.fmt.allocPrint(a, "gen/catalog/{s}.jsonl", .{idx.name});
+        try files.append(a, .{ .path = path, .content = try L.text() });
+        try entries.append(a, .{
+            .artifact = path,
+            .region = null,
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "index {s}", .{idx.name}),
+            .span = idx.provenance.?.span,
+            .emitter = "catalog.jsonl",
+            .inputs_projection = try nodeProjection(a, idx),
+        });
+    }
+    return .{ .files = try files.toOwnedSlice(a), .entries = try entries.toOwnedSlice(a) };
+}
+
+// --------------------------------------------------------------------------- //
+// Emitter: otp.supervision (per `parallel … supervisor = otp`) — gen/otp/*.erl.
+// --------------------------------------------------------------------------- //
+
+/// lower.py `_otp_slug`: a runtime name as a legal Erlang module atom prefix,
+/// strictly `[a-z][a-z0-9_]*`. A 'v' is prefixed when the result does not start
+/// with a letter (the module name MUST match the filename — an OTP rule).
+///
+/// Python uses EXPLICIT ASCII ranges, not `str.isalnum()`, precisely because
+/// isalnum is Unicode-aware (Arabic-Indic digits pass it) and erlc rejects a
+/// non-ASCII module name. Python iterates CODEPOINTS of `name.lower()`, so one
+/// non-ASCII character yields exactly one '_'.
+///
+/// KNOWN NARROW DIVERGENCE (reported, not silently pinned): we decode UTF-8 and
+/// map any non-ASCII codepoint to '_' without applying full Unicode lowercasing
+/// (Zig's stdlib has no Unicode case table). This matches Python for every
+/// ASCII name and for all non-ASCII EXCEPT the handful of codepoints whose
+/// lowercase lands inside [a-z0-9] — e.g. U+212A KELVIN SIGN lowercases to 'k'
+/// in Python but becomes '_' here. Unreachable from the fixture set; a runtime
+/// decl would have to be named with such a character.
+pub fn otpSlug(a: Allocator, name: []const u8) Error![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    const view = std.unicode.Utf8View.init(name) catch {
+        // Not valid UTF-8: fall back to one '_' per byte (the lexer only
+        // produces valid UTF-8, so this is unreachable in practice).
+        for (name) |_| try out.append(a, '_');
+        return finishOtpSlug(a, try out.toOwnedSlice(a));
+    };
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        if (cp < 128) {
+            const c = std.ascii.toLower(@intCast(cp));
+            try out.append(a, if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9')) c else '_');
+        } else {
+            try out.append(a, '_');
+        }
+    }
+    return finishOtpSlug(a, try out.toOwnedSlice(a));
+}
+
+fn finishOtpSlug(a: Allocator, s: []const u8) Error![]const u8 {
+    if (s.len == 0 or !(s[0] >= 'a' and s[0] <= 'z')) {
+        return std.mem.concat(a, u8, &.{ "v", s });
+    }
+    return s;
+}
+
+const OtpMember = struct { name: []const u8, kind: []const u8, config: ?[]const u8 };
+
+/// lower.py `_otp_members`: the resolved members of a parallel group's `fibers`
+/// list, in DECLARED order. Fibers carry their gen/zig config path; surfaces
+/// have none (launcher deferred, §7). Members are in-runtime decls
+/// (closed-world checked), so unresolved names are simply skipped.
+fn otpMembers(a: Allocator, rv: RuntimeView, par: graphmod.GraphNode) Error![]const OtpMember {
+    var out: std.ArrayListUnmanaged(OtpMember) = .empty;
+    const members = getProp(par.props, "fibers") orelse return out.toOwnedSlice(a);
+    const arr = switch (members) {
+        .array => |x| x,
+        else => return out.toOwnedSlice(a),
+    };
+    for (arr) |m| {
+        const name = refOf(m) orelse continue;
+        var matched = false;
+        for (rv.fibers) |f| {
+            if (std.mem.eql(u8, f.name, name)) {
+                try out.append(a, .{
+                    .name = name,
+                    .kind = "fiber",
+                    .config = try std.fmt.allocPrint(a, "gen/zig/{s}.json", .{name}),
+                });
+                matched = true;
+                break;
+            }
+        }
+        if (matched) continue;
+        for (rv.surfaces) |s| {
+            if (std.mem.eql(u8, s.name, name)) {
+                try out.append(a, .{ .name = name, .kind = "surface", .config = null });
+                break;
+            }
+        }
+    }
+    return out.toOwnedSlice(a);
+}
+
+/// lower.py `_OTP_WORKER_BODY`. Note the trailing newline: Python's triple
+/// quoted literal ends with one, which is what gives the worker file its final
+/// newline (the join adds none).
+const otp_worker_body =
+    \\-module(vaked_fiber_worker).
+    \\-behaviour(gen_server).
+    \\
+    \\-export([start_link/1]).
+    \\-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+    \\
+    \\-define(TICK_MS, 5000).
+    \\
+    \\start_link(#{name := Name} = Args) ->
+    \\    gen_server:start_link({local, Name}, ?MODULE, Args, []).
+    \\
+    \\init(#{name := Name, kind := Kind} = Args) ->
+    \\    logger:info("vaked ~p ~p up (placeholder; daemon port pending)",
+    \\                [Kind, Name]),
+    \\    erlang:send_after(?TICK_MS, self(), tick),
+    \\    {ok, Args}.
+    \\
+    \\handle_call(_Req, _From, State) ->
+    \\    {reply, ok, State}.
+    \\
+    \\handle_cast(_Msg, State) ->
+    \\    {noreply, State}.
+    \\
+    \\handle_info(tick, #{name := Name} = State) ->
+    \\    logger:debug("vaked heartbeat ~p", [Name]),
+    \\    erlang:send_after(?TICK_MS, self(), tick),
+    \\    {noreply, State}.
+    \\
+;
+
+/// lower.py `emit_otp_supervision` (#19, Track C): one
+/// `gen/otp/<runtime_slug>_sup.erl` supervisor (a child spec per member of
+/// each `parallel … supervisor = otp` group, in declared order — byte
+/// determinism only, NO restart-coupling claim) plus the generic placeholder
+/// worker `gen/otp/vaked_fiber_worker.erl`.
+///
+/// v0 strategy mapping: `"supervised-dag"` (and anything else) lowers to
+/// `one_for_one` — downstream consistency is RFC 0004's job.
+pub fn emitOtpSupervision(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const rv_opt = try runtimeView(a, g);
+    const rv = rv_opt orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    const rt = rv.runtime;
+    const slug = try otpSlug(a, rt.name);
+    const rt_decl = try std.fmt.allocPrint(a, "runtime {s}", .{rt.name});
+
+    var child_blocks: std.ArrayListUnmanaged([]const u8) = .empty;
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    const sup_path = try std.fmt.allocPrint(a, "gen/otp/{s}_sup.erl", .{slug});
+    var seen: std.ArrayListUnmanaged([]const u8) = .empty; // OTP rejects duplicate child ids at boot; first wins
+    for (nodes) |par| {
+        for (try otpMembers(a, rv, par)) |m| {
+            if (containsStr(seen.items, m.name)) continue;
+            try seen.append(a, m.name);
+            const cfg = if (m.config) |c| try std.fmt.allocPrint(a, "\"{s}\"", .{c}) else "none";
+            try child_blocks.append(a, try std.fmt.allocPrint(a,
+                \\        #{{id => '{s}',
+                \\          start => {{vaked_fiber_worker, start_link,
+                \\                    [#{{name => '{s}', kind => {s},
+                \\                       config => {s}}}]}},
+                \\          restart => permanent, shutdown => 5000,
+                \\          type => worker,
+                \\          modules => [vaked_fiber_worker]}}
+            , .{ m.name, m.name, m.kind, cfg }));
+        }
+        try entries.append(a, .{
+            .artifact = sup_path,
+            .region = try std.mem.concat(a, u8, &.{ "parallel/", par.name }),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "parallel {s}", .{par.name}),
+            .span = par.provenance.?.span,
+            .emitter = "otp.supervision",
+            .inputs_projection = try nodeProjection(a, par),
+        });
+    }
+
+    var S = Lines.init(a);
+    try S.addFmt("%% {s}", .{try header(a, sf, rt_decl)});
+    try S.add("%%");
+    try S.add("%% otp.supervision (0012 3.4; Track C #19). v0 strategy: one_for_one -");
+    try S.add("%% downstream consistency is RFC 0004's job (stale_dependency pausing);");
+    try S.add("%% eager per-chain rest_for_one is the edge-aware follow-up (design");
+    try S.add("%% 2026-06-12-otp-supervision-lowering-design.md).");
+    try S.addFmt("-module({s}_sup).", .{slug});
+    try S.add("-behaviour(supervisor).");
+    try S.add("");
+    try S.add("-export([start_link/0, init/1]).");
+    try S.add("");
+    try S.add("start_link() ->");
+    try S.add("    supervisor:start_link({local, ?MODULE}, ?MODULE, []).");
+    try S.add("");
+    try S.add("init([]) ->");
+    try S.add("    SupFlags = #{strategy => one_for_one, intensity => 3, period => 10},");
+    try S.add("    Children = [");
+    // One list element: the child blocks joined by ",\n". With no members this
+    // is the empty string, which Python still emits as its own line.
+    try S.add(try std.mem.join(a, ",\n", child_blocks.items));
+    try S.add("    ],");
+    try S.add("    {ok, {SupFlags, Children}}.");
+    // Python's list ends with a final "" element, so its "\n".join supplies the
+    // document's trailing newline. `Lines.text` appends that newline itself —
+    // so the "" element is deliberately NOT added here.
+    const sup_text = try S.text();
+
+    var W = Lines.init(a);
+    try W.addFmt("%% {s}", .{try header(a, sf, rt_decl)});
+    try W.add("%%");
+    try W.add("%% Generic placeholder worker: heartbeats until the member's Zig");
+    try W.add("%% daemon port replaces it. Deliberately does NOT write eventd (the");
+    try W.add("%% canonical-hash byte contract stays with the Python oracle; the");
+    try W.add("%% daemon owns the single writer, RFC 0004).");
+    // `_OTP_WORKER_BODY` is the join's LAST element and already ends in "\n",
+    // so Python's document ends with exactly one newline. `Lines.text` appends
+    // its own, so strip the body's to avoid doubling it.
+    try W.add(otp_worker_body[0 .. otp_worker_body.len - 1]);
+    const worker_text = try W.text();
+
+    const worker_path = "gen/otp/vaked_fiber_worker.erl";
+    const files = try a.alloc(File, 2);
+    files[0] = .{ .path = sup_path, .content = sup_text };
+    files[1] = .{ .path = worker_path, .content = worker_text };
+    try entries.append(a, .{
+        .artifact = worker_path,
+        .region = null,
+        .source_file = sf,
+        .decl = rt_decl,
+        .span = rt.provenance.?.span,
+        .emitter = "otp.supervision",
+        .inputs_projection = try nodeProjection(a, rt),
+    });
+    return .{ .files = files, .entries = try entries.toOwnedSlice(a) };
+}
+
+// --------------------------------------------------------------------------- //
 // enrich_graph — recover load-bearing config sub-blocks the resolver drops.
 // --------------------------------------------------------------------------- //
 
@@ -1836,29 +2161,39 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         try run(a, &files, &all_entries, try emitZigDaemoncfg(a, g, source_file, rv.fibers));
     }
 
+    // Direct: catalog.jsonl for indexes that select it. (crabcc.index
+    // provenance entries are produced inside emitNixSpine — the spine emitter
+    // — so it is not run again here; catalog.sqlite is deferred.)
+    {
+        var jsonl_indexes: std.ArrayListUnmanaged(graphmod.GraphNode) = .empty;
+        for (rv.indexes) |i| {
+            if (hasTarget(try indexEmitTargets(a, i), "catalog.jsonl")) try jsonl_indexes.append(a, i);
+        }
+        if (jsonl_indexes.items.len > 0) {
+            try run(a, &files, &all_entries, try emitCatalogJsonl(a, source_file, jsonl_indexes.items));
+        }
+    }
+
+    // Track C (#19): the OTP supervision tree for `parallel … supervisor=otp`.
+    {
+        var otp_parallels: std.ArrayListUnmanaged(graphmod.GraphNode) = .empty;
+        for (rv.parallels) |p| {
+            const sup = refOf(getProp(p.props, "supervisor")) orelse continue;
+            if (std.mem.eql(u8, sup, "otp")) try otp_parallels.append(a, p);
+        }
+        if (otp_parallels.items.len > 0) {
+            try run(a, &files, &all_entries, try emitOtpSupervision(a, g, source_file, otp_parallels.items));
+        }
+    }
+
     // --- gated targets not yet ported ------------------------------------ //
     // Each condition mirrors lower.py's selection exactly, so a graph that
     // selects none of these lowers to a COMPLETE artifact set today.
-    {
-        var any_jsonl = false;
-        for (rv.indexes) |i| {
-            if (hasTarget(try indexEmitTargets(a, i), "catalog.jsonl")) any_jsonl = true;
-        }
-        if (any_jsonl) try unported.append(a, "catalog.jsonl");
-    }
     if (rv.secrets.len > 0) try unported.append(a, "sops.secrets");
     if (rv.host_resources.len > 0) try unported.append(a, "host.resources");
     if (rv.services.len > 0) try unported.append(a, "nixos.service");
     if (rv.ingresses.len > 0) try unported.append(a, "caddy.ingress");
     if (rv.containers.len > 0) try unported.append(a, "oci.containers");
-    {
-        var any_otp = false;
-        for (rv.parallels) |p| {
-            const sup = refOf(getProp(p.props, "supervisor")) orelse continue;
-            if (std.mem.eql(u8, sup, "otp")) any_otp = true;
-        }
-        if (any_otp) try unported.append(a, "otp.supervision");
-    }
     if (rv.workflows.len > 0) try unported.append(a, "workflow.spec");
     if (rv.memories.len > 0) try unported.append(a, "memory.store");
     if (rv.memories.len > 0 or rv.workflows.len > 0) try unported.append(a, "eventd.config");
