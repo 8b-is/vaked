@@ -245,74 +245,6 @@ def _write_tree(out_dir: str, result) -> int:
     return written
 
 
-def _cmd_passes(args) -> int:
-    """Run the MLIR-mirror pass pipeline (topology → WAL → AOT) on a .vaked file
-    (Stage-0 reference, 0021–0024). With ``--json``, emits the structured
-    pipeline result to stdout; otherwise prints human-readable diagnostics to
-    stderr. Exit ``1`` if any Pass 1 topology diagnostic was produced."""
-    try:
-        with open(args.file, "r", encoding="utf-8") as fh:
-            src = fh.read()
-    except OSError as e:
-        print(f"vakedc: cannot read {args.file}: {e}", file=sys.stderr)
-        return 1
-
-    with _T.trace_compile("passes", args.file) as _trace:
-        try:
-            t0 = time.monotonic()
-            items = parse_source(src, args.file)
-            _T.record_parse(_trace, items, (time.monotonic() - t0) * 1000)
-        except (VakedLexError, VakedSyntaxError) as e:
-            print(f"vakedc: {e}", file=sys.stderr)
-            _T.record_error(_trace, e)
-            return 1
-
-        graph = build_graph(items, args.file)
-        # Top-level workflow nodes: every workflow decl in the file. pass01
-        # analyses each independently, so a flat list of all workflow nodes is
-        # the right input (mirrors lower.py's _by_kind(children, "workflow")).
-        workflow_nodes = [n for n in graph.nodes
-                          if getattr(n, "kind", "") == "workflow"]
-
-        from .passes import run_pipeline
-        result = run_pipeline(graph, workflow_nodes)
-
-        if args.json:
-            # Contract: tools/vaked-cli/main.go mlirValidate decodes this shape.
-            doc = {
-                "workflows": [
-                    {
-                        "name": wf.node.name,
-                        "depth": wf.depth,
-                        "criticalPath": list(wf.critical_path),
-                        "steps": [s.name for s in wf.steps],
-                        "edges": [{"from": a, "to": b} for (a, b) in wf.edges],
-                        "walFrames": wf.wal_frames,
-                    }
-                    for wf in result.workflows
-                ],
-                "diagnostics": [
-                    {"code": d.code, "message": d.message}
-                    for d in result.diagnostics
-                ],
-                "artifacts": sorted(result.artifacts.keys()),
-                "status": "FAIL" if result.diagnostics else "PASS",
-            }
-            sys.stdout.write(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
-        else:
-            for d in result.diagnostics:
-                print(_format_diag(d), file=sys.stderr)
-            if result.diagnostics:
-                n = len(result.diagnostics)
-                print(f"vakedc: {n} diagnostic{'s' if n != 1 else ''} in {args.file}",
-                      file=sys.stderr)
-            else:
-                print(f"vakedc: passes OK — {len(result.workflows)} workflow(s), "
-                      f"{len(result.artifacts)} artifact(s)", file=sys.stderr)
-
-        return 1 if result.diagnostics else 0
-
-
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="vakedc",
@@ -353,12 +285,6 @@ def main(argv=None) -> int:
                     help="path to the built-in catalog (default: the repo's "
                          "vaked/schema/builtins.vaked)")
 
-    psp = sub.add_parser("passes",
-                         help="run the MLIR-mirror pass pipeline (topology→WAL→AOT) on a .vaked file")
-    psp.add_argument("file", help="path to a .vaked source file")
-    psp.add_argument("--json", action="store_true",
-                     help="emit structured JSON to stdout (workflows, diagnostics, artifacts, status)")
-
     args = ap.parse_args(argv)
 
     if args.cmd == "parse":
@@ -369,8 +295,6 @@ def main(argv=None) -> int:
         return _cmd_lower(args)
     if args.cmd == "lsp":
         return _cmd_lsp(args)
-    if args.cmd == "passes":
-        return _cmd_passes(args)
     ap.print_help(sys.stderr)
     return 2
 
