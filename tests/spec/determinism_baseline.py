@@ -111,18 +111,17 @@ def _rel(path: str) -> str:
 def _stage_parse(path: str):
     """Canonical parse JSON bytes (parse + resolve -> graph -> canonical JSON).
 
-    Returns ``None`` if the source does not parse/resolve into stable canonical
-    JSON, so the parse stage simply does not produce a row for that example. Two
-    distinct not-applicable conditions, both *deterministic* and both surfaced as a
-    skip note by :func:`measure` (never silently buried):
+    Returns ``None`` only for a lex/syntax error (no graph — there are no such
+    fixtures today), so the parse stage simply does not produce a row for that
+    example. That condition is deterministic and is surfaced as a skip note by
+    :func:`measure` (never silently buried).
 
-      * a lex/syntax error (no graph — there are no such fixtures today);
-      * the canonical-JSON serializer raising (a pre-existing
-        ``emit.to_canonical_json`` limitation: ``schema-constraints.vaked`` carries
-        a refinement prop whose ``Literal`` value the serializer does not reduce —
-        a ``TypeError``). That is an emit-layer bug, NOT a determinism defect (it
-        fails identically every run), and is out of scope for this harness, so the
-        parse row is omitted rather than counted as a non-convergence.
+    A serializer exception is deliberately NOT caught. It used to be: a
+    ``TypeError`` from ``to_canonical_json`` was swallowed here to work around
+    ``resolve._field_to_props`` leaving raw ``Literal`` AST nodes inside
+    ``default``/``oneof`` refinement props (``schema-constraints.vaked``). That
+    resolver bug is fixed, and the workaround is gone with it — a serializer that
+    cannot represent a graph is now a LOUD failure, not a quietly-omitted row.
     """
     rel = _rel(path)
     src = open(path, encoding="utf-8").read()
@@ -130,11 +129,7 @@ def _stage_parse(path: str):
         graph = vakedc.parse_string(src, rel)
     except (vakedc.VakedLexError, vakedc.VakedSyntaxError):
         return None
-    try:
-        return vakedc.to_canonical_json(graph).encode("utf-8")
-    except (TypeError, ValueError):
-        # canonical serializer cannot represent this graph (emit-layer limitation).
-        return None
+    return vakedc.to_canonical_json(graph).encode("utf-8")
 
 
 def _diagnostics_json(diags) -> str:
@@ -228,10 +223,15 @@ def measure(iters: int):
     the baseline file is itself reproducible.
 
     ``skips`` is a list of human-readable notes for the *noteworthy* not-applicable
-    cases — specifically a parse stage that produced a graph but whose canonical
-    JSON serialization raised (the ``schema-constraints.vaked`` emit-layer bug). The
-    mundane not-applicable cases (lower on a non-runtime example) are not noted, to
-    keep the signal sharp.
+    cases — specifically a parse stage that hit a lex/syntax error (no such fixtures
+    today, so this is empty in practice). The mundane not-applicable cases (lower on
+    a non-runtime example) are not noted, to keep the signal sharp.
+
+    A canonical-JSON serializer exception is NOT swallowed here: it propagates out
+    of :func:`_stage_parse` and fails the run. (It was once caught, to skip
+    ``schema-constraints.vaked`` around a ``resolve._field_to_props`` bug that left
+    raw ``Literal`` AST nodes in refinement props; that bug is fixed, and the
+    example now produces a normal parse row like every other.)
     """
     builtins_cache = vakedc.load_builtins()  # parsed once; the checker is pure
     examples = sorted(tep._vaked_files())
@@ -274,24 +274,18 @@ def measure(iters: int):
 def _skip_note(stage: str, path: str):
     """A note for a *noteworthy* not-applicable (example, stage), else ``None``.
 
-    Only the parse stage's canonical-JSON failure is noteworthy (a deterministic
-    emit-layer limitation worth surfacing); lower's empty-tree / diagnostics skips
-    are expected and silent."""
+    Only the parse stage's lex/syntax failure is noteworthy; lower's empty-tree /
+    diagnostics skips are expected and silent. A serializer exception is NOT a
+    skip condition any more (see :func:`_stage_parse`) — it propagates."""
     if stage != "parse":
         return None
     rel = _rel(path)
     src = open(path, encoding="utf-8").read()
     try:
-        graph = vakedc.parse_string(src, rel)
+        vakedc.parse_string(src, rel)
     except (vakedc.VakedLexError, vakedc.VakedSyntaxError) as e:
         return f"{rel} [parse]: lex/syntax error ({type(e).__name__}) — not applicable"
-    try:
-        vakedc.to_canonical_json(graph)
-        return None  # parse stage actually applied; no skip
-    except (TypeError, ValueError) as e:
-        return (f"{rel} [parse]: canonical JSON serialization raised "
-                f"{type(e).__name__} (pre-existing emit.to_canonical_json "
-                f"limitation; deterministic, not a determinism defect) — row omitted")
+    return None  # parse stage actually applied; no skip
 
 
 def _baseline_doc(iters: int, rows, convergence_pct: float) -> dict:

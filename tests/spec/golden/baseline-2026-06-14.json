@@ -4,6 +4,41 @@
   "generated_for": "credibility-review Risk 2",
   "rows": [
     {
+      "example": "vaked/examples/agentfield-swe.vaked",
+      "stage": "parse",
+      "sha256": "7186df600c5d81bd66b3120b66589bde0e9a6c05e6f29808c5d39198ede8a897",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/agentfield-swe.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/agentfield-swe.vaked",
+      "stage": "lower",
+      "sha256": "d911d2c3d1fd4873271314d1de3a74f4bcbb12fbedf1617dad4f7ca9c397fa7d",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/ebpf/guards.vaked",
+      "stage": "parse",
+      "sha256": "51fd1e2de11f2bb072cdad9bd64184672f41b278ddb0c3f33e8c828a47441408",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/ebpf/guards.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
       "example": "vaked/examples/engines/zig.vaked",
       "stage": "parse",
       "sha256": "d8263043683d256131e5d4aa1caf144b9a14932e59762fdba535271ab1c1f40f",
@@ -18,9 +53,65 @@
       "converged": true
     },
     {
+      "example": "vaked/examples/membrane/agent-egress.vaked",
+      "stage": "parse",
+      "sha256": "d25a9b3bc0407fc9c74fc651efb7101d143a7c4f3fd08a28aa0b0bba62b3713c",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/membrane/agent-egress.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/membrane/agent-egress.vaked",
+      "stage": "lower",
+      "sha256": "c4639442ae695803bde51d190a15e6825427204fedccc9b10bdd62471346c980",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/namespace/error-unknown-namespace.vaked",
+      "stage": "parse",
+      "sha256": "0da1d2c9a44617f095a4a4623a453c1c58075ec8a7b0d213bbd0bdbf7251db83",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/namespace/error-unknown-namespace.vaked",
+      "stage": "check",
+      "sha256": "2ae5109f508f260480bdec8a72ebe3dd3e981a8a8ef4422c68a60bfbce954466",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/namespace/valid.vaked",
+      "stage": "parse",
+      "sha256": "2a2faa919ee6c7f233fc57905b617349b1556f4904a8fe3bf5d5fc7274a0ec25",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/namespace/valid.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/namespace/valid.vaked",
+      "stage": "lower",
+      "sha256": "6477a606b2b32374f77fb762d55c400f88c250aeb7cefbef088bc00927df98ba",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
       "example": "vaked/examples/operator-field.vaked",
       "stage": "parse",
-      "sha256": "3af9cafad92d0e293382724666133e79c6754efc623d1773b722727d274fafeb",
+      "sha256": "3b7b7ff4b7af4a30ed71573657efec28347e67c76268a2682dee25af17e31008",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -34,7 +125,7 @@
     {
       "example": "vaked/examples/operator-field.vaked",
       "stage": "lower",
-      "sha256": "f9b0a916986a9ce7bf19b6af4b40182b02f38c7ac9329ef6248be04fa5728a67",
+      "sha256": "fcd990ceb58e65c108bb267aadf5edbc0c8d76496f32d5971ebcfaab20e7343b",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -83,7 +174,7 @@
     {
       "example": "vaked/examples/primitives/index.vaked",
       "stage": "parse",
-      "sha256": "74099a3b48cb8b53686865961f7acdb59ef9fcbafdd835b56ad37ad7da2ac5f5",
+      "sha256": "151835731d39da62b33263fdd4b9cd8814d0ab4008da73d63cbf66198ec5a7ba",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -97,12 +188,26 @@
     {
       "example": "vaked/examples/primitives/mediaPipeline.vaked",
       "stage": "parse",
-      "sha256": "15f4dc26dc391a903f9b4d9b8051985fe6eb584180354017bd657e64583b6a33",
+      "sha256": "f71650dd06101d62513dc85ff3f5f0f991f32aeb133bb0fc221353dfd974a749",
       "distinct_hashes": 1,
       "converged": true
     },
     {
       "example": "vaked/examples/primitives/mediaPipeline.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/primitives/memory.vaked",
+      "stage": "parse",
+      "sha256": "3223c1aa3c8005b64b79303f957c5e8f5ecc32fd70e2d7fb89818b48d1eee1d9",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/primitives/memory.vaked",
       "stage": "check",
       "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
       "distinct_hashes": 1,
@@ -125,7 +230,7 @@
     {
       "example": "vaked/examples/primitives/parallel.vaked",
       "stage": "parse",
-      "sha256": "7696902eeabf82fd2a9c0a0cf1c0c882cf100a1130dbe0fca94181dc65c0ca9f",
+      "sha256": "a0a530c2060eed23950236b0986d98483b231870efde7b492d0595f47f7016d5",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -153,7 +258,7 @@
     {
       "example": "vaked/examples/primitives/surface.vaked",
       "stage": "parse",
-      "sha256": "3a1e5648964c1cdd40fc7fb1c44cc44fc636bcae505c57babfe22820c3e0da98",
+      "sha256": "ab67bb8b5afb43cecf92a3ed95f9691a74cd8975d248d9f86db8dad55a397e7b",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -165,9 +270,121 @@
       "converged": true
     },
     {
+      "example": "vaked/examples/types/cap-use-and-attenuation.vaked",
+      "stage": "parse",
+      "sha256": "72625f4a0d64fb77d9cc302ddfec2b9c385129f7eb8d41caf703cdb65afcdf0b",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-and-attenuation.vaked",
+      "stage": "check",
+      "sha256": "8c5c6e14856d523a9dfb0733cfb6f491d561f154a37c33c63a56b488c78d7cd3",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-and-excess.vaked",
+      "stage": "parse",
+      "sha256": "cb7cdaf4ce34d7ae396453fc916b4e64108162f67d0bcddda5e17789fb31bed3",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-and-excess.vaked",
+      "stage": "check",
+      "sha256": "4c49a3f27b47074ca5ca1006a4f7afb5dcd735f140b96baeb279adfab13d203a",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-no-caps.vaked",
+      "stage": "parse",
+      "sha256": "121277bc3eb67bd85635623a69df41c9ad719651883111687305e78d48f99b86",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-no-caps.vaked",
+      "stage": "check",
+      "sha256": "0de854cb906620751ac8e6e232a3a97accd9ce893794735fd043b990099b5068",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-no-needs.vaked",
+      "stage": "parse",
+      "sha256": "455776122496e0c5a8d9e9f6f98353571a130550bc81633d38ded1c234d7b393",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-no-needs.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-partial.vaked",
+      "stage": "parse",
+      "sha256": "8ce59c206b0c440d299d022374a3354e96199dc64d7ba8766b8047d21e8a1293",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-partial.vaked",
+      "stage": "check",
+      "sha256": "770a9f329bbd959d2a24d6ec9cd5a50fd1a9ff043f72caa9d47632d7f2ae0069",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-two-nodes.vaked",
+      "stage": "parse",
+      "sha256": "3695a08a79523d0ce74aac90c5c723554ecce1ee6c2e77e226305adefc1c3d15",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-two-nodes.vaked",
+      "stage": "check",
+      "sha256": "0bed6b4c332011cedfc316cb6f439dc7d1142a9c0359d5977b6074cbe71d90b2",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-underpowered.vaked",
+      "stage": "parse",
+      "sha256": "c3ed7aa1c538d6fd56ad467354f7e6017d5e03faa3cdf238bf756c0c16b6dbed",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-underpowered.vaked",
+      "stage": "check",
+      "sha256": "32d8f9c0d8f2fa9d7e3d23c63e2ce30242aacbfe42aa620c8a9b3ab2ee7d8478",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-wrong-domain.vaked",
+      "stage": "parse",
+      "sha256": "ea71b7cedf5a5948c5146b1d5de4ec1fe16735352ffe380abea96ab5d375d29e",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/cap-use-wrong-domain.vaked",
+      "stage": "check",
+      "sha256": "8ee5bdf272daab7ee09570531b3bbe808e8dcad2f757e0712e557411706fee46",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
       "example": "vaked/examples/types/capability-attenuation.vaked",
       "stage": "parse",
-      "sha256": "44480306c27c773d3679316bbb06f5904603f0379fa96e791169d1adf0ea634d",
+      "sha256": "409d27d9c47730b2d5faa228dcbd4e9470e8bf7dd1dcbc9b028a3d33f1675da7",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -181,7 +398,7 @@
     {
       "example": "vaked/examples/types/conformant.vaked",
       "stage": "parse",
-      "sha256": "90dc73de18457c6dbc08fdc29678709ed870fedded91ab583bedcc7d5936d8b2",
+      "sha256": "d711084c0f516974f8a51bece6176c89b14243e7ea3e8022db86c3b5b05e145e",
       "distinct_hashes": 1,
       "converged": true
     },
@@ -193,16 +410,128 @@
       "converged": true
     },
     {
+      "example": "vaked/examples/types/determinism-boundary.vaked",
+      "stage": "parse",
+      "sha256": "afca21a6a3f7c79b1f1b0f519ecac6a2fc7eb474b79e1d49e3521bb979752c46",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/determinism-boundary.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-unrefined.vaked",
+      "stage": "parse",
+      "sha256": "0e87653a80a852056f4a0a0ac763e9275569c8ca99503d18bf96fae063fc813a",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-unrefined.vaked",
+      "stage": "check",
+      "sha256": "7434cbe832c7597ef7c400b68f5d29b3f397fd52fe4bc30bb7511deb25d9312c",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-bad-principal.vaked",
+      "stage": "parse",
+      "sha256": "94cc3918daff403142dc515a409953199f06e0915ae4b2e1e8e60516b8333e54",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-bad-principal.vaked",
+      "stage": "check",
+      "sha256": "b265f084ae3240260d646ea7cca5be308ed076d9a0c5616c68d2c71c48c5a6cc",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-exceeds.vaked",
+      "stage": "parse",
+      "sha256": "e64fdd7c9b50f7a96639126155083c71f487a76741ed096a7efe363bdeec6344",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-exceeds.vaked",
+      "stage": "check",
+      "sha256": "a362ee09df556ba7ff673d48e2185a0ea4212495a49a6e1eefe8c6e7f65fdf0b",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-ok.vaked",
+      "stage": "parse",
+      "sha256": "a2b5e1ec17abf87064852b813bd431c4850f9e2fec38406b9317fcb1900c4822",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-ok.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/egress-use-ok.vaked",
+      "stage": "lower",
+      "sha256": "2117790a406d5da0adffac8f8100747230d5a6c0d39d2eb68c372017215329a8",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/pola-least-authority.vaked",
+      "stage": "parse",
+      "sha256": "c2e34a78a20313360c5428ac2fff79de63304717783886ab162b7f3f671c6714",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/pola-least-authority.vaked",
+      "stage": "check",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/pola-violation.vaked",
+      "stage": "parse",
+      "sha256": "3e1ebf8df49fcc6ef0e3274dd03f6abba25a852bc6def2f24177c74c70016b22",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/pola-violation.vaked",
+      "stage": "check",
+      "sha256": "5c8fdc8c0f3b2738f446e405efc8480f86f57b85ee51f194c2d6e5c0b014885e",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
       "example": "vaked/examples/types/rejected.vaked",
       "stage": "parse",
-      "sha256": "6198d5b2572ceec2a7308472fce0e35280272fc5765920e873a48da30be5e9a9",
+      "sha256": "a05ae00551ad3bceb25ac575040c1bfde2014c44b3a6f229ddaa657da4ad27ae",
       "distinct_hashes": 1,
       "converged": true
     },
     {
       "example": "vaked/examples/types/rejected.vaked",
       "stage": "check",
-      "sha256": "cb5e635e8fcc3f73656ef621e02d1ed4f3b66b08658490bda49279799a803d66",
+      "sha256": "ded5c2ce9e83025c0d3674607e3b2452195e61b102edd703f8786c3e417ae85d",
+      "distinct_hashes": 1,
+      "converged": true
+    },
+    {
+      "example": "vaked/examples/types/schema-constraints.vaked",
+      "stage": "parse",
+      "sha256": "8d7f26fb0c44b268f1606ee7f34b1f56dfcec3d4ca50241716c4b0706a384455",
       "distinct_hashes": 1,
       "converged": true
     },

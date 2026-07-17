@@ -321,8 +321,31 @@ def _refs_in_value(v):
     return out
 
 
+def _refinement_to_props(r):
+    """One refinement tuple -> a JSON-serializable list.
+
+    The parser builds refinements as tuples whose elements are *mostly* plain
+    strings, but two carry AST value nodes: ``("default", <expr>)`` and
+    ``("oneof", <ListLit>)`` (parser.py ``_refinement``). Those MUST go through
+    `_value_to_props` — a bare ``list(r)`` leaves raw ``Literal``/``ListLit``
+    nodes in the props, which json.dumps then rejects with
+    ``TypeError: Object of type Literal is not JSON serializable``.
+
+    Discriminating on ``P.Node`` (not ``str``) keeps this correct if a future
+    refinement gains a non-string scalar: every AST node is converted, every
+    already-serializable token value (``("cmp", ">=", "3")``, ``("matches",
+    "/re/")``) passes through untouched.
+
+    Shape is the tuple-as-array form vakedz `resolve.zig::refinementToProps`
+    already emits, e.g. ``["default", {"lit": "number", "value": "3"}]`` and
+    ``["oneof", [{"lit": "string", ...}, ...]]``.
+    """
+    return [_value_to_props(x) if isinstance(x, P.Node) else x for x in r]
+
+
 def _field_to_props(f: P.FieldDecl):
-    return {"type": f.type.text, "refinements": [list(r) for r in f.refinements]}
+    return {"type": f.type.text,
+            "refinements": [_refinement_to_props(r) for r in f.refinements]}
 
 
 def _signature_to_props(sig):
