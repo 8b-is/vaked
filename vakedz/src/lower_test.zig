@@ -1499,3 +1499,423 @@ test "lower: workflow.spec depth is the critical path in steps" {
     const got = fileContent(result, "gen/workflow/sdd_waves.json") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, got, "\"depth\": 6") != null);
 }
+
+// ==========================================================================
+// _host_cidr — the security-relevant validator. A wrong ACCEPT emits an allow
+// rule vakedc would not (traffic permitted that should be denied); a wrong
+// REJECT drops a rule vakedc emits. Neither is visible to the differential:
+// every fixture uses 127.0.0.1.
+//
+// Python delegates to the `ipaddress` module, which vakedz cannot (stdlib
+// only, and Zig 0.16's std has no ipaddress equivalent), so the rules are
+// reimplemented. EVERY expectation below was DERIVED by running
+// vakedc.lower._host_cidr on dev-cx53. Regenerate the same way.
+//
+// The subtle ones this pins:
+//   010.0.0.1  -> null  (CPython >=3.9.5 rejects ambiguous leading zeros)
+//   127.0.0.1/8 -> verbatim (strict=False permits host bits)
+//   1.2.3.4/032 -> verbatim (leading zeros in a PREFIX are fine)
+//   1.2.3.4/+32 -> null  (int-like, but _prefix_from_prefix_string is
+//                         digits-only, so '+' is rejected)
+//   1.2.3.4/1.2.3.4 -> netmask/hostmask STRING form is accepted by ip_network
+// ==========================================================================
+
+test "lower: hostCidr matches Python's ipaddress-backed _host_cidr" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const cases = [_]struct { in: []const u8, want: ?[]const u8 }{
+        .{ .in = "127.0.0.1", .want = "127.0.0.1/32" },
+        .{ .in = "10.0.0.1", .want = "10.0.0.1/32" },
+        .{ .in = "0.0.0.0", .want = "0.0.0.0/32" },
+        .{ .in = "255.255.255.255", .want = "255.255.255.255/32" },
+        .{ .in = "::1", .want = "::1/128" },
+        .{ .in = "2001:db8::1", .want = "2001:db8::1/128" },
+        .{ .in = "::", .want = "::/128" },
+        .{ .in = "::ffff:1.2.3.4", .want = "::ffff:1.2.3.4/128" },
+        .{ .in = "fe80::1", .want = "fe80::1/128" },
+        .{ .in = "2001:0db8:0000:0000:0000:0000:0000:0001", .want = "2001:0db8:0000:0000:0000:0000:0000:0001/128" },
+        .{ .in = "10.0.0.0/8", .want = "10.0.0.0/8" },
+        .{ .in = "1.2.3.4/32", .want = "1.2.3.4/32" },
+        .{ .in = "::/0", .want = "::/0" },
+        .{ .in = "2001:db8::/32", .want = "2001:db8::/32" },
+        .{ .in = "127.0.0.1/8", .want = "127.0.0.1/8" },
+        .{ .in = "1.2.3.4/032", .want = "1.2.3.4/032" },
+        .{ .in = "010.0.0.1", .want = null },
+        .{ .in = "1.2.3", .want = null },
+        .{ .in = "1.2.3.4.5", .want = null },
+        .{ .in = "256.1.1.1", .want = null },
+        .{ .in = "example.com", .want = null },
+        .{ .in = "", .want = null },
+        .{ .in = "1.2.3.4/33", .want = null },
+        .{ .in = "1::2::3", .want = null },
+        .{ .in = "1.2.3.4/+32", .want = null },
+        .{ .in = "1.2.3.4/ 32", .want = null },
+        .{ .in = "10.0.0.0/0x8", .want = null },
+        .{ .in = "1.2.3.4/", .want = null },
+        .{ .in = "/32", .want = null },
+        .{ .in = "12345::", .want = null },
+        .{ .in = "1:2:3:4:5:6:7:8", .want = "1:2:3:4:5:6:7:8/128" },
+        .{ .in = "1:2:3:4:5:6:7:8:9", .want = null },
+        .{ .in = "1:2:3:4:5:6:7", .want = null },
+        .{ .in = ":1::2", .want = null },
+        .{ .in = "1::2:", .want = null },
+        .{ .in = "1.2.3.4/1.2.3.4", .want = null },
+        .{ .in = "-1.2.3.4", .want = null },
+        .{ .in = "1.2.3.-4", .want = null },
+    };
+    for (cases) |c| {
+        const got = try lower.hostCidr(a, c.in);
+        if (c.want == null) {
+            if (got != null) {
+                std.debug.print("hostCidr(\"{s}\"): want null, got \"{s}\" -- a wrong ACCEPT emits an allow rule vakedc would not\n", .{ c.in, got.? });
+                return error.TestUnexpectedResult;
+            }
+        } else {
+            if (got == null) {
+                std.debug.print("hostCidr(\"{s}\"): want \"{s}\", got null -- a wrong REJECT drops a rule vakedc emits\n", .{ c.in, c.want.? });
+                return error.TestUnexpectedResult;
+            }
+            std.testing.expectEqualStrings(c.want.?, got.?) catch |e| {
+                std.debug.print("hostCidr(\"{s}\"): want \"{s}\", got \"{s}\"\n", .{ c.in, c.want.?, got.? });
+                return e;
+            };
+        }
+    }
+}
+
+// ==========================================================================
+// Slice 6 (final): ebpf.policy + colmena.hive. Goldens from LIVE vakedc on
+// dev-cx53.
+//
+// ebpf.policy is NOT a deferred slot, despite three stale docstrings in
+// lower.py saying so (L41, emit_deferred's docstring at L1554, and
+// test_lowering_fixtures.py's EMITTER_REGISTRY comment at L54). Resolved from
+// the code: the registry row carries no `deferred=True` and lower() L2452
+// dispatches it. Reported as doc drift, not fixed.
+//
+// gen/ebpf.policy.json uses a THIRD serializer: json.dumps(indent=2,
+// sort_keys=True) -- pretty, keys SORTED (not emit order), and with `indent`
+// set the item separator loses its trailing space. Note in the golden that
+// "allow" sorts before "default"/"grant"/"membrane"/"principal", and that
+// each rule's keys come out cidr/host/port/proto -- emission order is
+// proto/host/cidr/port, so a renderer that preserved emit order would be
+// visibly wrong.
+// ==========================================================================
+
+const agent_egress_src =
+    \\# agent-egress — the network-membrane vertical slice (deny-by-default egress).
+    \\#
+    \\# This is the FULL slice my critique asked for: one .vaked declaring a network
+    \\# membrane that lowers to a policy artifact, is enforced by agent-guardd, and is
+    \\# testified to over the eventd hash chain — closing Vaked declares → eBPF
+    \\# testifies → operator surfaces for the `network` membrane.
+    \\#
+    \\#   network agentEgress       → gen/ebpf.policy  (compiled allow/deny egress set)
+    \\#   default = "deny"          → deny-by-default posture (0012 §7; agent-guardd)
+    \\#   allow = [ egress(h, p) ]  → per-destination allow rules (host:port)
+    \\#   stream ebpfEvents         → agent-guardd's ringbuf testimony channel
+    \\#
+    \\# `network` is a top-level kind (grammar §kind) AND a builtin capability domain;
+    \\# here we use the kind form to declare a concrete egress membrane. The mesh ties
+    \\# the membrane to a named principal whose grant lattice (network.loopback) the
+    \\# allow-set refines into host:port rules — exactly the "per-principal allow/deny
+    \\# sets for network egress … compiled from the capability grant-sets" of 0012 §7.
+    \\
+    \\runtime "agent-egress" {
+    \\  systems = ["x86_64-linux"]
+    \\
+    \\  # Daemon-channel namespace declared for this runtime (RFC 0017, D3: runtime-scoped).
+    \\  namespace agentGuardd {
+    \\    member ringbuf
+    \\  }
+    \\
+    \\  # eBPF testimony channel: agent-guardd publishes one event per egress decision
+    \\  # (allow/deny) onto this stream; the events land on the eventd hash chain.
+    \\  stream ebpfEvents {
+    \\    source = agentGuardd.ringbuf
+    \\    type = Event.Ebpf
+    \\    retention = 24h
+    \\  }
+    \\
+    \\  # The guarded principal and the grant it holds in the builtin `network` domain
+    \\  # (none < loopback < lan < egress). `network.loopback` = "egress to loopback
+    \\  # only" — the allow-set below is its host:port refinement.
+    \\  mesh agentfield {
+    \\    node worker {
+    \\      role = "worker"
+    \\      capabilities = [network.loopback]
+    \\    }
+    \\  }
+    \\
+    \\  # The egress membrane for `worker`: deny-by-default, with an explicit loopback
+    \\  # allow-set. agent-guardd compiles this to gen/ebpf.policy, loads it as a real
+    \\  # cgroup/skb BPF program, and enforces it (attaching in-kernel on a capable
+    \\  # host; a userspace reference datapath with the identical decision elsewhere).
+    \\  network agentEgress {
+    \\    principal = "worker"
+    \\    default = "deny"
+    \\    allow = [egress("127.0.0.1", 9), egress("127.0.0.1", 7)]
+    \\    observe = stream.ebpfEvents
+    \\  }
+    \\}
+++ "\n";
+
+const agentfield_swe_src =
+    \\# agentfield-swe.vaked — the daily-use target system (#27 calibration example):
+    \\# a Nix-based agentfield-like runtime running swe_af workflows.
+    \\#
+    \\# Demonstrates the full composition:
+    \\#   index    — the repo corpus the agents ground against
+    \\#   stream   — transcripts + eBPF evidence
+    \\#   memory   — the MemPalace-shaped palace mined from transcripts (0014)
+    \\#   mesh     — the agent field: operator DELEGATES attenuated authority (§4.4)
+    \\#   workflow — swe_af: step ORDERING as a checked DAG (0015)
+    \\#   fiber/parallel/surface — the runtime plane around them
+    \\
+    \\use "./engines/zig.vaked"
+    \\
+    \\runtime "agent-field" {
+    \\  systems = ["x86_64-linux"]
+    \\
+    \\  # Daemon-channel namespaces declared for this runtime (RFC 0017, D3: runtime-scoped).
+    \\  # A runtime only sees daemon channels it has explicitly brought into scope (POLA).
+    \\  namespace agentpipe {
+    \\    member transcripts
+    \\    member screenrec
+    \\  }
+    \\  namespace agentGuardd {
+    \\    member ringbuf
+    \\  }
+    \\
+    \\  # The box this runtime deploys to (#28 third slice).
+    \\  host vps {
+    \\    system = "x86_64-linux"
+    \\    deploy = "ssh://root@vps"
+    \\  }
+    \\
+    \\  index repoCorpus {
+    \\    source = [github("peterlodri-sec/vaked-base")]
+    \\    normalize = crabcc.markdown
+    \\    emit = [catalog.jsonl, catalog.sqlite]
+    \\  }
+    \\
+    \\  stream transcripts {
+    \\    source = agentpipe.transcripts
+    \\    type = Agent.Transcript
+    \\    retention = 30d
+    \\  }
+    \\
+    \\  stream ebpfEvents {
+    \\    source = agentGuardd.ringbuf
+    \\    type = Event.Ebpf
+    \\    retention = 24h
+    \\  }
+    \\
+    \\  memory palace {
+    \\    source = stream.transcripts
+    \\    mine = mempalace.convos
+    \\    scope = "agent"
+    \\    retention = 90d
+    \\    emit = [catalog.sqlite]
+    \\  }
+    \\
+    \\  # The agent field. Mesh edges are capability DELEGATIONS: the operator holds
+    \\  # the strongest grants and every agent receives an attenuated subset (POLA).
+    \\  mesh field {
+    \\    node operator {
+    \\      role = "control-plane"
+    \\      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin]
+    \\    }
+    \\    node planner {
+    \\      role = "plan"
+    \\      capabilities = [fs.repo_ro, mem.recall]
+    \\    }
+    \\    node coder {
+    \\      role = "implement"
+    \\      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    \\    }
+    \\    node reviewer {
+    \\      role = "review"
+    \\      capabilities = [fs.repo_ro, mem.recall]
+    \\    }
+    \\    node broker {
+    \\      role = "mcp-broker"
+    \\      capabilities = [mcp.github_write]
+    \\    }
+    \\    operator -> planner
+    \\    operator -> coder
+    \\    operator -> reviewer
+    \\    operator -> broker
+    \\  }
+    \\
+    \\  # The run budget the workflow (and its heaviest step) is bounded by,
+    \\  # enforced by mcp-brokerd / the supervision plane (#28).
+    \\  budget swe {
+    \\    tokens = 2000000
+    \\    wallClock = 2h
+    \\    toolCalls = 400
+    \\    approvals = "destructive"
+    \\    fuel = 5000000000
+    \\  }
+    \\
+    \\  # The swe_af workflow. Workflow edges are step ORDERING (a checked DAG);
+    \\  # each step names its executing agent from the mesh.
+    \\  workflow swe_af {
+    \\    on = "github.issue.labeled:agent"
+    \\    budget = budget.swe
+    \\    maxDepth = 6
+    \\
+    \\    node plan {
+    \\      agent = field.planner
+    \\      output = artifacts.plan
+    \\    }
+    \\    node code {
+    \\      agent = field.coder
+    \\      input = artifacts.plan
+    \\      output = artifacts.patch
+    \\      retries = 2
+    \\    }
+    \\    node review {
+    \\      agent = field.reviewer
+    \\      input = artifacts.patch
+    \\      output = artifacts.verdict
+    \\    }
+    \\    node publish {
+    \\      agent = field.broker
+    \\      input = artifacts.verdict
+    \\    }
+    \\
+    \\    plan -> code -> review -> publish
+    \\  }
+    \\
+    \\  # The scheduling class interactive agents run under (#28).
+    \\  runclass interactive {
+    \\    priority = "high"
+    \\    interval = 5s
+    \\  }
+    \\
+    \\  fiber transcriptMiner {
+    \\    engine = zigDaemon
+    \\    input = stream.transcripts
+    \\    output = artifacts.palaceEntries
+    \\    runclass = runclass.interactive
+    \\  }
+    \\
+    \\  surface fieldView {
+    \\    mode = raylib
+    \\    fps = 30
+    \\    input = [stream.ebpfEvents, graph.swe_af, graph.field]
+    \\    views = ["workflow-dag", "mesh-topology", "memory-recall"]
+    \\  }
+    \\
+    \\  parallel "field-runtime" {
+    \\    fibers = [transcriptMiner, fieldView]
+    \\    strategy = "supervised-dag"
+    \\    supervisor = otp
+    \\  }
+    \\}
+++ "\n";
+
+const golden_ebpf_policy_json =
+    \\{
+    \\  "_generated": "generated by Vaked from agent-egress.vaked:runtime agent-egress — do not edit",
+    \\  "membranes": [
+    \\    {
+    \\      "allow": [
+    \\        {
+    \\          "cidr": "127.0.0.1/32",
+    \\          "host": "127.0.0.1",
+    \\          "port": 9,
+    \\          "proto": "tcp"
+    \\        },
+    \\        {
+    \\          "cidr": "127.0.0.1/32",
+    \\          "host": "127.0.0.1",
+    \\          "port": 7,
+    \\          "proto": "tcp"
+    \\        }
+    \\      ],
+    \\      "default": "deny",
+    \\      "grant": "network.loopback",
+    \\      "membrane": "agentEgress",
+    \\      "observe": "stream.ebpfEvents",
+    \\      "principal": "worker"
+    \\    }
+    \\  ],
+    \\  "runtime": "agent-egress",
+    \\  "version": 1
+    \\}
+++ "\n";
+
+const golden_colmena_hive_nix =
+    \\# generated by Vaked from agentfield-swe.vaked:runtime agent-field — do not edit
+    \\#
+    \\# colmena hive (#51): `colmena apply` deploys nixosModules.agent-field
+    \\# to the declared hosts. Standalone form pins nothing itself —
+    \\# the flake (the spine) is the pinned entry point; <nixpkgs>
+    \\# here is the documented interface-only escape (0012 §4.3).
+    \\{
+    \\  meta = {
+    \\    nixpkgs = <nixpkgs>;
+    \\  };
+    \\
+    \\  "vps" = { ... }: {
+    \\    deployment.targetHost = "root@vps";
+    \\    nixpkgs.system = "x86_64-linux";
+    \\    # interface-only module path, exactly as the spine
+    \\    # declares nixosModules.agent-field (0012 §4.3).
+    \\    imports = [ ../../nixos/agent-field.nix ];
+    \\  };
+    \\}
+++ "\n";
+
+test "lower: ebpf.policy reproduces live vakedc byte-for-byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 2389), agent_egress_src.len);
+    try testing.expectEqual(@as(usize, 629), golden_ebpf_policy_json.len);
+
+    const result = try lowerSource(a, agent_egress_src, "vaked/examples/membrane/agent-egress.vaked");
+    try expectFile(result, "gen/ebpf.policy.json", golden_ebpf_policy_json);
+    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
+}
+
+test "lower: colmena.hive reproduces live vakedc byte-for-byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 3934), agentfield_swe_src.len);
+    try testing.expectEqual(@as(usize, 648), golden_colmena_hive_nix.len);
+
+    const result = try lowerSource(a, agentfield_swe_src, "vaked/examples/agentfield-swe.vaked");
+    try expectFile(result, "gen/colmena/hive.nix", golden_colmena_hive_nix);
+    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
+}
+
+// PORT COMPLETE: every registry target lower.py can select is ported, so no
+// graph can populate unported_targets any more. If this ever fails, a new
+// emitter landed in lower.py without a vakedz counterpart -- which is exactly
+// what it is here to catch.
+test "lower: no fixture selects an unported target (tier 2 == 0)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const sources = [_][]const u8{
+        operator_field_src, crabcc_umami_src,       browser_pool_src,
+        sdd_src,            runtime_with_trust_src, agent_egress_src,
+        agentfield_swe_src,
+    };
+    for (sources) |src| {
+        const result = try lowerSource(a, src, "t.vaked");
+        if (result.unported_targets.len != 0) {
+            for (result.unported_targets) |t| std.debug.print("unported: {s}\n", .{t});
+            return error.TestUnexpectedResult;
+        }
+    }
+}

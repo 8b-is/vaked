@@ -2954,6 +2954,435 @@ pub fn emitWorkflowSpec(a: Allocator, g: *const graphmod.Graph, source_file: []c
 }
 
 // --------------------------------------------------------------------------- //
+// Emitter: colmena.hive (per host decl) — gen/colmena/hive.nix.
+// --------------------------------------------------------------------------- //
+
+/// lower.py `emit_colmena_hive` (#51): one colmena node per `host` decl, so
+/// `colmena apply` deploys the runtime's nixosModules to its declared boxes.
+///
+/// `deploy = "ssh://user@addr"` -> deployment.targetHost "user@addr";
+/// `deploy = "local"` (or absent) -> local deployment.
+pub fn emitColmenaHive(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    const rt = rv.runtime;
+
+    var L = Lines.init(a);
+    try L.addFmt("# {s}", .{try header(a, sf, try std.fmt.allocPrint(a, "runtime {s}", .{rt.name}))});
+    try L.add("#");
+    try L.addFmt("# colmena hive (#51): `colmena apply` deploys nixosModules.{s}", .{rt.name});
+    try L.add("# to the declared hosts. Standalone form pins nothing itself —");
+    try L.add("# the flake (the spine) is the pinned entry point; <nixpkgs>");
+    try L.add("# here is the documented interface-only escape (0012 §4.3).");
+    try L.add("{");
+    try L.add("  meta = {");
+    // PATH form (not `import <nixpkgs> {}`): colmena imports nixpkgs per node,
+    // honoring each node's `nixpkgs.system`. An already-evaluated set would be
+    // used as-is and the per-node system silently ignored (multi-arch bug).
+    try L.add("    nixpkgs = <nixpkgs>;");
+    try L.add("  };");
+    try L.add("");
+
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    for (nodes, 0..) |h, i| {
+        if (i != 0) try L.add(""); // blank line BETWEEN nodes only
+        // Python: `_lit(...) or ""` — absent AND empty both yield "".
+        const system = blk: {
+            const s = litOf(getProp(h.props, "system")) orelse break :blk "";
+            break :blk s;
+        };
+        const deploy = litOf(getProp(h.props, "deploy"));
+        // All host-controlled strings go through _nix_str — host name, deploy
+        // target and system are free-form (deploy is only `nonempty String`),
+        // so raw interpolation would allow `${…}` antiquotation injection (the
+        // #7 attrpath-splice class). _nix_str neutralizes it.
+        try L.addFmt("  {s} = {{ ... }}: {{", .{try nixStr(a, h.name)});
+        if (deploy == null or std.mem.eql(u8, deploy.?, "local")) {
+            try L.add("    deployment.allowLocalDeployment = true;");
+            // targetHost defaults to the node NAME in colmena; null disables
+            // SSH so plain `colmena apply` treats this node as local.
+            try L.add("    deployment.targetHost = null;");
+        } else {
+            const d = deploy.?;
+            const target = if (std.mem.startsWith(u8, d, "ssh://")) d[6..] else d;
+            try L.addFmt("    deployment.targetHost = {s};", .{try nixStr(a, target)});
+        }
+        try L.addFmt("    nixpkgs.system = {s};", .{try nixStr(a, system)});
+        try L.add("    # interface-only module path, exactly as the spine");
+        try L.addFmt("    # declares nixosModules.{s} (0012 §4.3).", .{rt.name});
+        try L.addFmt("    imports = [ ../../nixos/{s}.nix ];", .{rt.name});
+        try L.add("  };");
+        try entries.append(a, .{
+            .artifact = "gen/colmena/hive.nix",
+            .region = try std.mem.concat(a, u8, &.{ "host/", h.name }),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "host {s}", .{h.name}),
+            .span = h.provenance.?.span,
+            .emitter = "colmena.hive",
+            .inputs_projection = try nodeProjection(a, h),
+        });
+    }
+    try L.add("}");
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/colmena/hive.nix", .content = try L.text() };
+    return .{ .files = files, .entries = try entries.toOwnedSlice(a) };
+}
+
+// --------------------------------------------------------------------------- //
+// Emitter: ebpf.policy (per network membrane) — gen/ebpf.policy.json.
+//
+// NOT a deferred slot, despite three stale docstrings in lower.py saying so
+// (L41, L1554's `emit_deferred` docstring, and the EMITTER_REGISTRY comment in
+// tests/spec/test_lowering_fixtures.py L54). Resolved from the code, not the
+// prose: the registry row is `_Registered("ebpf.policy", emit_ebpf_policy)`
+// with NO `deferred=True` — unlike catalog.sqlite/otel.config/systemd.units/
+// surface.launcher, which do carry it — and `lower()` L2452 dispatches
+// `_run("ebpf.policy", rv.networks)`. The registry's own comment says
+// "(§7, realized)". The docstrings are drift from when it was promoted;
+// reported, not fixed.
+//
+// Serialization: a THIRD layout. `json.dumps(doc, indent=2, sort_keys=True,
+// ensure_ascii=False)` — pretty, 2-space, keys SORTED (not emit order), and
+// with `indent` set Python's item separator loses its trailing space (","
+// not ", "). Neither writeCanonical (compact) nor emitZigJson (_Ordered,
+// unsorted) nor jsonDumpsDefault (one line, ", ") is this.
+// --------------------------------------------------------------------------- //
+
+/// Python `ipaddress._parse_octet` semantics for one IPv4 octet: ASCII digits
+/// only, at most 3 of them, NO leading zero when longer than one digit
+/// (CPython >= 3.9.5 rejects `010.0.0.1`), value <= 255.
+fn validIpv4Octet(s: []const u8) bool {
+    if (s.len == 0 or s.len > 3) return false;
+    for (s) |c| {
+        if (!std.ascii.isDigit(c)) return false; // also rejects '+'/'-'/spaces
+    }
+    if (s.len > 1 and s[0] == '0') return false; // ambiguous leading zero
+    const v = std.fmt.parseInt(u16, s, 10) catch return false;
+    return v <= 255;
+}
+
+/// Python `ipaddress.IPv4Address(s)` validity: exactly 4 dot-separated octets.
+fn validIpv4(s: []const u8) bool {
+    var it = std.mem.splitScalar(u8, s, '.');
+    var n: usize = 0;
+    while (it.next()) |part| {
+        n += 1;
+        if (n > 4) return false;
+        if (!validIpv4Octet(part)) return false;
+    }
+    return n == 4;
+}
+
+/// Python `ipaddress.IPv6Address(s)` validity: up to 8 groups of 1-4 hex
+/// digits, at most one `::` run, and an optional trailing embedded IPv4
+/// (`::ffff:1.2.3.4`) which consumes two groups.
+fn validIpv6(s: []const u8) bool {
+    if (s.len == 0) return false;
+    // At most one "::"; find it.
+    const dbl = std.mem.indexOf(u8, s, "::");
+    if (dbl) |d| {
+        if (std.mem.indexOf(u8, s[d + 1 ..], "::") != null) return false; // a second run
+    }
+    var head: []const u8 = s;
+    var tail: []const u8 = "";
+    if (dbl) |d| {
+        head = s[0..d];
+        tail = s[d + 2 ..];
+        // A leading/trailing single ':' outside the "::" is malformed
+        // (":1::2" / "1::2:"), which the group walk below catches via an
+        // empty group.
+    } else {
+        // No "::": a leading or trailing ':' is malformed.
+        if (s[0] == ':' or s[s.len - 1] == ':') return false;
+    }
+    var groups: usize = 0;
+    for ([_][]const u8{ head, tail }, 0..) |seg, seg_i| {
+        if (seg.len == 0) continue;
+        var it = std.mem.splitScalar(u8, seg, ':');
+        var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+        var buf: [16][]const u8 = undefined;
+        var n: usize = 0;
+        while (it.next()) |p| {
+            if (n >= buf.len) return false;
+            buf[n] = p;
+            n += 1;
+        }
+        _ = &parts;
+        for (buf[0..n], 0..) |p, i| {
+            const is_last_of_tail = (seg_i == 1 and i == n - 1);
+            const is_last_of_head = (seg_i == 0 and i == n - 1 and dbl == null);
+            // an embedded IPv4 may only appear as the FINAL group
+            if ((is_last_of_tail or is_last_of_head) and std.mem.indexOfScalar(u8, p, '.') != null) {
+                if (!validIpv4(p)) return false;
+                groups += 2; // an embedded v4 occupies two 16-bit groups
+                continue;
+            }
+            if (p.len == 0 or p.len > 4) return false;
+            for (p) |c| {
+                if (!std.ascii.isHex(c)) return false;
+            }
+            groups += 1;
+        }
+    }
+    if (dbl == null) return groups == 8;
+    // "::" must stand for AT LEAST one omitted group.
+    return groups < 8;
+}
+
+/// Python `ipaddress._prefix_from_prefix_string`: ASCII digits only (so `+32`
+/// and ` 32` are rejected), leading zeros ALLOWED (`/032` is valid), value
+/// within 0..max.
+fn validPrefixLen(s: []const u8, max: u16) bool {
+    if (s.len == 0) return false;
+    for (s) |c| {
+        if (!std.ascii.isDigit(c)) return false;
+    }
+    const v = std.fmt.parseInt(u32, s, 10) catch return false;
+    return v <= max;
+}
+
+/// True when the `/`-part is a valid IPv4 netmask (contiguous high 1-bits) or
+/// hostmask (its inverse) — Python's `_prefix_from_ip_string` tries the mask,
+/// then the inverted mask.
+fn validIpv4MaskString(s: []const u8) bool {
+    if (!validIpv4(s)) return false;
+    var v: u32 = 0;
+    var it = std.mem.splitScalar(u8, s, '.');
+    while (it.next()) |part| {
+        const o = std.fmt.parseInt(u8, part, 10) catch return false;
+        v = (v << 8) | o;
+    }
+    return isContiguousMask(v) or isContiguousMask(~v);
+}
+
+/// A netmask is contiguous 1s from the top: `~v + 1` is a power of two (with 0
+/// and all-ones handled).
+fn isContiguousMask(v: u32) bool {
+    const inv = ~v;
+    return (inv & (inv +% 1)) == 0;
+}
+
+/// lower.py `_host_cidr`: the single-host CIDR for a bare `host` literal —
+/// `/32` IPv4, `/128` IPv6. A host already carrying a `/prefix` is kept
+/// VERBATIM (so the `/` branch is pure validation). Null for a host that is
+/// neither a valid IP literal nor an explicit CIDR: a non-IP destination is
+/// not attestable at the packet layer (decide() denies it), so it must never
+/// be widened into a subnet.
+pub fn hostCidr(a: Allocator, host: []const u8) Error!?[]const u8 {
+    if (std.mem.indexOfScalar(u8, host, '/') != null) {
+        // Python: `ip_network(host, strict=False)`; on success return `host`.
+        var it = std.mem.splitScalar(u8, host, '/');
+        const addr = it.next() orelse return null;
+        const prefix = it.next() orelse return null;
+        if (it.next() != null) return null; // more than one '/'
+        if (validIpv4(addr)) {
+            if (validPrefixLen(prefix, 32) or validIpv4MaskString(prefix)) return host;
+            return null;
+        }
+        if (validIpv6(addr)) {
+            // IPv6Network takes an integer prefix only — no netmask strings.
+            if (validPrefixLen(prefix, 128)) return host;
+            return null;
+        }
+        return null;
+    }
+    if (validIpv4(host)) return try std.fmt.allocPrint(a, "{s}/32", .{host});
+    if (validIpv6(host)) return try std.fmt.allocPrint(a, "{s}/128", .{host});
+    return null;
+}
+
+/// Python `str(int(s))` where a non-integer RAISES (the caller drops the rule)
+/// — unlike `_coerce_number`, which returns the string unchanged. So
+/// `egress("h", 9.5)` drops the rule entirely.
+pub fn pyIntStrict(a: Allocator, s: []const u8) Error!?[]const u8 {
+    const t = std.mem.trim(u8, s, " \t\n\r\x0b\x0c"); // int() strips whitespace
+    var i: usize = 0;
+    if (t.len > 0 and (t[0] == '-' or t[0] == '+')) i = 1;
+    if (i >= t.len) return null;
+    for (t[i..]) |c| {
+        if (!std.ascii.isDigit(c)) return null; // '.'/'e' -> ValueError
+    }
+    const neg = t.len > 0 and t[0] == '-';
+    var start = i;
+    while (start + 1 < t.len and t[start] == '0') start += 1;
+    const digits = t[start..];
+    if (digits.len == 1 and digits[0] == '0') return "0";
+    if (!neg) return digits;
+    const joined: []const u8 = try std.mem.concat(a, u8, &.{ "-", digits });
+    return joined;
+}
+
+/// lower.py `_principal_network_grant`: the `network.<grant>` a mesh
+/// `node <principal>` holds — its position in the builtin `network` lattice
+/// (none < loopback < lan < egress). Best effort; null when absent.
+///
+/// NOTE the scan is `graph.nodes_sorted()` — id order, NOT source order — and
+/// returns the FIRST match, so the sort is load-bearing for determinism.
+fn principalNetworkGrant(a: Allocator, g: *const graphmod.Graph, principal: ?[]const u8) Error!?[]const u8 {
+    const p = principal orelse return null;
+    if (p.len == 0) return null; // Python: `if not principal`
+    for (try nodesSorted(a, g)) |n| {
+        if (!std.mem.eql(u8, n.kind, "node")) continue;
+        if (!std.mem.eql(u8, n.name, p)) continue;
+        const caps = getProp(n.props, "capabilities") orelse continue;
+        switch (caps) {
+            .array => |arr| for (arr) |c| {
+                const r = refOf(c) orelse continue;
+                // Python: `r.split(".", 1)[0] == "network"`
+                const head = if (std.mem.indexOfScalar(u8, r, '.')) |i| r[0..i] else r;
+                if (std.mem.eql(u8, head, "network")) return r;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// lower.py `_egress_rule`: one allow-rule from an `egress(host, port)` call ->
+/// an ordered dict {proto, host, cidr, port}. The host is pinned to a
+/// single-address CIDR so an allow rule never widens into a subnet. Null for a
+/// malformed call (non-string host, non-numeric port, or a host that is
+/// neither a valid IP literal nor an explicit CIDR).
+fn egressRule(a: Allocator, call: ?AppCall) Error!?ZigVal {
+    const c = call orelse return null;
+    if (!std.mem.eql(u8, c.ref, "egress")) return null;
+    if (c.args.len < 2) return null;
+    const host = c.args[0] orelse return null; // `not isinstance(host, str)`
+    const port_s = c.args[1] orelse return null; // int(None) -> TypeError
+    const port = (try pyIntStrict(a, port_s)) orelse return null;
+    const cidr = (try hostCidr(a, host)) orelse return null;
+    const o = try a.alloc(ZigPair, 4);
+    o[0] = .{ .key = "proto", .val = .{ .string = "tcp" } };
+    o[1] = .{ .key = "host", .val = .{ .string = host } };
+    o[2] = .{ .key = "cidr", .val = .{ .string = cidr } };
+    o[3] = .{ .key = "port", .val = .{ .raw = port } };
+    return ZigVal{ .plain_object = o };
+}
+
+/// `json.dumps(v, indent=2, sort_keys=True, ensure_ascii=False)`.
+///
+/// With `indent` set, Python's separators become `(",", ": ")` — the item
+/// separator loses its trailing space, and each item goes on its own line.
+/// Empty containers stay `{}` / `[]`. Keys are SORTED (byte order == code
+/// point order for UTF-8).
+fn jsonDumpsIndentSorted(a: Allocator, v: ZigVal, level: usize, out: *std.ArrayListUnmanaged(u8)) Error!void {
+    const pad = try repeatStr(a, "  ", level);
+    const pad_in = try repeatStr(a, "  ", level + 1);
+    switch (v) {
+        .plain_object, .object => |pairs| {
+            if (pairs.len == 0) {
+                try out.appendSlice(a, "{}");
+                return;
+            }
+            const sorted = try a.dupe(ZigPair, pairs);
+            std.sort.block(ZigPair, sorted, {}, struct {
+                fn less(_: void, x: ZigPair, y: ZigPair) bool {
+                    return std.mem.order(u8, x.key, y.key) == .lt;
+                }
+            }.less);
+            try out.appendSlice(a, "{\n");
+            for (sorted, 0..) |p, i| {
+                try out.appendSlice(a, pad_in);
+                try out.appendSlice(a, try jsonScalar(a, .{ .string = p.key }));
+                try out.appendSlice(a, ": ");
+                try jsonDumpsIndentSorted(a, p.val, level + 1, out);
+                if (i < sorted.len - 1) try out.append(a, ',');
+                try out.append(a, '\n');
+            }
+            try out.appendSlice(a, pad);
+            try out.append(a, '}');
+        },
+        .array => |arr| {
+            if (arr.len == 0) {
+                try out.appendSlice(a, "[]");
+                return;
+            }
+            try out.appendSlice(a, "[\n");
+            for (arr, 0..) |x, i| {
+                try out.appendSlice(a, pad_in);
+                try jsonDumpsIndentSorted(a, x, level + 1, out);
+                if (i < arr.len - 1) try out.append(a, ',');
+                try out.append(a, '\n');
+            }
+            try out.appendSlice(a, pad);
+            try out.append(a, ']');
+        },
+        .raw => |s| try out.appendSlice(a, s),
+        .string => |s| try out.appendSlice(a, try jsonScalar(a, .{ .string = s })),
+        .boolean => |b| try out.appendSlice(a, if (b) "true" else "false"),
+        .none => try out.appendSlice(a, "null"),
+        .passthrough => |pv| try jsonDumpsDefault(a, pv, out),
+    }
+}
+
+/// lower.py `emit_ebpf_policy` (0012 §7, realized): `gen/ebpf.policy.json` —
+/// the compiled egress policy agent-guardd loads. One `membranes[]` entry per
+/// `network` decl: deny-by-default posture + the host:port allow-set, tagged
+/// with the principal and its `network.<grant>` lattice position.
+pub fn emitEbpfPolicy(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const sf = source_file;
+    const rv_opt = try runtimeView(a, g);
+    // Python: `rv.runtime.name if rv is not None else ""` — this emitter does
+    // NOT bail out when the runtime is missing, unlike its siblings.
+    const rt_name: []const u8 = if (rv_opt) |rv| rv.runtime.name else "";
+
+    var membranes: std.ArrayListUnmanaged(ZigVal) = .empty;
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    for (nodes) |net| {
+        const principal = litOf(getProp(net.props, "principal"));
+        // Python: `_lit(...) or "deny"` — absent AND empty both yield "deny".
+        const default = blk: {
+            const d = litOf(getProp(net.props, "default")) orelse break :blk "deny";
+            if (d.len == 0) break :blk "deny";
+            break :blk d;
+        };
+        var allow: std.ArrayListUnmanaged(ZigVal) = .empty;
+        if (getProp(net.props, "allow")) |allow_prop| switch (allow_prop) {
+            .array => |arr| for (arr) |item| {
+                if (try egressRule(a, try appCall(a, item))) |rule| try allow.append(a, rule);
+            },
+            else => {},
+        };
+        var m: std.ArrayListUnmanaged(ZigPair) = .empty;
+        try m.append(a, .{ .key = "membrane", .val = .{ .string = net.name } });
+        // `principal` and `grant` are ALWAYS emitted, null when absent.
+        try m.append(a, .{ .key = "principal", .val = if (principal) |p| .{ .string = p } else .none });
+        const grant = try principalNetworkGrant(a, g, principal);
+        try m.append(a, .{ .key = "grant", .val = if (grant) |x| .{ .string = x } else .none });
+        try m.append(a, .{ .key = "default", .val = .{ .string = default } });
+        try m.append(a, .{ .key = "allow", .val = .{ .array = try allow.toOwnedSlice(a) } });
+        if (refOf(getProp(net.props, "observe"))) |o| {
+            try m.append(a, .{ .key = "observe", .val = .{ .string = o } });
+        }
+        try membranes.append(a, .{ .plain_object = try m.toOwnedSlice(a) });
+        try entries.append(a, .{
+            .artifact = "gen/ebpf.policy.json",
+            .region = net.name,
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "network {s}", .{net.name}),
+            .span = net.provenance.?.span,
+            .emitter = "ebpf.policy",
+            .inputs_projection = try nodeProjection(a, net),
+        });
+    }
+
+    const doc = try a.alloc(ZigPair, 4);
+    doc[0] = .{ .key = "_generated", .val = .{ .string = try header(a, sf, try std.fmt.allocPrint(a, "runtime {s}", .{rt_name})) } };
+    doc[1] = .{ .key = "version", .val = .{ .raw = "1" } };
+    doc[2] = .{ .key = "runtime", .val = .{ .string = rt_name } };
+    doc[3] = .{ .key = "membranes", .val = .{ .array = try membranes.toOwnedSlice(a) } };
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    try jsonDumpsIndentSorted(a, .{ .plain_object = doc }, 0, &out);
+    try out.append(a, '\n');
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/ebpf.policy.json", .content = try out.toOwnedSlice(a) };
+    return .{ .files = files, .entries = try entries.toOwnedSlice(a) };
+}
+
+// --------------------------------------------------------------------------- //
 // enrich_graph — recover load-bearing config sub-blocks the resolver drops.
 // --------------------------------------------------------------------------- //
 
@@ -3215,11 +3644,21 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         try run(a, &files, &all_entries, try emitTrustConfig(a, g, source_file));
     }
 
-    // --- gated targets not yet ported ------------------------------------ //
-    // Each condition mirrors lower.py's selection exactly, so a graph that
-    // selects none of these lowers to a COMPLETE artifact set today.
-    if (rv.networks.len > 0) try unported.append(a, "ebpf.policy");
-    if (rv.hosts.len > 0) try unported.append(a, "colmena.hive");
+    // Network membrane (0012 §7): the compiled egress policy agent-guardd
+    // loads, one per `network` decl. Inert when no membrane is declared.
+    if (rv.networks.len > 0) {
+        try run(a, &files, &all_entries, try emitEbpfPolicy(a, g, source_file, rv.networks));
+    }
+
+    // Deployment (#51): one colmena node per declared host.
+    if (rv.hosts.len > 0) {
+        try run(a, &files, &all_entries, try emitColmenaHive(a, g, source_file, rv.hosts));
+    }
+
+    // Every registry target lower.py can select is now ported, so
+    // `unported_targets` is always empty. The field, `--allow-partial` and the
+    // harness's ARTIFACTS scoping are removed in the follow-up "port complete"
+    // commit; this is the last slice that could populate it.
 
     const sorted_files = try files.toOwnedSlice(a);
     std.sort.block(File, sorted_files, {}, struct {
