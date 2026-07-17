@@ -1,8 +1,33 @@
 // GENESIS_SEAL: 7c242080
-//! vakedz.check — 0011 type-system checker, slice 1: the conformance core.
+//! vakedz.check — 0011 type-system checker: FULL parity with vakedc/check.py.
 //!
-//! Faithful port of the conformance-class rules of vakedc/check.py (the
-//! semantic spec). Ported in this slice:
+//! Slice 2 (this file is now the complete port; the differential harness
+//! tools/check-diff/run.sh runs with NO allowlist):
+//!
+//!   * Capabilities (§4, check.py `_check_mesh` and friends): E-CAP-UNKNOWN-
+//!     DOMAIN/-GRANT, E-CAP-ATTENUATION (§4.4), E-CAP-USE (§4.3),
+//!     W-POLA-EXCESS, W-CONFUSED-DEPUTY — the ≤-closure is computed once at
+//!     capability well-formedness time and kept on the spec (`leq`).
+//!   * Egress (#226/0026, `_check_egress_use`): E-EGRESS-USE,
+//!     W-EGRESS-UNREFINED, incl. Python-`ipaddress` loopback/private
+//!     classification of membrane allow-hosts.
+//!   * Closed-world ref resolution (#7, `_check_ref_resolution`):
+//!     E-REF-UNRESOLVED over the depends-ref walk (topology kinds deferred),
+//!     branch-B namespace heads (runtime-scoped first, then the builtin
+//!     catalog), 3-part accessor refs, and `use`-import Stage-2 binding
+//!     (`_collect_import_decls` — the checker's only IO beyond builtins,
+//!     injected via ImportReader).
+//!   * Workflow (#27, `_check_workflow`): agent-target E-REF-UNRESOLVED,
+//!     E-WORKFLOW-CYCLE (byte-identical cycle path via the same DFS),
+//!     E-WORKFLOW-DEPTH, E-DETERMINISM-EFFECT (#224).
+//!   * eBPF (#225, `_check_ebpf_intent`): E-EBPF-UNKNOWN-HOOK,
+//!     E-EBPF-BAD-INTENT, E-EBPF-ENFORCE-ON-OBSERVE.
+//!   * Generics (§5, `_check_generics`): E-GENERIC-INCONSISTENT.
+//!   * Message parity: list/record values and grant lists render through a
+//!     Python-repr-compatible renderer (reprStr/vpropRepr) — the exact text
+//!     `repr(_value_to_props(v))` produces.
+//!
+//! Slice 1 (conformance core), still here:
 //!
 //!   * Stage 3 (elaborate): schema / capability / namespace registry built by
 //!     parsing `vaked/schema/builtins.vaked` through the vakedz parser and
@@ -31,13 +56,6 @@
 //!     the first declaration). Collisions resolve.zig reports but check.py
 //!     would not (duplicate `node` names, decl-vs-node, dropped-body child
 //!     collisions) are filtered out for Python parity.
-//!
-//! Deferred to slice 2 (see check.py): capability refs + POLA (E-CAP-*,
-//! W-POLA-EXCESS, W-CONFUSED-DEPUTY), egress (E-EGRESS-USE,
-//! W-EGRESS-UNREFINED), closed-world ref resolution (E-REF-UNRESOLVED),
-//! workflow topology (E-WORKFLOW-CYCLE/DEPTH), determinism
-//! (E-DETERMINISM-EFFECT), ebpf intent (E-EBPF-*), generics
-//! (E-GENERIC-INCONSISTENT).
 //!
 //! Diagnostics are sorted by (file, byteStart, byteEnd, code) with a stable
 //! sort, exactly like check.py `Diagnostic.sort_key`.
@@ -236,13 +254,33 @@ pub const FieldSpec = struct {
 pub const SchemaSpec = struct {
     name: []const u8,
     fields: []FieldSpec, // insertion-ordered; rebinding a name replaced in place
+    field_idx: std.StringHashMapUnmanaged(usize), // name -> index into fields
     open: bool,
     origin_file: []const u8,
     decl_span: Span4,
 
     fn getField(self: *const SchemaSpec, name: []const u8) ?*const FieldSpec {
-        for (self.fields) |*f| if (std.mem.eql(u8, f.name, name)) return f;
+        const i = self.field_idx.get(name) orelse return null;
+        return &self.fields[i];
+    }
+};
+
+/// The reflexive-transitive `<=` closure of one capability domain's declared
+/// order chains (check.py `CapabilitySpec.leq`, a dict grant -> upward set).
+pub const Leq = struct {
+    nodes: []const []const u8, // grants ∪ chain-named, first-seen order
+    reach: []const []const bool, // reach[i][j] ⇔ nodes[i] <= nodes[j]
+
+    fn indexOf(self: *const Leq, name: []const u8) ?usize {
+        for (self.nodes, 0..) |n, i| if (std.mem.eql(u8, n, name)) return i;
         return null;
+    }
+
+    /// check.py `_leq(cap, a, b)` — is `b in cap.leq.get(a, {a})`?
+    pub fn leq(self: *const Leq, x: []const u8, y: []const u8) bool {
+        const ix = self.indexOf(x) orelse return std.mem.eql(u8, x, y);
+        const iy = self.indexOf(y) orelse return false;
+        return self.reach[ix][iy];
     }
 };
 
@@ -250,8 +288,17 @@ pub const CapabilitySpec = struct {
     domain: []const u8,
     grants: []const []const u8, // dedup'd, insertion order (Python: set)
     order_chains: []const []const []const u8,
+    /// Set by checkCapabilityWellformed (Python does the same): the ≤-closure,
+    /// or the identity-over-grants fallback when the order is cyclic.
+    leq: ?Leq = null,
     origin_file: []const u8,
     decl_span: Span4,
+
+    /// check.py `_leq` — `b in cap.leq.get(a, {a})`.
+    fn capLeq(self: *const CapabilitySpec, x: []const u8, y: []const u8) bool {
+        if (self.leq) |*l| return l.leq(x, y);
+        return std.mem.eql(u8, x, y);
+    }
 };
 
 pub const NamespaceSpec = struct {
@@ -265,41 +312,55 @@ pub const NamespaceSpec = struct {
 pub const Registry = struct {
     a: std.mem.Allocator,
     schemas: std.ArrayList(SchemaSpec) = .empty,
+    schema_idx: std.StringHashMapUnmanaged(usize) = .empty,
     caps: std.ArrayList(CapabilitySpec) = .empty,
+    cap_idx: std.StringHashMapUnmanaged(usize) = .empty,
     namespaces: std.ArrayList(NamespaceSpec) = .empty,
+    ns_idx: std.StringHashMapUnmanaged(usize) = .empty,
+
+    // NOTE on pointer stability: the returned pointers alias the ArrayList
+    // items and are only valid once loading is complete (checkSource loads
+    // everything before any check runs — same lifecycle as check.py).
 
     pub fn getSchema(self: *const Registry, name: []const u8) ?*const SchemaSpec {
-        for (self.schemas.items) |*s| if (std.mem.eql(u8, s.name, name)) return s;
-        return null;
+        const i = self.schema_idx.get(name) orelse return null;
+        return &self.schemas.items[i];
+    }
+
+    pub fn getCap(self: *const Registry, name: []const u8) ?*const CapabilitySpec {
+        const i = self.cap_idx.get(name) orelse return null;
+        return &self.caps.items[i];
+    }
+
+    pub fn getNamespace(self: *const Registry, head: []const u8) ?*const NamespaceSpec {
+        const i = self.ns_idx.get(head) orelse return null;
+        return &self.namespaces.items[i];
     }
 
     fn addSchema(self: *Registry, spec: SchemaSpec) error{OutOfMemory}!void {
-        for (self.schemas.items) |*s| {
-            if (std.mem.eql(u8, s.name, spec.name)) {
-                s.* = spec; // later (user) overrides earlier (builtin)
-                return;
-            }
+        if (self.schema_idx.get(spec.name)) |i| {
+            self.schemas.items[i] = spec; // later (user) overrides earlier (builtin)
+            return;
         }
+        try self.schema_idx.put(self.a, spec.name, self.schemas.items.len);
         try self.schemas.append(self.a, spec);
     }
 
     fn addCapability(self: *Registry, spec: CapabilitySpec) error{OutOfMemory}!void {
-        for (self.caps.items) |*c| {
-            if (std.mem.eql(u8, c.domain, spec.domain)) {
-                c.* = spec;
-                return;
-            }
+        if (self.cap_idx.get(spec.domain)) |i| {
+            self.caps.items[i] = spec;
+            return;
         }
+        try self.cap_idx.put(self.a, spec.domain, self.caps.items.len);
         try self.caps.append(self.a, spec);
     }
 
     fn addNamespace(self: *Registry, spec: NamespaceSpec) error{OutOfMemory}!void {
-        for (self.namespaces.items) |*n| {
-            if (std.mem.eql(u8, n.head, spec.head)) {
-                n.* = spec;
-                return;
-            }
+        if (self.ns_idx.get(spec.head)) |i| {
+            self.namespaces.items[i] = spec;
+            return;
         }
+        try self.ns_idx.put(self.a, spec.head, self.namespaces.items.len);
         try self.namespaces.append(self.a, spec);
     }
 };
@@ -319,6 +380,7 @@ fn presenceOf(refinements: []const parser.Refinement) struct { presence: Presenc
 
 fn schemaFromDecl(a: std.mem.Allocator, d: *const parser.Decl, filename: []const u8) error{OutOfMemory}!SchemaSpec {
     var fields: std.ArrayList(FieldSpec) = .empty;
+    var field_idx: std.StringHashMapUnmanaged(usize) = .empty;
     var is_open = false;
     for (d.body) |st| switch (st) {
         .field => |f| {
@@ -330,15 +392,12 @@ fn schemaFromDecl(a: std.mem.Allocator, d: *const parser.Decl, filename: []const
                 .presence = p.presence,
                 .has_default = p.has_default,
             };
-            var replaced = false;
-            for (fields.items) |*existing| {
-                if (std.mem.eql(u8, existing.name, f.name)) {
-                    existing.* = spec; // dict semantics: rebind keeps position
-                    replaced = true;
-                    break;
-                }
+            if (field_idx.get(f.name)) |i| {
+                fields.items[i] = spec; // dict semantics: rebind keeps position
+            } else {
+                try field_idx.put(a, f.name, fields.items.len);
+                try fields.append(a, spec);
             }
-            if (!replaced) try fields.append(a, spec);
         },
         .open => is_open = true,
         else => {},
@@ -346,6 +405,7 @@ fn schemaFromDecl(a: std.mem.Allocator, d: *const parser.Decl, filename: []const
     return .{
         .name = d.name,
         .fields = try fields.toOwnedSlice(a),
+        .field_idx = field_idx,
         .open = is_open,
         .origin_file = filename,
         .decl_span = declSpan4(d),
@@ -586,15 +646,135 @@ fn renderLiteral(a: std.mem.Allocator, lit: parser.Literal) error{OutOfMemory}![
     return lit.value;
 }
 
-/// check.py `_render_vprop`. Python renders list/record values via `repr()`
-/// of the value-prop dict; that exact text is not reproducible here, so those
-/// arms render as placeholders (differential compares codes+positions).
+/// Python `repr()` of a str, for the value shapes that reach diagnostic
+/// messages. Quote choice (single unless the string contains `'` and no
+/// `"`), backslash/quote escaping, \n \r \t, and \xHH for other control
+/// bytes. Printable non-ASCII passes through byte-for-byte (Python keeps
+/// printable Unicode literal in repr; Vaked sources are UTF-8).
+fn reprStr(a: std.mem.Allocator, s: []const u8) error{OutOfMemory}![]const u8 {
+    const has_sq = std.mem.indexOfScalar(u8, s, '\'') != null;
+    const has_dq = std.mem.indexOfScalar(u8, s, '"') != null;
+    const q: u8 = if (has_sq and !has_dq) '"' else '\'';
+    var out: std.ArrayList(u8) = .empty;
+    try out.append(a, q);
+    for (s) |c| {
+        if (c == '\\') {
+            try out.appendSlice(a, "\\\\");
+        } else if (c == q) {
+            try out.append(a, '\\');
+            try out.append(a, c);
+        } else if (c == '\n') {
+            try out.appendSlice(a, "\\n");
+        } else if (c == '\r') {
+            try out.appendSlice(a, "\\r");
+        } else if (c == '\t') {
+            try out.appendSlice(a, "\\t");
+        } else if (c < 0x20 or c == 0x7f) {
+            try out.appendSlice(a, try std.fmt.allocPrint(a, "\\x{x:0>2}", .{c}));
+        } else {
+            try out.append(a, c);
+        }
+    }
+    try out.append(a, q);
+    return out.toOwnedSlice(a);
+}
+
+/// Python `repr()` of a list of str — `['a', 'b']` / `[]`.
+fn reprStrList(a: std.mem.Allocator, items: []const []const u8) error{OutOfMemory}![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.append(a, '[');
+    for (items, 0..) |s, i| {
+        if (i > 0) try out.appendSlice(a, ", ");
+        try out.appendSlice(a, try reprStr(a, s));
+    }
+    try out.append(a, ']');
+    return out.toOwnedSlice(a);
+}
+
+/// Python `repr()` of resolve._value_to_props(v) — the exact text check.py's
+/// `_render_vprop` embeds for list/record values. Dict key order follows
+/// _value_to_props insertion order; every leaf value is a str (the parser
+/// stores all literal values as source text), and vprop `lit` kinds are
+/// lowercased (`v.kind.lower()`), which @tagName matches exactly.
+fn vpropRepr(a: std.mem.Allocator, out: *std.ArrayList(u8), v: parser.Expr) error{OutOfMemory}!void {
+    switch (v) {
+        .literal => |l| {
+            try out.appendSlice(a, "{'lit': ");
+            try out.appendSlice(a, try reprStr(a, @tagName(l.kind)));
+            try out.appendSlice(a, ", 'value': ");
+            try out.appendSlice(a, try reprStr(a, l.value));
+            try out.append(a, '}');
+        },
+        .list => |items| {
+            try out.append(a, '[');
+            for (items, 0..) |e, i| {
+                if (i > 0) try out.appendSlice(a, ", ");
+                try vpropRepr(a, out, e);
+            }
+            try out.append(a, ']');
+        },
+        .record => |entries| {
+            try out.appendSlice(a, "{'record': ");
+            try vpropReprEntries(a, out, entries);
+            try out.append(a, '}');
+        },
+        .app => |ap| {
+            try out.appendSlice(a, "{'ref': ");
+            try out.appendSlice(a, try reprStr(a, try ap.ref.dotted(a)));
+            if (ap.args) |args| {
+                try out.appendSlice(a, ", 'args': [");
+                for (args, 0..) |arg, i| {
+                    if (i > 0) try out.appendSlice(a, ", ");
+                    try vpropRepr(a, out, arg);
+                }
+                try out.append(a, ']');
+            }
+            if (ap.record) |rec| {
+                try out.appendSlice(a, ", 'record': ");
+                try vpropReprEntries(a, out, rec);
+            }
+            try out.append(a, '}');
+        },
+    }
+}
+
+fn vpropReprEntries(a: std.mem.Allocator, out: *std.ArrayList(u8), entries: []const parser.RecordEntry) error{OutOfMemory}!void {
+    try out.append(a, '[');
+    for (entries, 0..) |e, i| {
+        if (i > 0) try out.appendSlice(a, ", ");
+        switch (e) {
+            .assign => |asn| {
+                try out.appendSlice(a, "{'assign': ");
+                try out.appendSlice(a, try reprStr(a, asn.target));
+                try out.appendSlice(a, ", 'op': ");
+                try out.appendSlice(a, try reprStr(a, asn.op));
+                try out.appendSlice(a, ", 'value': ");
+                try vpropRepr(a, out, asn.value.*);
+                try out.append(a, '}');
+            },
+            .inherit => |names| {
+                try out.appendSlice(a, "{'inherit': ");
+                try out.appendSlice(a, try reprStrList(a, names));
+                try out.append(a, '}');
+            },
+        }
+    }
+    try out.append(a, ']');
+}
+
+/// check.py `_render_vprop` — literals render bare (strings double-quoted),
+/// apps render as the dotted ref (`"ref" in vprop` wins even with args or a
+/// record attached), and lists/records fall through to Python `repr()` of the
+/// value-prop structure (vpropRepr).
 fn renderValue(a: std.mem.Allocator, v: parser.Expr) error{OutOfMemory}![]const u8 {
     switch (v) {
         .literal => |l| return renderLiteral(a, l),
         .app => |ap| return ap.ref.dotted(a),
-        .list => return "<list value>",
-        .record => return "<record value>",
+        .list, .record => {
+            var out: std.ArrayList(u8) = .empty;
+            try vpropRepr(a, &out, v);
+            return out.toOwnedSlice(a);
+        },
     }
 }
 
@@ -751,6 +931,20 @@ const Rx = struct {
             // For pure acceptance (fullmatch yes/no) lazy ≡ greedy, so it is
             // swallowed — it must NOT fall through as a literal '?' atom.
             if (self.peek() == '?') self.i += 1;
+            // Multiple-repeat fence: another quantifier directly after a
+            // (possibly lazy) quantifier — `a**`, `a++`, `a+?*`, `a{2}*`,
+            // `a*{2}` — is re.error "multiple repeat" in CPython (or, ≥3.11,
+            // possessive semantics for `?+`/`*+`/`++`). Both are
+            // non-equivalent to treating the second mark as a literal, so
+            // refuse the pattern (BadRegex → the check-time caller skips).
+            if (self.peek()) |c2| {
+                if (c2 == '?' or c2 == '*' or c2 == '+') return error.BadRegex;
+                if (c2 == '{') {
+                    // only a well-formed {m}/{m,n}/{m,} counts as a quantifier
+                    // (parseQuantifier restores i when it is a literal '{')
+                    if (try self.parseQuantifier(rep) != null) return error.BadRegex;
+                }
+            }
             return rep;
         }
 
@@ -844,6 +1038,15 @@ const Rx = struct {
                         items[0] = item;
                         return self.node(.{ .class = .{ .negated = false, .items = items } });
                     }
+                    // `\0` followed by an octal digit is an OCTAL escape in
+                    // Python (`\07` is BEL, `\012` is LF) — unsupported here.
+                    // Compiling it as NUL + literal digit would silently
+                    // mis-check, so refuse (BadRegex → the caller skips).
+                    if (e == '0') {
+                        if (self.peek()) |d| {
+                            if (d >= '0' and d <= '7') return error.BadRegex;
+                        }
+                    }
                     return switch (e) {
                         'b' => self.node(.wordb),
                         'B' => self.node(.nwordb),
@@ -925,7 +1128,14 @@ const Rx = struct {
 
         /// Char-valued escape INSIDE a character class: `\b` is backspace
         /// there (Python semantics), `\xHH` is hex; the rest via escapeChar.
+        /// `\0` followed by an octal digit is an octal escape in Python here
+        /// too — refuse it (same divergence-safe skip as the atom position).
         fn classEscapeChar(self: *ParseState, e: u8) error{BadRegex}!u8 {
+            if (e == '0') {
+                if (self.peek()) |d| {
+                    if (d >= '0' and d <= '7') return error.BadRegex;
+                }
+            }
             return switch (e) {
                 'b' => 0x08,
                 'x' => try self.hexEscape(),
@@ -947,11 +1157,16 @@ const Rx = struct {
     }
 
     /// Char-valued escapes shared by atom and class positions. Unknown
-    /// ASCII-letter escapes are reserved in Python (`re.error: bad escape`),
-    /// and `\1`-`\9` are backreferences — both return null → BadRegex → the
-    /// check-time caller skips, matching Python's silent re.error path.
-    /// Genuinely unsupported (also null): `\u`/`\U`/`\N` unicode escapes and
-    /// octal `\0oo` beyond bare `\0` — Python compiles these; a value checked
+    /// ASCII-letter escapes are reserved in Python (`re.error: bad escape`) —
+    /// null → BadRegex → skip, matching Python's silent re.error path
+    /// (PARITY). `\1`-`\9` (backreferences in the atom position, octal in a
+    /// class) also return null, but that is a deliberate skip-DIVERGENCE from
+    /// Python, which compiles them: the §3.5 dialect validator already
+    /// rejects backrefs at load time and vakedc now skips the
+    /// matches-constraint on dialect-rejected patterns, so the divergence is
+    /// unobservable through `check`. Genuinely unsupported (also null or
+    /// BadRegex at the call sites): `\u`/`\U`/`\N` unicode escapes and octal
+    /// `\0oo` beyond bare `\0` — Python compiles these; a value checked
     /// against such a pattern is skipped rather than mis-checked.
     fn escapeChar(c: u8) ?u8 {
         return switch (c) {
@@ -1172,6 +1387,400 @@ pub fn regexFullMatch(a: std.mem.Allocator, regex_literal: []const u8, s: []cons
 }
 
 // --------------------------------------------------------------------------- #
+// Value-prop helpers (check.py `_grant_ref_parts`, `_ref_dotted`, `_lit_str`,
+// `_string_lit`, `_string_list_values`)
+// --------------------------------------------------------------------------- #
+
+const DomGrant = struct { dom: []const u8, grant: []const u8 };
+
+/// check.py `_grant_ref_parts` — a bare `domain.grant` ref (no args/record).
+fn grantRefParts(v: parser.Expr) ?DomGrant {
+    switch (v) {
+        .app => |ap| {
+            if (ap.args == null and ap.record == null and ap.ref.parts.len == 2)
+                return .{ .dom = ap.ref.parts[0], .grant = ap.ref.parts[1] };
+            return null;
+        },
+        else => return null,
+    }
+}
+
+/// check.py `_ref_dotted` — a bare ref (any arity), as the parsed Ref.
+fn bareRef(v: parser.Expr) ?parser.Ref {
+    switch (v) {
+        .app => |ap| {
+            if (ap.args == null and ap.record == null) return ap.ref;
+            return null;
+        },
+        else => return null,
+    }
+}
+
+/// check.py `_lit_str` / `_string_lit` — the value of a string literal.
+fn litStr(v: ?parser.Expr) ?[]const u8 {
+    const e = v orelse return null;
+    switch (e) {
+        .literal => |l| return if (l.kind == .string) l.value else null,
+        else => return null,
+    }
+}
+
+fn refSpan4(r: parser.Ref) Span4 {
+    return .{ .bs = r.byte_start, .be = r.byte_end, .line = r.line, .col = r.col };
+}
+
+// --------------------------------------------------------------------------- #
+// Closed-world reference resolution helpers (check.py #7 — 0011 §6.1 stage 2)
+// --------------------------------------------------------------------------- #
+
+pub const KindName = struct { kind: []const u8, name: []const u8 };
+
+fn containsKindName(list: []const KindName, kind: []const u8, name: []const u8) bool {
+    for (list) |kn| {
+        if (std.mem.eql(u8, kn.kind, kind) and std.mem.eql(u8, kn.name, name)) return true;
+    }
+    return false;
+}
+
+fn containsDeclName(list: []const KindName, name: []const u8) bool {
+    for (list) |kn| if (std.mem.eql(u8, kn.name, name)) return true;
+    return false;
+}
+
+/// check.py `_collect_runtime_decls` — every (kind, name) declared anywhere
+/// within the runtime subtree (P.Decl children only, recursively).
+fn collectRuntimeDecls(a: std.mem.Allocator, decl: *const parser.Decl, out: *std.ArrayList(KindName)) error{OutOfMemory}!void {
+    for (decl.body) |st| switch (st) {
+        .decl => |d| {
+            try out.append(a, .{ .kind = d.kind, .name = d.name });
+            try collectRuntimeDecls(a, d, out);
+        },
+        else => {},
+    };
+}
+
+/// check.py `_ref_fields()` — `_DEPENDS_FIELDS` ∪ {fibers, budget, runclass}.
+fn isRefField(name: []const u8) bool {
+    const fields = [_][]const u8{ "input", "output", "from", "source", "engine", "fibers", "budget", "runclass" };
+    for (fields) |f| if (std.mem.eql(u8, f, name)) return true;
+    return false;
+}
+
+/// check.py `_TOPOLOGY_DEFERRED_KINDS` — trust/quorum/probe subtrees are
+/// skipped by the depends-ref walk ONLY (conformance recursion still runs).
+fn isTopologyDeferred(kind: []const u8) bool {
+    return std.mem.eql(u8, kind, "trust") or std.mem.eql(u8, kind, "quorum") or
+        std.mem.eql(u8, kind, "probe");
+}
+
+const RefHit = struct { ref: parser.Ref, field: []const u8, owner: *const parser.Decl };
+
+/// check.py `_refs_in_value` — the bare-ref dependency targets of a value:
+/// the value itself when it is a bare ref-app, or the bare ref-app elements
+/// of a list literal. Calls / config blocks / nested refs are NOT targets.
+fn appendBareRefs(a: std.mem.Allocator, v: parser.Expr, field: []const u8, owner: *const parser.Decl, out: *std.ArrayList(RefHit)) error{OutOfMemory}!void {
+    if (bareRef(v)) |r| {
+        try out.append(a, .{ .ref = r, .field = field, .owner = owner });
+        return;
+    }
+    switch (v) {
+        .list => |items| for (items) |x| {
+            if (bareRef(x)) |r| try out.append(a, .{ .ref = r, .field = field, .owner = owner });
+        },
+        else => {},
+    }
+}
+
+/// check.py `_walk_depends_refs` — every bare ref appearing in a ref-bearing
+/// field within the decl subtree (topology-deferred kinds skipped).
+fn walkDependsRefs(a: std.mem.Allocator, decl: *const parser.Decl, out: *std.ArrayList(RefHit)) error{OutOfMemory}!void {
+    for (decl.body) |st| switch (st) {
+        .assign => |asn| if (isRefField(asn.target)) {
+            try appendBareRefs(a, asn.value.*, asn.target, decl, out);
+        },
+        .decl => |d| if (!isTopologyDeferred(d.kind)) try walkDependsRefs(a, d, out),
+        else => {},
+    };
+}
+
+/// check.py `_ACCESSOR_REFS` — (head, accessor-field) -> the kind the middle
+/// segment must name.
+fn accessorKind(head: []const u8, field: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, head, "secret") and std.mem.eql(u8, field, "path")) return "secret";
+    if (std.mem.eql(u8, head, "hostResource") and std.mem.eql(u8, field, "dsn")) return "hostResource";
+    return null;
+}
+
+/// check.py `_walk_accessor_refs` — every 3-part accessor ref anywhere in the
+/// decl subtree, incl. inside config-block records and value lists.
+fn walkAccessorRefs(a: std.mem.Allocator, decl: *const parser.Decl, out: *std.ArrayList(parser.Ref)) error{OutOfMemory}!void {
+    for (decl.body) |st| switch (st) {
+        .assign => |asn| try scanAccessorValue(a, asn.value.*, out),
+        .app => |ap| try scanAccessorApp(a, ap, out),
+        .decl => |d| try walkAccessorRefs(a, d, out),
+        else => {},
+    };
+}
+
+fn scanAccessorValue(a: std.mem.Allocator, v: parser.Expr, out: *std.ArrayList(parser.Ref)) error{OutOfMemory}!void {
+    switch (v) {
+        .app => |ap| try scanAccessorApp(a, ap, out),
+        .list => |items| for (items) |x| try scanAccessorValue(a, x, out),
+        .record => |entries| for (entries) |e| switch (e) {
+            .assign => |asn| try scanAccessorValue(a, asn.value.*, out),
+            else => {},
+        },
+        .literal => {},
+    }
+}
+
+fn scanAccessorApp(a: std.mem.Allocator, ap: parser.App, out: *std.ArrayList(parser.Ref)) error{OutOfMemory}!void {
+    if (ap.args == null and ap.record == null and ap.ref.parts.len == 3) {
+        try out.append(a, ap.ref);
+    }
+    if (ap.record) |rec| for (rec) |e| switch (e) {
+        .assign => |asn| try scanAccessorValue(a, asn.value.*, out),
+        else => {},
+    };
+    if (ap.args) |args| for (args) |arg| try scanAccessorValue(a, arg, out);
+}
+
+/// check.py `_collect_runtime_namespaces` — `namespace` blocks declared
+/// DIRECTLY inside the runtime (decision D3, RFC 0017). Last head wins.
+const LocalNs = struct { head: []const u8, open: bool, members: []const []const u8 };
+
+fn collectRuntimeNamespaces(a: std.mem.Allocator, runtime: *const parser.Decl) error{OutOfMemory}![]const LocalNs {
+    var out: std.ArrayList(LocalNs) = .empty;
+    for (runtime.body) |st| switch (st) {
+        .decl => |d| if (std.mem.eql(u8, d.kind, "namespace")) {
+            var is_open = false;
+            var members: std.ArrayList([]const u8) = .empty;
+            for (d.body) |x| switch (x) {
+                .open => is_open = true,
+                .member => |m| if (!containsString(members.items, m.name)) try members.append(a, m.name),
+                else => {},
+            };
+            const spec = LocalNs{ .head = d.name, .open = is_open, .members = try members.toOwnedSlice(a) };
+            var replaced = false;
+            for (out.items) |*existing| {
+                if (std.mem.eql(u8, existing.head, d.name)) {
+                    existing.* = spec; // dict semantics: last wins
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) try out.append(a, spec);
+        },
+        else => {},
+    };
+    return out.toOwnedSlice(a);
+}
+
+// --------------------------------------------------------------------------- #
+// `use`-import path resolution (check.py `_collect_import_decls`) — posix
+// os.path.join / os.path.normpath equivalents, exact enough that the same
+// files open (the strings are never printed).
+// --------------------------------------------------------------------------- #
+
+fn joinPath(a: std.mem.Allocator, base: []const u8, p: []const u8) error{OutOfMemory}![]const u8 {
+    if (p.len > 0 and p[0] == '/') return p;
+    if (base.len == 0) return p;
+    if (base[base.len - 1] == '/') return std.fmt.allocPrint(a, "{s}{s}", .{ base, p });
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ base, p });
+}
+
+fn normPath(a: std.mem.Allocator, p: []const u8) error{OutOfMemory}![]const u8 {
+    if (p.len == 0) return ".";
+    const is_abs = p[0] == '/';
+    var comps: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, p, '/');
+    while (it.next()) |comp| {
+        if (comp.len == 0 or std.mem.eql(u8, comp, ".")) continue;
+        if (std.mem.eql(u8, comp, "..")) {
+            if (comps.items.len > 0 and !std.mem.eql(u8, comps.items[comps.items.len - 1], "..")) {
+                _ = comps.pop();
+            } else if (!is_abs) {
+                try comps.append(a, comp);
+            }
+            continue;
+        }
+        try comps.append(a, comp);
+    }
+    if (comps.items.len == 0) return if (is_abs) "/" else ".";
+    const joined = try std.mem.join(a, "/", comps.items);
+    if (is_abs) return std.fmt.allocPrint(a, "/{s}", .{joined});
+    return joined;
+}
+
+// --------------------------------------------------------------------------- #
+// Network-egress host classification (check.py `_required_egress_grant`) —
+// Python `ipaddress.ip_address` semantics for loopback/private detection.
+// --------------------------------------------------------------------------- #
+
+fn parseIpv4(h: []const u8) ?[4]u8 {
+    var octets: [4]u8 = undefined;
+    var it = std.mem.splitScalar(u8, h, '.');
+    var i: usize = 0;
+    while (it.next()) |part| {
+        if (i >= 4) return null;
+        if (part.len == 0 or part.len > 3) return null;
+        // Python 3.9+: leading zeros are rejected ("010" is not an address)
+        if (part.len > 1 and part[0] == '0') return null;
+        var v: u32 = 0;
+        for (part) |c| {
+            if (c < '0' or c > '9') return null;
+            v = v * 10 + (c - '0');
+        }
+        if (v > 255) return null;
+        octets[i] = @intCast(v);
+        i += 1;
+    }
+    if (i != 4) return null;
+    return octets;
+}
+
+/// The IPv4 is_private networks of Python `ipaddress` (loopback 127/8 is
+/// handled by the caller first, exactly like check.py).
+fn isPrivateV4(ip: [4]u8) bool {
+    if (ip[0] == 0) return true; // 0.0.0.0/8
+    if (ip[0] == 10) return true; // 10.0.0.0/8
+    if (ip[0] == 127) return true; // 127.0.0.0/8 (caller catches first)
+    if (ip[0] == 169 and ip[1] == 254) return true; // 169.254.0.0/16
+    if (ip[0] == 172 and ip[1] >= 16 and ip[1] <= 31) return true; // 172.16.0.0/12
+    if (ip[0] == 192 and ip[1] == 0 and ip[2] == 0) return true; // 192.0.0.0/24
+    if (ip[0] == 192 and ip[1] == 0 and ip[2] == 2) return true; // 192.0.2.0/24
+    if (ip[0] == 192 and ip[1] == 168) return true; // 192.168.0.0/16
+    if (ip[0] == 198 and (ip[1] == 18 or ip[1] == 19)) return true; // 198.18.0.0/15
+    if (ip[0] == 198 and ip[1] == 51 and ip[2] == 100) return true; // 198.51.100.0/24
+    if (ip[0] == 203 and ip[1] == 0 and ip[2] == 113) return true; // 203.0.113.0/24
+    if (ip[0] >= 240) return true; // 240.0.0.0/4 (incl. 255.255.255.255)
+    return false;
+}
+
+/// Minimal IPv6 parse to 16 bytes: hex groups + one `::`. Zone ids, embedded
+/// IPv4 tails, and other exotica return null (the caller then classifies the
+/// host as `egress`, the same conservative bucket Python puts DNS names in).
+fn parseIpv6(h: []const u8) ?[16]u8 {
+    var groups: [8]u16 = undefined;
+    var head_n: usize = 0;
+    var tail: [8]u16 = undefined;
+    var tail_n: usize = 0;
+    var seen_dc = false;
+    var i: usize = 0;
+    const n = h.len;
+    if (n < 2) return null;
+    if (std.mem.startsWith(u8, h, "::")) {
+        seen_dc = true;
+        i = 2;
+    }
+    while (i < n) {
+        var j = i;
+        var v: u32 = 0;
+        var digits: usize = 0;
+        while (j < n and h[j] != ':') : (j += 1) {
+            const c = h[j];
+            const d: u32 = switch (c) {
+                '0'...'9' => c - '0',
+                'a'...'f' => c - 'a' + 10,
+                'A'...'F' => c - 'A' + 10,
+                else => return null,
+            };
+            v = v * 16 + d;
+            digits += 1;
+            if (digits > 4) return null;
+        }
+        if (digits == 0) return null;
+        if (seen_dc) {
+            if (tail_n >= 8) return null;
+            tail[tail_n] = @intCast(v);
+            tail_n += 1;
+        } else {
+            if (head_n >= 8) return null;
+            groups[head_n] = @intCast(v);
+            head_n += 1;
+        }
+        if (j == n) break;
+        // h[j] == ':'
+        if (j + 1 < n and h[j + 1] == ':') {
+            if (seen_dc) return null;
+            seen_dc = true;
+            i = j + 2;
+            if (i == n) break;
+        } else {
+            if (j + 1 == n) return null; // trailing single ':'
+            i = j + 1;
+        }
+    }
+    var full: [8]u16 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    if (seen_dc) {
+        if (head_n + tail_n > 7) return null;
+        for (0..head_n) |k| full[k] = groups[k];
+        for (0..tail_n) |k| full[8 - tail_n + k] = tail[k];
+    } else {
+        if (head_n != 8) return null;
+        full = groups[0..8].*;
+    }
+    var bytes: [16]u8 = undefined;
+    for (full, 0..) |g, k| {
+        bytes[k * 2] = @intCast(g >> 8);
+        bytes[k * 2 + 1] = @intCast(g & 0xff);
+    }
+    return bytes;
+}
+
+/// check.py `_required_egress_grant` — loopback < lan < egress.
+fn requiredEgressGrant(host: []const u8) []const u8 {
+    const h = std.mem.trim(u8, host, " \t\n\r\x0b\x0c");
+    if (std.mem.eql(u8, h, "localhost")) return "loopback";
+    if (parseIpv4(h)) |ip| {
+        if (ip[0] == 127) return "loopback";
+        if (isPrivateV4(ip)) return "lan";
+        return "egress";
+    }
+    if (std.mem.indexOfScalar(u8, h, ':') != null) {
+        if (parseIpv6(h)) |b| {
+            var all_zero = true;
+            for (b[0..15]) |x| {
+                if (x != 0) {
+                    all_zero = false;
+                    break;
+                }
+            }
+            if (all_zero and (b[15] == 0 or b[15] == 1)) return if (b[15] == 1) "loopback" else "lan"; // ::1 / ::
+            if (b[0] & 0xfe == 0xfc) return "lan"; // fc00::/7 unique-local
+            if (b[0] == 0xfe and b[1] & 0xc0 == 0x80) return "lan"; // fe80::/10 link-local
+            if (b[0] == 0x20 and b[1] == 0x01 and b[2] == 0x0d and b[3] == 0xb8) return "lan"; // 2001:db8::/32
+            return "egress";
+        }
+    }
+    return "egress"; // non-loopback DNS name -> public egress (conservative)
+}
+
+// --------------------------------------------------------------------------- #
+// Sibling-scope indexes (check.py `_mesh_node_index` / `_decl_kind_index`)
+// --------------------------------------------------------------------------- #
+
+const NameSet = std.StringHashMapUnmanaged(void);
+const MeshIndex = std.StringArrayHashMapUnmanaged(NameSet); // mesh -> node names (last mesh wins)
+const KindIndex = std.StringHashMapUnmanaged([]const u8); // decl name -> kind (last wins)
+const NetworkIndex = std.StringArrayHashMapUnmanaged(*const parser.Decl); // network decls (last wins)
+
+fn indexSiblingDecl(a: std.mem.Allocator, d: *const parser.Decl, meshes: *MeshIndex, kinds: *KindIndex, networks: *NetworkIndex) error{OutOfMemory}!void {
+    if (std.mem.eql(u8, d.kind, "mesh")) {
+        var names: NameSet = .empty;
+        for (d.body) |st| switch (st) {
+            .node => |n| try names.put(a, n.name, {}),
+            else => {},
+        };
+        try meshes.put(a, d.name, names);
+    }
+    try kinds.put(a, d.name, d.kind);
+    if (std.mem.eql(u8, d.kind, "network")) {
+        try networks.put(a, d.name, d);
+    }
+}
+
+// --------------------------------------------------------------------------- #
 // The checker
 // --------------------------------------------------------------------------- #
 
@@ -1181,6 +1790,65 @@ fn kindSchemaName(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "network")) return "networkMembrane";
     return kind;
 }
+
+/// by_name_kind entry — (kind, name) of a TOP-LEVEL decl (check.py builds a
+/// dict keyed on the pair; get() is last-wins, key iteration first-insertion).
+const NamedDecl = struct { kind: []const u8, name: []const u8, decl: *const parser.Decl };
+
+fn byNameKindGet(list: []const NamedDecl, kind: []const u8, name: []const u8) ?*const parser.Decl {
+    var i = list.len;
+    while (i > 0) {
+        i -= 1; // dict value semantics: the LAST decl bound to the key
+        if (std.mem.eql(u8, list[i].kind, kind) and std.mem.eql(u8, list[i].name, name)) return list[i].decl;
+    }
+    return null;
+}
+
+/// check.py `_resolve_kind` — the kind of the in-file decl a dotted ref names.
+fn resolveKindOf(list: []const NamedDecl, parts: []const []const u8) ?[]const u8 {
+    if (parts.len == 2 and parser.isKind(parts[0])) {
+        if (byNameKindGet(list, parts[0], parts[1]) != null) return parts[0];
+        return null;
+    }
+    if (parts.len == 1) {
+        // dict key order is first-insertion; the first name match wins
+        for (list) |nd| if (std.mem.eql(u8, nd.name, parts[0])) return nd.kind;
+    }
+    return null;
+}
+
+/// check.py `_item_schema_of` — the item-schema name a catalog/index declares
+/// via `schema = schema.X`.
+fn itemSchemaOf(bindings: *const Bindings) ?[]const u8 {
+    const s = bindings.get("schema") orelse return null;
+    const r = bareRef(s) orelse return null;
+    return r.parts[r.parts.len - 1];
+}
+
+/// #224 — the side-effecting effect vocabulary (check.py `_SIDE_EFFECTS`).
+fn isSideEffect(eff: []const u8) bool {
+    const side = [_][]const u8{ "io", "time", "random", "network", "llm" };
+    for (side) |s| if (std.mem.eql(u8, s, eff)) return true;
+    return false;
+}
+
+/// #225 — eBPF hook rosters (check.py `_EBPF_OBSERVE_ONLY_HOOKS` /
+/// `_EBPF_ENFORCE_HOOKS`).
+fn isEbpfObserveOnlyHook(h: []const u8) bool {
+    const hooks = [_][]const u8{ "kprobe", "kretprobe", "tracepoint", "perf" };
+    for (hooks) |x| if (std.mem.eql(u8, x, h)) return true;
+    return false;
+}
+
+fn isEbpfEnforceHook(h: []const u8) bool {
+    const hooks = [_][]const u8{ "lsm", "cgroup_connect", "cgroup_skb", "xdp", "tc", "override_return", "send_signal" };
+    for (hooks) |x| if (std.mem.eql(u8, x, h)) return true;
+    return false;
+}
+
+/// Python `sorted(_EBPF_HOOKS)` rendered as a list — frozen here (the roster
+/// is closed; check.py sorts the union at message-format time).
+const ebpf_hooks_sorted = "['cgroup_connect', 'cgroup_skb', 'kprobe', 'kretprobe', 'lsm', 'override_return', 'perf', 'send_signal', 'tc', 'tracepoint', 'xdp']";
 
 pub const Builtins = struct {
     items: []const parser.Item,
@@ -1195,6 +1863,7 @@ const Checker = struct {
     smap: SourceMap,
     b_file: []const u8,
     b_smap: SourceMap,
+    by_name_kind: []const NamedDecl = &.{},
     diags: std.ArrayList(Diagnostic) = .empty,
 
     fn smapFor(self: *const Checker, f: []const u8) ?*const SourceMap {
@@ -1204,6 +1873,10 @@ const Checker = struct {
     }
 
     fn emit(self: *Checker, code: []const u8, file: []const u8, span: Span4, decl_label: []const u8, message: []const u8) error{OutOfMemory}!void {
+        try self.emitSev(code, file, span, decl_label, message, .@"error");
+    }
+
+    fn emitSev(self: *Checker, code: []const u8, file: []const u8, span: Span4, decl_label: []const u8, message: []const u8, severity: diagnostic.Severity) error{OutOfMemory}!void {
         try self.diags.append(self.a, .{
             .code = code,
             .message = message,
@@ -1213,7 +1886,7 @@ const Checker = struct {
             .byte_start = span.bs,
             .byte_end = span.be,
             .decl = decl_label,
-            .severity = .@"error",
+            .severity = severity,
             .related = &.{},
         });
     }
@@ -1297,7 +1970,7 @@ const Checker = struct {
         }
     }
 
-    fn checkCapabilityWellformed(self: *Checker, spec: *const CapabilitySpec) error{OutOfMemory}!void {
+    fn checkCapabilityWellformed(self: *Checker, spec: *CapabilitySpec) error{OutOfMemory}!void {
         const smap = self.smapFor(spec.origin_file);
         const dspan = spec.decl_span;
         const label = try self.declLabel("capability", spec.domain);
@@ -1315,9 +1988,15 @@ const Checker = struct {
             const gs = (if (smap) |m| m.fieldNameSpan(dspan.bs, dspan.be, g) else null) orelse dspan;
             try self.emit("E-CAP-ORDER-DANGLING", spec.origin_file, gs, label, try std.fmt.allocPrint(self.a, "capability `{s}`: order names grant `{s}` which is not declared by a `grant` statement", .{ spec.domain, g }));
         }
-        // 2/3. acyclicity (antisymmetry) of the closure
-        if (try transitiveClosureCycle(self.a, spec.grants, spec.order_chains)) |cyc| {
+        // 2/3. acyclicity (antisymmetry) of the closure; the closure is kept
+        // on the spec for every later capability check (check.py sets
+        // spec.leq the same way).
+        const closure = try computeClosure(self.a, spec.grants, spec.order_chains);
+        if (closure.cycle) |cyc| {
             try self.emit("E-CAP-ORDER-CYCLE", spec.origin_file, dspan, label, try std.fmt.allocPrint(self.a, "capability `{s}`: order is cyclic (`{s}` and `{s}` are mutually ≤) — the relation must be a partial order", .{ spec.domain, cyc[0], cyc[1] }));
+            spec.leq = try identityLeq(self.a, spec.grants);
+        } else {
+            spec.leq = closure.leq;
         }
     }
 
@@ -1480,9 +2159,13 @@ const Checker = struct {
                 try self.emit("E-CONFORM-TYPE", self.file, span, label, try std.fmt.allocPrint(self.a, "field `{s}` of schema `{s}` expects `{s}` but got {s}", .{ bound.name, schema.name, f.type_text, try renderValue(self.a, bound.value) }));
             }
             try self.checkFieldConstraints(bound.value, f, label, &self.smap, self.file, dspan);
-            // matches (regex) — applies to scalar string/path values
+            // matches (regex) — applies to scalar string/path values.
+            // 0011 §3.5: a pattern the dialect validator rejected was already
+            // reported at load (E-SCHEMA-BAD-REGEX); the matches-constraint
+            // is undefined on it — skip, exactly like check.py.
             for (f.refinements) |r| switch (r) {
                 .matches => |rx| {
+                    if (try regexDialectError(self.a, rx) != null) continue;
                     const vspan = self.smap.fieldValueSpan(dspan.bs, dspan.be, bound.name) orelse dspan;
                     try self.checkMatches(bound.value, rx, f, label, self.file, vspan);
                 },
@@ -1550,43 +2233,686 @@ const Checker = struct {
         }
     }
 
-    // --- tree walk (check.py `_check_decl_tree`, slice-1 subset) ------------
+    // --- tree walk (check.py `_check_decl_tree`) ----------------------------
 
-    fn checkDeclTree(self: *Checker, decl: *const parser.Decl) error{OutOfMemory}!void {
+    fn checkDeclTree(self: *Checker, decl: *const parser.Decl, sibling_meshes: *const MeshIndex, sibling_kinds: *const KindIndex, sibling_networks: ?*const NetworkIndex) error{OutOfMemory}!void {
         const kind = decl.kind;
         // Conformance for kinds that have a schema (skip the meta-kinds).
         if (!std.mem.eql(u8, kind, "schema") and !std.mem.eql(u8, kind, "capability")) {
             if (self.reg.getSchema(kindSchemaName(kind))) |schema| {
                 try self.conformDecl(decl, schema);
             }
-            // slice 2: _check_generics (E-GENERIC-INCONSISTENT)
+            try self.checkGenerics(decl);
         }
-        // Mesh: conform each node body against meshNode (slice 2: capability
-        // refs, attenuation, reachability, egress).
+        // Mesh: node conformance + capability refs + attenuation +
+        // reachability lints + network-domain POLA (check.py `_check_mesh`).
         if (std.mem.eql(u8, kind, "mesh")) {
-            if (self.reg.getSchema("meshNode")) |ms| {
-                for (decl.body) |st| switch (st) {
-                    .node => |n| try self.conformNode(n, ms),
-                    else => {},
-                };
-            }
+            try self.checkMesh(decl, sibling_networks);
         }
-        // Workflow: conform each step body against workflowStep (slice 2:
-        // agent-target refs, determinism, cycle/depth).
+        // Workflow (#27): step conformance, agent targets, determinism,
+        // DAG/depth (check.py `_check_workflow`).
         if (std.mem.eql(u8, kind, "workflow")) {
-            if (self.reg.getSchema("workflowStep")) |ws| {
-                for (decl.body) |st| switch (st) {
-                    .node => |n| try self.conformNode(n, ws),
-                    else => {},
-                };
-            }
+            try self.checkWorkflow(decl, sibling_meshes, sibling_kinds);
         }
-        // slice 2: _check_ebpf_intent (E-EBPF-*)
-        // Recurse into nested declarations.
+        // eBPF (#225): hook/intent typing (check.py `_check_ebpf_intent`).
+        if (std.mem.eql(u8, kind, "ebpf")) {
+            try self.checkEbpfIntent(decl);
+        }
+        // Recurse into nested declarations; decls of THIS body are the
+        // sibling scope (meshes/kinds/network membranes) for the children.
+        var child_meshes: MeshIndex = .empty;
+        var child_kinds: KindIndex = .empty;
+        var child_networks: NetworkIndex = .empty;
         for (decl.body) |st| switch (st) {
-            .decl => |inner| try self.checkDeclTree(inner),
+            .decl => |inner| try indexSiblingDecl(self.a, inner, &child_meshes, &child_kinds, &child_networks),
             else => {},
         };
+        for (decl.body) |st| switch (st) {
+            .decl => |inner| try self.checkDeclTree(inner, &child_meshes, &child_kinds, &child_networks),
+            else => {},
+        };
+    }
+
+    // --- generics (§5, check.py `_check_generics`) --------------------------
+
+    fn checkGenerics(self: *Checker, decl: *const parser.Decl) error{OutOfMemory}!void {
+        if (!std.mem.eql(u8, decl.kind, "catalog")) return;
+        const dspan = declSpan4(decl);
+        const label = try self.declLabel(decl.kind, decl.name);
+        var bindings = try declFieldBindings(self.a, decl.body);
+        const frm = bindings.get("from") orelse return;
+        const ref = bareRef(frm) orelse return;
+        const dg = try ref.dotted(self.a);
+        // `from` must reference an `index` (§5.1: from : Index<T>).
+        if (resolveKindOf(self.by_name_kind, ref.parts)) |target_kind| {
+            if (!std.mem.eql(u8, target_kind, "index")) {
+                const span = self.smap.fieldValueSpan(dspan.bs, dspan.be, "from") orelse dspan;
+                try self.emit("E-GENERIC-INCONSISTENT", self.file, span, label, try std.fmt.allocPrint(self.a, "catalog `from` must target an `index` (Index<T>); `{s}` is a `{s}`", .{ dg, target_kind }));
+            }
+        }
+        // item-type agreement: catalog `schema` vs the target index `schema`.
+        const cat_item = itemSchemaOf(&bindings) orelse return;
+        const last = ref.parts[ref.parts.len - 1];
+        const idx_decl = byNameKindGet(self.by_name_kind, "index", last) orelse return;
+        var idx_bindings = try declFieldBindings(self.a, idx_decl.body);
+        const idx_item = itemSchemaOf(&idx_bindings) orelse return;
+        if (!std.mem.eql(u8, idx_item, cat_item)) {
+            const span = self.smap.fieldValueSpan(dspan.bs, dspan.be, "from") orelse dspan;
+            try self.emit("E-GENERIC-INCONSISTENT", self.file, span, label, try std.fmt.allocPrint(self.a, "catalog item type `{s}` disagrees with index `{s}` item type `{s}`", .{ cat_item, last, idx_item }));
+        }
+    }
+
+    // --- capabilities (§4, check.py `_check_mesh` and friends) --------------
+
+    const MeshNodeInfo = struct {
+        node: *const parser.NodeDecl,
+        grants: []const DomGrant,
+        needs: []const DomGrant,
+    };
+
+    /// check.py `_check_capability_refs`. NOTE the decl label: Python passes
+    /// the NodeDecl to `_emit`, and `_decl_label` has no NodeDecl arm, so the
+    /// diagnostic's `decl` is the EMPTY string — bug-compatible.
+    fn checkCapabilityRefs(self: *Checker, domain: []const u8, grant: []const u8, span: Span4) error{OutOfMemory}!bool {
+        const cap = self.reg.getCap(domain) orelse {
+            try self.emit("E-CAP-UNKNOWN-DOMAIN", self.file, span, "", try std.fmt.allocPrint(self.a, "unknown capability domain `{s}` in `{s}.{s}`", .{ domain, domain, grant }));
+            return false;
+        };
+        if (!containsString(cap.grants, grant)) {
+            try self.emit("E-CAP-UNKNOWN-GRANT", self.file, span, "", try std.fmt.allocPrint(self.a, "`{s}` is not a declared grant of capability domain `{s}`", .{ grant, domain }));
+            return false;
+        }
+        return true;
+    }
+
+    /// `", ".join("dom.g" …)` over the grants of one domain, or null if none.
+    fn joinGrantsInDom(self: *Checker, grants: []const DomGrant, dom: []const u8) error{OutOfMemory}!?[]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        var any = false;
+        for (grants) |g| {
+            if (!std.mem.eql(u8, g.dom, dom)) continue;
+            if (any) try out.appendSlice(self.a, ", ");
+            try out.appendSlice(self.a, try std.fmt.allocPrint(self.a, "{s}.{s}", .{ g.dom, g.grant }));
+            any = true;
+        }
+        if (!any) return null;
+        return try out.toOwnedSlice(self.a);
+    }
+
+    fn checkMesh(self: *Checker, mesh: *const parser.Decl, sibling_networks: ?*const NetworkIndex) error{OutOfMemory}!void {
+        const mesh_schema = self.reg.getSchema("meshNode");
+        const mlabel = try self.declLabel(mesh.kind, mesh.name);
+
+        // node name -> info; duplicate names keep-LAST (Python dict assign),
+        // but conformance + cap-ref validation run for EVERY node statement.
+        var node_map: std.StringArrayHashMapUnmanaged(MeshNodeInfo) = .empty;
+        for (mesh.body) |st| switch (st) {
+            .node => |n| {
+                var bindings = try nodeBindings(self.a, n.body);
+                const nspan = nodeSpan4(n);
+                if (mesh_schema) |ms| try self.conformNode(n, ms);
+                // validate + collect capability grants
+                var grants: std.ArrayList(DomGrant) = .empty;
+                if (bindings.get("capabilities")) |caps| switch (caps) {
+                    .list => |items| for (items) |e| {
+                        const dg = grantRefParts(e) orelse continue;
+                        const cspan = self.smap.fieldValueSpan(n.byte_start, n.byte_end, "capabilities") orelse nspan;
+                        if (try self.checkCapabilityRefs(dg.dom, dg.grant, cspan)) {
+                            try grants.append(self.a, dg);
+                        }
+                    },
+                    else => {},
+                };
+                // collect declared `needs` (same ref shape as capabilities)
+                var needs: std.ArrayList(DomGrant) = .empty;
+                if (bindings.get("needs")) |np| switch (np) {
+                    .list => |items| for (items) |e| {
+                        const dg = grantRefParts(e) orelse continue;
+                        const nspan2 = self.smap.fieldValueSpan(n.byte_start, n.byte_end, "needs") orelse nspan;
+                        if (try self.checkCapabilityRefs(dg.dom, dg.grant, nspan2)) {
+                            try needs.append(self.a, dg);
+                        }
+                    },
+                    else => {},
+                };
+                try node_map.put(self.a, n.name, .{
+                    .node = n,
+                    .grants = try grants.toOwnedSlice(self.a),
+                    .needs = try needs.toOwnedSlice(self.a),
+                });
+            },
+            else => {},
+        };
+
+        // Attenuation on delegation edges (§4.4).
+        for (mesh.body) |st| switch (st) {
+            .edge => |ed| {
+                var i: usize = 0;
+                while (i + 1 < ed.refs.len) : (i += 1) {
+                    const a_ref = ed.refs[i];
+                    const b_ref = ed.refs[i + 1];
+                    if (a_ref.parts.len != 1 or b_ref.parts.len != 1) continue;
+                    const sender = a_ref.parts[0];
+                    const receiver = b_ref.parts[0];
+                    const s_info = node_map.get(sender) orelse continue;
+                    const r_info = node_map.get(receiver) orelse continue;
+                    try self.checkEdgeAttenuation(sender, receiver, s_info.grants, r_info.grants, a_ref, b_ref, mlabel);
+                }
+            },
+            else => {},
+        };
+
+        // Capability-reachability analysis (#226 / 0026).
+        try self.checkCapabilityReachability(mesh, &node_map, mlabel);
+
+        // Network-domain POLA (#226 / 0026).
+        try self.checkEgressUse(mesh, &node_map, sibling_networks, mlabel);
+    }
+
+    /// check.py `_check_edge_attenuation` (§4.4).
+    fn checkEdgeAttenuation(self: *Checker, sender: []const u8, receiver: []const u8, s_grants: []const DomGrant, r_grants: []const DomGrant, a_ref: parser.Ref, b_ref: parser.Ref, mesh_label: []const u8) error{OutOfMemory}!void {
+        // span: the edge, from the sender ref start to the receiver ref end.
+        const edge_span = Span4{ .bs = a_ref.byte_start, .be = b_ref.byte_end, .line = a_ref.line, .col = a_ref.col };
+        for (r_grants) |rg| {
+            const cap = self.reg.getCap(rg.dom) orelse continue; // unknown domain already reported
+            var ok = false;
+            for (s_grants) |sg| {
+                if (std.mem.eql(u8, sg.dom, rg.dom) and cap.capLeq(rg.grant, sg.grant)) {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) {
+                const held = (try self.joinGrantsInDom(s_grants, rg.dom)) orelse "(none)";
+                try self.emit("E-CAP-ATTENUATION", self.file, edge_span, mesh_label, try std.fmt.allocPrint(self.a, "delegation `{s} -> {s}` escalates authority: receiver holds `{s}.{s}` but sender holds {s} (receiver's grant must be ≤ the sender's in domain `{s}`)", .{ sender, receiver, rg.dom, rg.grant, held, rg.dom }));
+            }
+        }
+    }
+
+    /// check.py `_check_capability_reachability` — E-CAP-USE (error) +
+    /// W-POLA-EXCESS / W-CONFUSED-DEPUTY (warnings).
+    fn checkCapabilityReachability(self: *Checker, mesh: *const parser.Decl, node_map: *const std.StringArrayHashMapUnmanaged(MeshNodeInfo), mlabel: []const u8) error{OutOfMemory}!void {
+        const names = try self.a.alloc([]const u8, node_map.count());
+        @memcpy(names, node_map.keys());
+        std.sort.insertion([]const u8, names, {}, strLess);
+
+        // POLA use-check (0011 §4.3): runs BEFORE the excess loop.
+        for (names) |name| {
+            const info = node_map.get(name).?;
+            if (info.needs.len == 0) continue; // opt-out
+            const n = info.node;
+            const nspan = nodeSpan4(n);
+            const nvspan = self.smap.fieldValueSpan(n.byte_start, n.byte_end, "needs") orelse nspan;
+            for (info.needs) |need| {
+                const cap = self.reg.getCap(need.dom) orelse continue;
+                var ok = false;
+                for (info.grants) |g| {
+                    if (std.mem.eql(u8, g.dom, need.dom) and cap.capLeq(need.grant, g.grant)) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    const held_str = (try self.joinGrantsInDom(info.grants, need.dom)) orelse
+                        try std.fmt.allocPrint(self.a, "(none in domain {s})", .{need.dom});
+                    try self.emit("E-CAP-USE", self.file, nvspan, mlabel, try std.fmt.allocPrint(self.a, "node `{s}` uses `{s}.{s}` (declared in `needs`) but holds {s} — a held grant must dominate every exercised capability (0011 §4.3)", .{ name, need.dom, need.grant, held_str }));
+                }
+            }
+        }
+
+        // POLA: held grant strictly exceeds every declared need in its domain.
+        for (names) |name| {
+            const info = node_map.get(name).?;
+            if (info.needs.len == 0) continue;
+            const n = info.node;
+            const nspan = nodeSpan4(n);
+            const cspan = self.smap.fieldValueSpan(n.byte_start, n.byte_end, "capabilities") orelse nspan;
+            for (info.grants) |g| {
+                const cap = self.reg.getCap(g.dom) orelse continue;
+                var have_need = false;
+                var ok = false;
+                var needed: std.ArrayList(u8) = .empty;
+                for (info.needs) |ng| {
+                    if (!std.mem.eql(u8, ng.dom, g.dom)) continue;
+                    if (have_need) try needed.appendSlice(self.a, ", ");
+                    try needed.appendSlice(self.a, try std.fmt.allocPrint(self.a, "{s}.{s}", .{ ng.dom, ng.grant }));
+                    have_need = true;
+                    if (cap.capLeq(g.grant, ng.grant)) ok = true;
+                }
+                if (have_need and !ok) {
+                    try self.emitSev("W-POLA-EXCESS", self.file, cspan, mlabel, try std.fmt.allocPrint(self.a, "node `{s}` holds `{s}.{s}` but declares it needs only {s} — granted more authority than its declared need (least-authority violation)", .{ name, g.dom, g.grant, needed.items }), .warning);
+                }
+            }
+        }
+
+        // Confused deputy: a capability-holding node with ≥2 distinct callers.
+        var callers_of: std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)) = .empty;
+        for (mesh.body) |st| switch (st) {
+            .edge => |ed| {
+                var i: usize = 0;
+                while (i + 1 < ed.refs.len) : (i += 1) {
+                    const a_ref = ed.refs[i];
+                    const b_ref = ed.refs[i + 1];
+                    if (a_ref.parts.len != 1 or b_ref.parts.len != 1) continue;
+                    const sender = a_ref.parts[0];
+                    const receiver = b_ref.parts[0];
+                    if (!node_map.contains(sender) or !node_map.contains(receiver)) continue;
+                    if (std.mem.eql(u8, sender, receiver)) continue;
+                    const gop = try callers_of.getOrPut(self.a, receiver);
+                    if (!gop.found_existing) gop.value_ptr.* = .empty;
+                    if (!containsString(gop.value_ptr.items, sender)) {
+                        try gop.value_ptr.append(self.a, sender);
+                    }
+                }
+            },
+            else => {},
+        };
+        const receivers = try self.a.alloc([]const u8, callers_of.count());
+        @memcpy(receivers, callers_of.keys());
+        std.sort.insertion([]const u8, receivers, {}, strLess);
+        for (receivers) |name| {
+            const callers = callers_of.get(name).?.items;
+            if (callers.len < 2) continue; // single-caller sink
+            const info = node_map.get(name).?;
+            if (info.grants.len == 0) continue; // holds no capability
+            const nspan = nodeSpan4(info.node);
+            var held: std.ArrayList(u8) = .empty;
+            for (info.grants, 0..) |g, i| {
+                if (i > 0) try held.appendSlice(self.a, ", ");
+                try held.appendSlice(self.a, try std.fmt.allocPrint(self.a, "{s}.{s}", .{ g.dom, g.grant }));
+            }
+            const sorted_callers = try self.a.alloc([]const u8, callers.len);
+            @memcpy(sorted_callers, callers);
+            std.sort.insertion([]const u8, sorted_callers, {}, strLess);
+            var caller_list: std.ArrayList(u8) = .empty;
+            for (sorted_callers, 0..) |cname, i| {
+                if (i > 0) try caller_list.appendSlice(self.a, ", ");
+                try caller_list.appendSlice(self.a, try std.fmt.allocPrint(self.a, "`{s}`", .{cname}));
+            }
+            try self.emitSev("W-CONFUSED-DEPUTY", self.file, nspan, mlabel, try std.fmt.allocPrint(self.a, "node `{s}` is a shared deputy: {d} distinct callers ({s}) delegate to it while it holds {s} under its own identity (confused-deputy shape) — keep delegation inside Vaked-minted capabilities (0026 §2)", .{ name, callers.len, caller_list.items, held.items }), .warning);
+        }
+    }
+
+    /// check.py `_check_egress_use` — E-EGRESS-USE + W-EGRESS-UNREFINED.
+    fn checkEgressUse(self: *Checker, mesh: *const parser.Decl, node_map: *const std.StringArrayHashMapUnmanaged(MeshNodeInfo), sibling_networks: ?*const NetworkIndex, mlabel: []const u8) error{OutOfMemory}!void {
+        const cap = self.reg.getCap("network") orelse return;
+
+        var refined: NameSet = .empty;
+        if (sibling_networks) |nets| {
+            // sorted(network_decls) — membrane names, ascending.
+            const mnames = try self.a.alloc([]const u8, nets.count());
+            @memcpy(mnames, nets.keys());
+            std.sort.insertion([]const u8, mnames, {}, strLess);
+            for (mnames) |mname| {
+                const mdecl = nets.get(mname).?;
+                var bindings = try nodeBindings(self.a, mdecl.body);
+                const principal = litStr(bindings.get("principal"));
+                const span = declSpan4(mdecl);
+                if (principal) |p| try refined.put(self.a, p, {});
+                // hosts from the membrane `allow` list of egress(host, port)
+                var hosts: std.ArrayList([]const u8) = .empty;
+                if (bindings.get("allow")) |av| switch (av) {
+                    .list => |items| for (items) |e| switch (e) {
+                        .app => |ap| {
+                            if (ap.ref.parts.len == 1 and std.mem.eql(u8, ap.ref.parts[0], "egress")) {
+                                if (ap.args) |args| {
+                                    if (args.len > 0) {
+                                        if (litStr(args[0])) |h| try hosts.append(self.a, h);
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    },
+                    else => {},
+                };
+                if (hosts.items.len == 0) continue;
+                // strongest implied level (check.py `_grant_max`)
+                var required: ?[]const u8 = null;
+                for (hosts.items) |h| {
+                    const lvl = requiredEgressGrant(h);
+                    if (required == null or cap.capLeq(required.?, lvl)) required = lvl;
+                }
+                const principal_str = principal orelse "None"; // Python renders None
+                if (principal == null or !node_map.contains(principal.?)) {
+                    try self.emit("E-EGRESS-USE", self.file, span, mlabel, try std.fmt.allocPrint(self.a, "membrane `{s}` names principal `{s}` which is not a node in mesh `{s}` — a membrane cannot refine a network grant no node holds (0026)", .{ mname, principal_str, mesh.name }));
+                    continue;
+                }
+                const info = node_map.get(principal.?).?;
+                var ok = false;
+                for (info.grants) |g| {
+                    if (std.mem.eql(u8, g.dom, "network") and cap.capLeq(required.?, g.grant)) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    var held: std.ArrayList(u8) = .empty;
+                    var any = false;
+                    for (info.grants) |g| {
+                        if (!std.mem.eql(u8, g.dom, "network")) continue;
+                        if (any) try held.appendSlice(self.a, ", ");
+                        try held.appendSlice(self.a, try std.fmt.allocPrint(self.a, "network.{s}", .{g.grant}));
+                        any = true;
+                    }
+                    const held_str: []const u8 = if (any) held.items else "no network grant";
+                    try self.emit("E-EGRESS-USE", self.file, span, mlabel, try std.fmt.allocPrint(self.a, "membrane `{s}` allows egress at level `{s}` for principal `{s}` which holds {s} — a membrane cannot authorize egress beyond the principal's granted network capability (0026)", .{ mname, required.?, principal_str, held_str }));
+                }
+            }
+        }
+
+        // W-EGRESS-UNREFINED — unbounded egress/lan grants.
+        const names = try self.a.alloc([]const u8, node_map.count());
+        @memcpy(names, node_map.keys());
+        std.sort.insertion([]const u8, names, {}, strLess);
+        for (names) |name| {
+            const info = node_map.get(name).?;
+            // sorted(g for g in net grants if g in ("egress","lan"))[-1] —
+            // string sort puts "egress" before "lan", so `lan` wins if held.
+            var strongest: ?[]const u8 = null;
+            for (info.grants) |g| {
+                if (!std.mem.eql(u8, g.dom, "network")) continue;
+                if (!std.mem.eql(u8, g.grant, "egress") and !std.mem.eql(u8, g.grant, "lan")) continue;
+                if (strongest == null or std.mem.order(u8, strongest.?, g.grant) == .lt) strongest = g.grant;
+            }
+            if (strongest != null and !refined.contains(name)) {
+                const n = info.node;
+                const nspan = nodeSpan4(n);
+                const cspan = self.smap.fieldValueSpan(n.byte_start, n.byte_end, "capabilities") orelse nspan;
+                try self.emitSev("W-EGRESS-UNREFINED", self.file, cspan, mlabel, try std.fmt.allocPrint(self.a, "node `{s}` holds `network.{s}` but no networkMembrane refines it — egress is unbounded (least-authority advisory; add a `network` membrane with an `allow` set)", .{ name, strongest.? }), .warning);
+            }
+        }
+    }
+
+    // --- workflow (#27 / 0015, check.py `_check_workflow`) ------------------
+
+    /// check.py `_check_step_determinism` (#224).
+    fn checkStepDeterminism(self: *Checker, step: *const parser.NodeDecl, bindings: *const Bindings, wf_label: []const u8, nspan: Span4) error{OutOfMemory}!void {
+        const ctrl = bindings.get("control") orelse return;
+        const is_control = switch (ctrl) {
+            .literal => |l| l.kind == .bool and std.mem.eql(u8, l.value, "true"),
+            else => false,
+        };
+        if (!is_control) return;
+        const effects = bindings.get("effects") orelse return;
+        switch (effects) {
+            .list => |items| for (items) |e| switch (e) {
+                .literal => |l| if (l.kind == .string and isSideEffect(l.value)) {
+                    const span = self.smap.fieldValueSpan(step.byte_start, step.byte_end, "effects") orelse nspan;
+                    try self.emit("E-DETERMINISM-EFFECT", self.file, span, wf_label, try std.fmt.allocPrint(self.a, "step `{s}` is `control = true` (pure control-flow) but declares side-effecting effect `{s}`; move the side effect into a non-control step (drop `control`, or split it out)", .{ step.name, l.value }));
+                    return;
+                },
+                else => {},
+            },
+            else => {},
+        }
+    }
+
+    fn checkWorkflow(self: *Checker, wf: *const parser.Decl, sibling_meshes: *const MeshIndex, sibling_kinds: *const KindIndex) error{OutOfMemory}!void {
+        const step_schema = self.reg.getSchema("workflowStep");
+        const wlabel = try self.declLabel(wf.kind, wf.name);
+        const dspan = declSpan4(wf);
+
+        var steps: std.ArrayList([]const u8) = .empty; // declaration order
+        for (wf.body) |st| switch (st) {
+            .node => |n| {
+                try steps.append(self.a, n.name);
+                const nspan = nodeSpan4(n);
+                if (step_schema) |ss| try self.conformNode(n, ss);
+                var bindings = try nodeBindings(self.a, n.body);
+                if (bindings.get("agent")) |av| {
+                    if (grantRefParts(av)) |ag| {
+                        var bad: ?[]const u8 = null;
+                        if (sibling_meshes.getPtr(ag.dom)) |nodeset| {
+                            if (!nodeset.contains(ag.grant)) {
+                                bad = try std.fmt.allocPrint(self.a, "step `{s}`: `agent = {s}.{s}` references mesh `{s}` but it declares no node `{s}`", .{ n.name, ag.dom, ag.grant, ag.dom, ag.grant });
+                            }
+                        } else if (sibling_kinds.get(ag.dom)) |k| {
+                            bad = try std.fmt.allocPrint(self.a, "step `{s}`: `agent = {s}.{s}` references `{s} {s}`, which is not a mesh — an agent must be a mesh node", .{ n.name, ag.dom, ag.grant, k, ag.dom });
+                        }
+                        if (bad) |msg| {
+                            const span = self.smap.fieldValueSpan(n.byte_start, n.byte_end, "agent") orelse nspan;
+                            try self.emit("E-REF-UNRESOLVED", self.file, span, wlabel, msg);
+                        }
+                    }
+                }
+                // Determinism boundary (#224).
+                try self.checkStepDeterminism(n, &bindings, wlabel, nspan);
+            },
+            else => {},
+        };
+
+        // succ over the declared steps (duplicates in edge lists preserved).
+        var succ: std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)) = .empty;
+        for (steps.items) |s| {
+            const gop = try succ.getOrPut(self.a, s);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+        }
+        for (wf.body) |st| switch (st) {
+            .edge => |ed| {
+                var i: usize = 0;
+                while (i + 1 < ed.refs.len) : (i += 1) {
+                    const a_ref = ed.refs[i];
+                    const b_ref = ed.refs[i + 1];
+                    if (a_ref.parts.len != 1 or b_ref.parts.len != 1) continue;
+                    const from = a_ref.parts[0];
+                    const to = b_ref.parts[0];
+                    if (succ.contains(from) and succ.contains(to)) {
+                        try succ.getPtr(from).?.append(self.a, to);
+                    }
+                }
+            },
+            else => {},
+        };
+
+        // Cycle detection — faithful port of check.py's iterative DFS with an
+        // explicit colour map (WHITE/GREY/BLACK) and persistent per-frame
+        // iterators, so the REPORTED cycle path is byte-identical.
+        const WHITE: u8 = 0;
+        const GREY: u8 = 1;
+        const BLACK: u8 = 2;
+        var colour: std.StringHashMapUnmanaged(u8) = .empty;
+        for (steps.items) |s| try colour.put(self.a, s, WHITE);
+        var cycle: ?[]const []const u8 = null;
+        const Frame = struct { node: []const u8, idx: usize };
+        for (steps.items) |root| {
+            if (cycle != null or colour.get(root).? != WHITE) continue;
+            var stack: std.ArrayList(Frame) = .empty;
+            try stack.append(self.a, .{ .node = root, .idx = 0 });
+            try colour.put(self.a, root, GREY);
+            var path: std.ArrayList([]const u8) = .empty;
+            try path.append(self.a, root);
+            while (stack.items.len > 0 and cycle == null) {
+                const top = stack.items.len - 1;
+                const succs = succ.get(stack.items[top].node).?.items;
+                var advanced = false;
+                while (stack.items[top].idx < succs.len) {
+                    const nxt = succs[stack.items[top].idx];
+                    stack.items[top].idx += 1;
+                    const cn = colour.get(nxt).?;
+                    if (cn == GREY) {
+                        // cycle = path[path.index(nxt):] + [nxt]
+                        var start: usize = 0;
+                        for (path.items, 0..) |p, pi| {
+                            if (std.mem.eql(u8, p, nxt)) {
+                                start = pi;
+                                break;
+                            }
+                        }
+                        var cyc: std.ArrayList([]const u8) = .empty;
+                        try cyc.appendSlice(self.a, path.items[start..]);
+                        try cyc.append(self.a, nxt);
+                        cycle = try cyc.toOwnedSlice(self.a);
+                        break;
+                    }
+                    if (cn == WHITE) {
+                        try colour.put(self.a, nxt, GREY);
+                        try path.append(self.a, nxt);
+                        try stack.append(self.a, .{ .node = nxt, .idx = 0 });
+                        advanced = true;
+                        break;
+                    }
+                    // BLACK: keep scanning this frame's successors
+                }
+                if (!advanced and cycle == null) {
+                    try colour.put(self.a, stack.items[top].node, BLACK);
+                    _ = path.pop();
+                    _ = stack.pop();
+                }
+            }
+        }
+        if (cycle) |cyc| {
+            const joined = try std.mem.join(self.a, " -> ", cyc);
+            try self.emit("E-WORKFLOW-CYCLE", self.file, dspan, wlabel, try std.fmt.allocPrint(self.a, "workflow `{s}` step edges must form a DAG; cycle: {s} (express revision loops as `retries` on a step, not back-edges)", .{ wf.name, joined }));
+            return; // depth is undefined on a cyclic graph
+        }
+
+        // Longest chain, counted in steps (memoized over the verified DAG).
+        var memo: std.StringHashMapUnmanaged(usize) = .empty;
+        const D = struct {
+            a: std.mem.Allocator,
+            succ: *const std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)),
+            memo: *std.StringHashMapUnmanaged(usize),
+            fn depth(d: *const @This(), s: []const u8) error{OutOfMemory}!usize {
+                if (d.memo.get(s)) |v| return v;
+                var best: usize = 0;
+                for (d.succ.get(s).?.items) |nx| best = @max(best, try d.depth(nx));
+                const v = 1 + best;
+                try d.memo.put(d.a, s, v);
+                return v;
+            }
+        };
+        const dcalc = D{ .a = self.a, .succ = &succ, .memo = &memo };
+        var depth: usize = 0;
+        for (steps.items) |s| depth = @max(depth, try dcalc.depth(s));
+
+        var wf_bindings = try nodeBindings(self.a, wf.body);
+        const md = wf_bindings.get("maxDepth") orelse return;
+        const md_lit = switch (md) {
+            .literal => |l| if (l.kind == .number) l else return,
+            else => return,
+        };
+        // Python int(str(value)); a non-integer literal is unenforceable.
+        const bound = std.fmt.parseInt(i64, md_lit.value, 10) catch return;
+        if (@as(i64, @intCast(depth)) > bound) {
+            const span = self.smap.fieldValueSpan(dspan.bs, dspan.be, "maxDepth") orelse dspan;
+            try self.emit("E-WORKFLOW-DEPTH", self.file, span, wlabel, try std.fmt.allocPrint(self.a, "workflow `{s}` has critical-path depth {d}, exceeding the declared maxDepth = {d}", .{ wf.name, depth, bound }));
+        }
+    }
+
+    // --- eBPF (#225, check.py `_check_ebpf_intent`) --------------------------
+
+    fn checkEbpfIntent(self: *Checker, decl: *const parser.Decl) error{OutOfMemory}!void {
+        var bindings = try declFieldBindings(self.a, decl.body);
+        const dspan = declSpan4(decl);
+        const label = try self.declLabel(decl.kind, decl.name);
+
+        const hook = litStr(bindings.get("hook"));
+        const intent = litStr(bindings.get("intent"));
+
+        if (hook) |h| {
+            if (!isEbpfObserveOnlyHook(h) and !isEbpfEnforceHook(h)) {
+                const span = self.smap.fieldValueSpan(dspan.bs, dspan.be, "hook") orelse dspan;
+                try self.emit("E-EBPF-UNKNOWN-HOOK", self.file, span, label, try std.fmt.allocPrint(self.a, "ebpf `{s}`: unknown hook `{s}`; expected one of {s}", .{ decl.name, h, ebpf_hooks_sorted }));
+                return;
+            }
+        }
+        if (intent) |it| {
+            if (!std.mem.eql(u8, it, "observe") and !std.mem.eql(u8, it, "enforce")) {
+                const span = self.smap.fieldValueSpan(dspan.bs, dspan.be, "intent") orelse dspan;
+                try self.emit("E-EBPF-BAD-INTENT", self.file, span, label, try std.fmt.allocPrint(self.a, "ebpf `{s}`: intent must be \"observe\" or \"enforce\", got `{s}`", .{ decl.name, it }));
+                return;
+            }
+        }
+        if (intent != null and std.mem.eql(u8, intent.?, "enforce") and hook != null and isEbpfObserveOnlyHook(hook.?)) {
+            const span = self.smap.fieldValueSpan(dspan.bs, dspan.be, "hook") orelse dspan;
+            try self.emit("E-EBPF-ENFORCE-ON-OBSERVE", self.file, span, label, try std.fmt.allocPrint(self.a, "ebpf `{s}` declares `intent = \"enforce\"` on observe-only hook `{s}`; {s} cannot change system behaviour. Use a verdict-capable hook (lsm, cgroup_connect/cgroup_skb, xdp/tc, override_return, send_signal) to enforce, or set `intent = \"observe\"`.", .{ decl.name, hook.?, hook.? }));
+        }
+    }
+
+    // --- closed-world ref resolution (#7 — 0011 §6.1 stage 2) ---------------
+
+    fn checkRefResolution(self: *Checker, runtime: *const parser.Decl, imported: []const KindName) error{OutOfMemory}!void {
+        var declared: std.ArrayList(KindName) = .empty;
+        try collectRuntimeDecls(self.a, runtime, &declared);
+        try declared.appendSlice(self.a, imported);
+
+        const runtime_ns = try collectRuntimeNamespaces(self.a, runtime);
+
+        var refs: std.ArrayList(RefHit) = .empty;
+        try walkDependsRefs(self.a, runtime, &refs);
+        for (refs.items) |hit| {
+            const parts = hit.ref.parts;
+            const span = refSpan4(hit.ref);
+            const owner_label = try self.declLabel(hit.owner.kind, hit.owner.name);
+            const dotted = try hit.ref.dotted(self.a);
+            if (parts.len == 2 and parser.isKind(parts[0])) {
+                // `<kind>.<name>` — must name an in-runtime/imported decl.
+                if (!containsKindName(declared.items, parts[0], parts[1])) {
+                    try self.emit("E-REF-UNRESOLVED", self.file, span, owner_label, try std.fmt.allocPrint(self.a, "`{s}` references `{s}` but no `{s} {s}` is declared in runtime `{s}`", .{ hit.field, dotted, parts[0], parts[1], runtime.name }));
+                }
+            } else if (parts.len == 1) {
+                // bare name — must name some in-runtime/imported decl.
+                if (!containsDeclName(declared.items, parts[0])) {
+                    try self.emit("E-REF-UNRESOLVED", self.file, span, owner_label, try std.fmt.allocPrint(self.a, "`{s}` references `{s}` but no declaration named `{s}` is in scope of runtime `{s}`", .{ hit.field, dotted, parts[0], runtime.name }));
+                }
+            } else if (parts.len >= 2) {
+                // Branch B (RFC 0017, decision D2): non-kind dotted head.
+                const head = parts[0];
+                const member = parts[1];
+                if (self.reg.cap_idx.contains(head)) continue; // capability checker owns these
+                if (std.mem.eql(u8, head, "artifacts") or std.mem.eql(u8, head, "graph")) continue; // D1: deferred
+                // Lookup order: runtime-scoped namespace first (D3), then the
+                // global catalog.
+                var ns_open: bool = undefined;
+                var ns_members: []const []const u8 = undefined;
+                var found = false;
+                for (runtime_ns) |ns| {
+                    if (std.mem.eql(u8, ns.head, head)) {
+                        ns_open = ns.open;
+                        ns_members = ns.members;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    if (self.reg.getNamespace(head)) |g| {
+                        ns_open = g.open;
+                        ns_members = g.members;
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    try self.emit("E-REF-UNRESOLVED", self.file, span, owner_label, try std.fmt.allocPrint(self.a, "`{s}` references `{s}` but `{s}` is not a declared namespace in runtime `{s}` (add `namespace {s} {{ … }}` or declare it in builtins)", .{ hit.field, dotted, head, runtime.name, head }));
+                } else if (!ns_open and !containsString(ns_members, member)) {
+                    const sorted_members = try self.a.alloc([]const u8, ns_members.len);
+                    @memcpy(sorted_members, ns_members);
+                    std.sort.insertion([]const u8, sorted_members, {}, strLess);
+                    try self.emit("E-REF-UNRESOLVED", self.file, span, owner_label, try std.fmt.allocPrint(self.a, "`{s}` references `{s}` but `{s}` is not a declared member of namespace `{s}` (declared members: {s})", .{ hit.field, dotted, member, head, try reprStrList(self.a, sorted_members) }));
+                }
+            }
+        }
+
+        // 3-part accessor refs (`secret.X.path`, `hostResource.X.dsn`).
+        var accessor_refs: std.ArrayList(parser.Ref) = .empty;
+        try walkAccessorRefs(self.a, runtime, &accessor_refs);
+        const rt_label = try self.declLabel(runtime.kind, runtime.name);
+        var seen: std.ArrayList([2]usize) = .empty;
+        for (accessor_refs.items) |r| {
+            const kind = accessorKind(r.parts[0], r.parts[2]) orelse continue;
+            var dup = false;
+            for (seen.items) |k| {
+                if (k[0] == r.byte_start and k[1] == r.byte_end) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+            try seen.append(self.a, .{ r.byte_start, r.byte_end });
+            if (!containsKindName(declared.items, kind, r.parts[1])) {
+                try self.emit("E-REF-UNRESOLVED", self.file, refSpan4(r), rt_label, try std.fmt.allocPrint(self.a, "`{s}` references `{s} {s}` but no such declaration is in scope of runtime `{s}`", .{ try r.dotted(self.a), kind, r.parts[1], runtime.name }));
+            }
+        }
     }
 };
 
@@ -1594,11 +2920,15 @@ fn strLess(_: void, x: []const u8, y: []const u8) bool {
     return std.mem.order(u8, x, y) == .lt;
 }
 
-/// check.py `_transitive_closure` — returns the first cycle pair (per this
-/// port's deterministic iteration order) or null when the declared `<` chains
-/// form a partial order. Python iterates hash sets here, so the PAIR REPORTED
-/// on a cycle may differ from CPython run to run; the code and span match.
-fn transitiveClosureCycle(a: std.mem.Allocator, grants: []const []const u8, chains: []const []const []const u8) error{OutOfMemory}!?[2][]const u8 {
+const Closure = struct { leq: Leq, cycle: ?[2][]const u8 };
+
+/// check.py `_transitive_closure` — builds the reflexive-transitive ≤-closure
+/// and reports the first cycle pair (per this port's deterministic iteration
+/// order) when the chains are not a partial order. Python iterates hash sets
+/// here, so the PAIR REPORTED on a cycle may differ from CPython run to run;
+/// the code and span match. The closure matrix is kept on the spec (`leq`)
+/// and reused by every capability check, exactly like check.py.
+fn computeClosure(a: std.mem.Allocator, grants: []const []const u8, chains: []const []const []const u8) error{OutOfMemory}!Closure {
     var nodes: std.ArrayList([]const u8) = .empty;
     for (grants) |g| if (!containsString(nodes.items, g)) try nodes.append(a, g);
     for (chains) |ch| for (ch) |g| if (!containsString(nodes.items, g)) try nodes.append(a, g);
@@ -1642,21 +2972,39 @@ fn transitiveClosureCycle(a: std.mem.Allocator, grants: []const []const u8, chai
             }
         }
     }
+    const reach_const = try a.alloc([]const bool, n);
+    for (reach, 0..) |row, i| reach_const[i] = row;
+    const leq = Leq{ .nodes = try nodes.toOwnedSlice(a), .reach = reach_const };
+
     // a strict order forbids a < a (degenerate self-cycle)
     for (0..n) |gi| {
         for (succ[gi].items) |x| {
-            if (x == gi) return .{ nodes.items[gi], nodes.items[gi] };
+            if (x == gi) return .{ .leq = leq, .cycle = .{ leq.nodes[gi], leq.nodes[gi] } };
         }
     }
     // antisymmetry: a<=b and b<=a with a!=b ⇒ cycle
     for (0..n) |ai| {
         for (0..n) |bi| {
             if (ai != bi and reach[ai][bi] and reach[bi][ai]) {
-                return .{ nodes.items[ai], nodes.items[bi] };
+                return .{ .leq = leq, .cycle = .{ leq.nodes[ai], leq.nodes[bi] } };
             }
         }
     }
-    return null;
+    return .{ .leq = leq, .cycle = null };
+}
+
+/// The identity closure over the declared grants — check.py's cyclic-order
+/// fallback (`spec.leq = {g: {g} for g in spec.grants}`).
+fn identityLeq(a: std.mem.Allocator, grants: []const []const u8) error{OutOfMemory}!Leq {
+    const n = grants.len;
+    const reach = try a.alloc([]const bool, n);
+    for (0..n) |i| {
+        const row = try a.alloc(bool, n);
+        @memset(row, false);
+        row[i] = true;
+        reach[i] = row;
+    }
+    return .{ .nodes = grants, .reach = reach };
 }
 
 // --------------------------------------------------------------------------- #
@@ -1804,12 +3152,62 @@ pub const CheckOutcome = union(enum) {
     fail: []const u8,
 };
 
+/// How checkSource reads `use`-imported files (check.py opens them directly;
+/// the Zig port takes the IO as a capability so the checker itself stays
+/// pure/testable). `read` returns the file's bytes, or null when the path is
+/// unreadable — Python's OSError path: the import is silently skipped and its
+/// names simply stay unbound.
+pub const ImportReader = struct {
+    ctx: ?*anyopaque = null,
+    read: *const fn (ctx: ?*anyopaque, a: std.mem.Allocator, path: []const u8) error{OutOfMemory}!?[]const u8,
+};
+
+const ImportsOutcome = union(enum) {
+    ok: []const KindName,
+    fail: []const u8,
+};
+
+/// check.py `_collect_import_decls` — resolve each `use "<path>"` (one level,
+/// relative to base_dir) and collect the (kind, name) set its top-level decls
+/// bind into scope. A parse failure of an imported file PROPAGATES (Python
+/// raises through check_source → exit 2), unlike an unreadable file (skipped).
+fn collectImportDecls(a: std.mem.Allocator, items: []const parser.Item, base_dir: []const u8, reader: ?ImportReader) error{OutOfMemory}!ImportsOutcome {
+    var out: std.ArrayList(KindName) = .empty;
+    const rd = reader orelse return .{ .ok = try out.toOwnedSlice(a) };
+    for (items) |it| switch (it) {
+        .import => |imp| {
+            const path = try normPath(a, try joinPath(a, base_dir, imp.path));
+            const isrc = (try rd.read(rd.ctx, a, path)) orelse continue;
+            switch (try parseSource(a, isrc, path)) {
+                .ok => |subitems| for (subitems) |sub| switch (sub) {
+                    .decl => |d| if (!containsKindName(out.items, d.kind, d.name)) {
+                        try out.append(a, .{ .kind = d.kind, .name = d.name });
+                    },
+                    else => {},
+                },
+                .fail => |msg| return .{ .fail = msg },
+            }
+        },
+        else => {},
+    };
+    return .{ .ok = try out.toOwnedSlice(a) };
+}
+
 /// Check Vaked `src` against the builtins catalog and return the sorted
-/// diagnostics (check.py `check_source`, slice-1 rules). Allocate from an
-/// arena that outlives the result.
-pub fn checkSource(a: std.mem.Allocator, src: []const u8, filename: []const u8, b: Builtins) error{OutOfMemory}!CheckOutcome {
+/// diagnostics (check.py `check_source` — full rule set). `base_dir` is the
+/// directory `use` imports resolve against (Python defaults it to the file's
+/// own dirname; the CLI passes exactly that); `reader` supplies the import
+/// IO and may be null (no imports resolvable). Allocate from an arena that
+/// outlives the result.
+pub fn checkSource(a: std.mem.Allocator, src: []const u8, filename: []const u8, b: Builtins, base_dir: []const u8, reader: ?ImportReader) error{OutOfMemory}!CheckOutcome {
     const items = switch (try parseSource(a, src, filename)) {
         .ok => |items| items,
+        .fail => |msg| return .{ .fail = msg },
+    };
+
+    // Stage 2 — bind `use` imports' top-level decls into this file's scope.
+    const imported: []const KindName = switch (try collectImportDecls(a, items, base_dir, reader)) {
+        .ok => |kns| kns,
         .fail => |msg| return .{ .fail = msg },
     };
 
@@ -1846,9 +3244,9 @@ pub fn checkSource(a: std.mem.Allocator, src: []const u8, filename: []const u8, 
         for (specs) |s| try c.checkSchemaWellformed(s);
     }
     {
-        const specs = try a.alloc(*const CapabilitySpec, reg.caps.items.len);
+        const specs = try a.alloc(*CapabilitySpec, reg.caps.items.len);
         for (reg.caps.items, 0..) |*s, i| specs[i] = s;
-        std.sort.insertion(*const CapabilitySpec, specs, {}, struct {
+        std.sort.insertion(*CapabilitySpec, specs, {}, struct {
             fn less(_: void, x: *const CapabilitySpec, y: *const CapabilitySpec) bool {
                 const fo = std.mem.order(u8, x.origin_file, y.origin_file);
                 if (fo != .eq) return fo == .lt;
@@ -1870,14 +3268,37 @@ pub fn checkSource(a: std.mem.Allocator, src: []const u8, filename: []const u8, 
         for (specs) |s| try c.checkNamespaceWellformed(s);
     }
 
+    // Index in-file TOP-LEVEL decls by (kind, name) for generics resolution.
+    var by_name_kind: std.ArrayList(NamedDecl) = .empty;
+    for (items) |it| switch (it) {
+        .decl => |d| try by_name_kind.append(a, .{ .kind = d.kind, .name = d.name, .decl = d }),
+        else => {},
+    };
+    c.by_name_kind = by_name_kind.items;
+
     // Stage 4 (pre-walk) — name collisions, enriched from resolve's output.
     var infos: std.ArrayList(CollisionInfo) = .empty;
     try collectCollisionInfos(a, items, &infos);
     try enrichCollisions(&c, res.diagnostics, infos.items);
 
-    // Stage 4b — walk every in-file declaration (conformance subset).
+    // Stage 4b/4c/4d — walk every in-file declaration. Top-level decls are
+    // sibling scope for top-level workflows (agent-target validation, #27);
+    // top-level meshes get NO network membranes (check.py passes None).
+    var top_meshes: MeshIndex = .empty;
+    var top_kinds: KindIndex = .empty;
+    var top_networks_unused: NetworkIndex = .empty;
     for (items) |it| switch (it) {
-        .decl => |d| try c.checkDeclTree(d),
+        .decl => |d| try indexSiblingDecl(a, d, &top_meshes, &top_kinds, &top_networks_unused),
+        else => {},
+    };
+    for (items) |it| switch (it) {
+        .decl => |d| {
+            try c.checkDeclTree(d, &top_meshes, &top_kinds, null);
+            // Stage 2 (closed-world ref resolution) per top-level runtime.
+            if (std.mem.eql(u8, d.kind, "runtime")) {
+                try c.checkRefResolution(d, imported);
+            }
+        },
         else => {},
     };
 

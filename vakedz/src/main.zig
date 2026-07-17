@@ -203,12 +203,25 @@ fn runFmt(allocator: std.mem.Allocator, io: std.Io, opts: Args.FmtOptions) !void
     if (opts.check and any_changed) std.process.exit(1);
 }
 
-/// `vakedz check <files...> [--json] [--builtins PATH]` — 0011 checker,
-/// slice-1 rule set (see check.zig module doc). Human-readable diagnostics go
-/// to stderr; `--json` prints one sorted canonical-JSON diagnostics document
+/// The ImportReader the checker uses for `use`-imported files: reads via the
+/// process Io; unreadable paths return null (Python's OSError skip-path).
+const ImportIoCtx = struct { io: std.Io };
+
+fn readImportFile(ctx_o: ?*anyopaque, a: std.mem.Allocator, path: []const u8) error{OutOfMemory}!?[]const u8 {
+    const ctx: *ImportIoCtx = @ptrCast(@alignCast(ctx_o.?));
+    return readFileAlloc(a, ctx.io, path) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
+}
+
+/// `vakedz check <files...> [--json] [--builtins PATH]` — 0011 checker, full
+/// rule set (see check.zig module doc). Human-readable diagnostics go to
+/// stderr; `--json` prints one sorted canonical-JSON diagnostics document
 /// (all files merged) to stdout, matching vakedc's field names. Exit codes:
-/// 0 clean, 1 error-severity diagnostics present, 2 usage / read / parse
-/// error (mirrors `python3 -m vakedc check`).
+/// 0 clean, 1 ANY diagnostic present (warnings included — Python's
+/// `return 1 if diags else 0`), 2 usage / read / parse error (mirrors
+/// `python3 -m vakedc check`).
 fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !void {
     if (opts.paths.len == 0) {
         const ls = try io.lockStderr(&.{}, null);
@@ -242,7 +255,10 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
 
     var all: std.ArrayList(lib_diag.Diagnostic) = .empty;
     var hard_fail = false;
-    var any_error_sev = false;
+    var any_diag = false;
+
+    var import_ctx = ImportIoCtx{ .io = io };
+    const reader = check_mod.ImportReader{ .ctx = &import_ctx, .read = readImportFile };
 
     for (opts.paths) |path| {
         const source = readFileAlloc(aa, io, path) catch |err| {
@@ -252,7 +268,11 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
             hard_fail = true;
             continue;
         };
-        switch (try check_mod.checkSource(aa, source, path, builtins)) {
+        // `use` imports resolve against the file's own dirname, exactly like
+        // check.py's base_dir default in check_source (dirname of the path
+        // as given — "" for a bare filename).
+        const base_dir = std.fs.path.dirname(path) orelse "";
+        switch (try check_mod.checkSource(aa, source, path, builtins, base_dir, reader)) {
             .fail => |msg| {
                 const ls = try io.lockStderr(&.{}, null);
                 defer io.unlockStderr();
@@ -260,9 +280,7 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
                 hard_fail = true;
             },
             .ok => |diags| {
-                for (diags) |d| {
-                    if (d.severity == .@"error") any_error_sev = true;
-                }
+                if (diags.len > 0) any_diag = true;
                 if (opts.json) {
                     try all.appendSlice(aa, diags);
                 } else {
@@ -292,7 +310,7 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
     }
 
     if (hard_fail) std.process.exit(2);
-    if (any_error_sev) std.process.exit(1);
+    if (any_diag) std.process.exit(1);
 }
 
 const lib_diag = @import("lib").diagnostic;

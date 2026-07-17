@@ -119,13 +119,40 @@ const mini_builtins =
     \\  field on_result : Block         { optional }
     \\}
     \\
+    \\schema catalog {
+    \\  field from : Index<T>
+    \\  field key  : List<String> { optional nonempty }
+    \\  field emit : ArtifactTarget | List<ArtifactTarget>
+    \\}
+    \\
+    \\schema index {
+    \\  field source    : Source | List<Source> { nonempty }
+    \\  field schema    : Schema<T>   { optional }
+    \\  field normalize : Normalizer  { optional }
+    \\  field emit      : List<ArtifactTarget> { optional nonempty }
+    \\}
+    \\
+    \\schema networkMembrane {
+    \\  field principal : String { nonempty }
+    \\  field default   : String { optional oneof ["deny", "allow"] default = "deny" }
+    \\  field allow     : List<EgressRule> { optional nonempty }
+    \\  field observe   : Stream<T> { optional }
+    \\}
+    \\
     \\capability fs {
     \\  grant none repo_ro repo_rw host_ro host_rw
     \\  order none < repo_ro < repo_rw < host_rw ;
     \\        repo_ro < host_ro < host_rw
     \\}
     \\
+    \\capability network {
+    \\  grant none loopback lan egress
+    \\  order none < loopback < lan < egress
+    \\}
+    \\
     \\namespace pkgs { open }
+    \\
+    \\namespace eventd { member log }
     \\
 ;
 
@@ -137,7 +164,7 @@ fn runCheck(a: std.mem.Allocator, src: []const u8) ![]const @import("lib").diagn
         .ok => |items| items,
         .fail => return error.BuiltinsParseFailed,
     };
-    switch (try check.checkSource(a, src, u_file, .{ .items = b_items, .src = mini_builtins, .file = b_file })) {
+    switch (try check.checkSource(a, src, u_file, .{ .items = b_items, .src = mini_builtins, .file = b_file }, "", null)) {
         .ok => |diags| return diags,
         .fail => return error.CheckParseFailed,
     }
@@ -743,6 +770,522 @@ test "collision inside a dropped duplicate body is filtered (check.py parity)" {
     try testing.expectEqual(@as(usize, 1), countCode(diags, "E-DECL-NAME-COLLISION"));
     const d = firstWithCode(diags, "E-DECL-NAME-COLLISION").?;
     try testing.expectEqualStrings("runtime dup", d.decl);
+}
+
+// --------------------------------------------------------------------------- #
+// Slice 2 — capabilities / POLA / egress / ref walk / workflow / ebpf /
+// generics / determinism. Message strings mirror check.py f-strings; the
+// differential harness (zero allowlist) owns byte-exact parity on the corpus.
+// --------------------------------------------------------------------------- #
+
+test "regex fences: octal continuation and multiple repeat refuse (skip)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // \07 is octal BEL in Python — must skip (null), never NUL+'7'
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/\\07/", "\x007"));
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/[\\07]/", "x"));
+    // bare \0 stays NUL (Python parity)
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/\\0/", "\x00"));
+    // multiple repeat — re.error (or possessive) in CPython → skip
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/a**/", "aa"));
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/a++/", "aa"));
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/a{2}*/", "aaaa"));
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/a+?*/", "aa"));
+    // literal '{' that is not a quantifier still works
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/a{x/", "a{x"));
+}
+
+test "E-CAP-UNKNOWN-DOMAIN / E-CAP-UNKNOWN-GRANT with empty decl label" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\mesh m {
+        \\  node w {
+        \\    role = "x"
+        \\    capabilities = [warp.jump, fs.fly]
+        \\  }
+        \\}
+        \\
+    );
+    const ud = firstWithCode(diags, "E-CAP-UNKNOWN-DOMAIN").?;
+    try testing.expectEqualStrings("unknown capability domain `warp` in `warp.jump`", ud.message);
+    try testing.expectEqualStrings("", ud.decl); // check.py _decl_label(NodeDecl) → ""
+    const ug = firstWithCode(diags, "E-CAP-UNKNOWN-GRANT").?;
+    try testing.expectEqualStrings("`fly` is not a declared grant of capability domain `fs`", ug.message);
+}
+
+test "E-CAP-ATTENUATION on an escalating delegation edge" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\mesh m {
+        \\  node author {
+        \\    role = "a"
+        \\    capabilities = [fs.repo_ro]
+        \\  }
+        \\  node reviewer {
+        \\    role = "r"
+        \\    capabilities = [fs.repo_rw]
+        \\  }
+        \\  author -> reviewer
+        \\}
+        \\
+    );
+    const d = firstWithCode(diags, "E-CAP-ATTENUATION").?;
+    try testing.expectEqualStrings("delegation `author -> reviewer` escalates authority: receiver holds `fs.repo_rw` but sender holds fs.repo_ro (receiver's grant must be ≤ the sender's in domain `fs`)", d.message);
+    try testing.expectEqualStrings("mesh m", d.decl);
+}
+
+test "E-CAP-USE underpowered node and W-POLA-EXCESS overpowered node" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\mesh m {
+        \\  node under {
+        \\    role = "u"
+        \\    capabilities = [fs.repo_ro]
+        \\    needs = [fs.repo_rw]
+        \\  }
+        \\  node over {
+        \\    role = "o"
+        \\    capabilities = [fs.host_rw]
+        \\    needs = [fs.repo_rw]
+        \\  }
+        \\}
+        \\
+    );
+    const use = firstWithCode(diags, "E-CAP-USE").?;
+    try testing.expectEqualStrings("node `under` uses `fs.repo_rw` (declared in `needs`) but holds fs.repo_ro — a held grant must dominate every exercised capability (0011 §4.3)", use.message);
+    try testing.expect(use.severity == .@"error");
+    const excess = firstWithCode(diags, "W-POLA-EXCESS").?;
+    try testing.expectEqualStrings("node `over` holds `fs.host_rw` but declares it needs only fs.repo_rw — granted more authority than its declared need (least-authority violation)", excess.message);
+    try testing.expect(excess.severity == .warning);
+}
+
+test "E-CAP-USE with no grants in domain renders '(none in domain fs)'" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\mesh m {
+        \\  node w {
+        \\    role = "x"
+        \\    needs = [fs.repo_rw]
+        \\  }
+        \\}
+        \\
+    );
+    const d = firstWithCode(diags, "E-CAP-USE").?;
+    try testing.expectEqualStrings("node `w` uses `fs.repo_rw` (declared in `needs`) but holds (none in domain fs) — a held grant must dominate every exercised capability (0011 §4.3)", d.message);
+}
+
+test "W-CONFUSED-DEPUTY on a two-caller capability-holding sink" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\mesh m {
+        \\  node cron {
+        \\    role = "c"
+        \\  }
+        \\  node worker {
+        \\    role = "w"
+        \\  }
+        \\  node proxy {
+        \\    role = "p"
+        \\    capabilities = [fs.repo_ro]
+        \\  }
+        \\  cron -> proxy
+        \\  worker -> proxy
+        \\}
+        \\
+    );
+    const d = firstWithCode(diags, "W-CONFUSED-DEPUTY").?;
+    try testing.expectEqualStrings("node `proxy` is a shared deputy: 2 distinct callers (`cron`, `worker`) delegate to it while it holds fs.repo_ro under its own identity (confused-deputy shape) — keep delegation inside Vaked-minted capabilities (0026 §2)", d.message);
+    try testing.expect(d.severity == .warning);
+}
+
+test "W-EGRESS-UNREFINED and E-EGRESS-USE via a sibling membrane" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // top-level mesh: no membranes in scope → unrefined warning only
+    const un = try runCheck(a,
+        \\mesh m {
+        \\  node worker {
+        \\    role = "w"
+        \\    capabilities = [network.egress]
+        \\  }
+        \\}
+        \\
+    );
+    const w = firstWithCode(un, "W-EGRESS-UNREFINED").?;
+    try testing.expectEqualStrings("node `worker` holds `network.egress` but no networkMembrane refines it — egress is unbounded (least-authority advisory; add a `network` membrane with an `allow` set)", w.message);
+    try testing.expect(w.severity == .warning);
+    // membrane sibling inside a runtime: loopback grant, public egress allow
+    const ex = try runCheck(a,
+        \\runtime r {
+        \\  systems = ["x"]
+        \\  mesh m {
+        \\    node worker {
+        \\      role = "w"
+        \\      capabilities = [network.loopback]
+        \\    }
+        \\  }
+        \\  network workerCordon {
+        \\    principal = "worker"
+        \\    allow = [egress("api.example.com", 443)]
+        \\  }
+        \\}
+        \\
+    );
+    const e = firstWithCode(ex, "E-EGRESS-USE").?;
+    try testing.expectEqualStrings("membrane `workerCordon` allows egress at level `egress` for principal `worker` which holds network.loopback — a membrane cannot authorize egress beyond the principal's granted network capability (0026)", e.message);
+    // the refined principal does NOT also get the unrefined warning
+    try testing.expectEqual(@as(usize, 0), countCode(ex, "W-EGRESS-UNREFINED"));
+    // bad principal
+    const bp = try runCheck(a,
+        \\runtime r {
+        \\  systems = ["x"]
+        \\  mesh m {
+        \\    node worker {
+        \\      role = "w"
+        \\    }
+        \\  }
+        \\  network ghostCordon {
+        \\    principal = "ghost"
+        \\    allow = [egress("10.0.0.8", 80)]
+        \\  }
+        \\}
+        \\
+    );
+    const b = firstWithCode(bp, "E-EGRESS-USE").?;
+    try testing.expectEqualStrings("membrane `ghostCordon` names principal `ghost` which is not a node in mesh `m` — a membrane cannot refine a network grant no node holds (0026)", b.message);
+}
+
+test "egress host classification: loopback / lan / egress" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // lan-only allow set against a loopback grant still exceeds
+    const diags = try runCheck(a,
+        \\runtime r {
+        \\  systems = ["x"]
+        \\  mesh m {
+        \\    node w {
+        \\      role = "w"
+        \\      capabilities = [network.lan]
+        \\    }
+        \\  }
+        \\  network c1 {
+        \\    principal = "w"
+        \\    allow = [egress("localhost", 80), egress("127.0.0.1", 81), egress("192.168.1.7", 82)]
+        \\  }
+        \\}
+        \\
+    );
+    // strongest required level is lan; the node holds lan → clean
+    try testing.expectEqual(@as(usize, 0), countCode(diags, "E-EGRESS-USE"));
+}
+
+test "E-REF-UNRESOLVED: kind-qualified, bare, namespace head and member" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\runtime rt {
+        \\  systems = ["x"]
+        \\  stream s {
+        \\    source = stream.missing
+        \\    type = T.U
+        \\  }
+        \\  stream t {
+        \\    source = eventd.nolog
+        \\    type = T.U
+        \\  }
+        \\  stream u {
+        \\    source = mystery.thing
+        \\    type = T.U
+        \\  }
+        \\  fiber f {
+        \\    engine = zigimg
+        \\    input = stream.s
+        \\    output = artifacts.out
+        \\  }
+        \\}
+        \\
+    );
+    try testing.expectEqual(@as(usize, 4), countCode(diags, "E-REF-UNRESOLVED"));
+    const msgs = [_][]const u8{
+        "`source` references `stream.missing` but no `stream missing` is declared in runtime `rt`",
+        "`source` references `eventd.nolog` but `nolog` is not a declared member of namespace `eventd` (declared members: ['log'])",
+        "`source` references `mystery.thing` but `mystery` is not a declared namespace in runtime `rt` (add `namespace mystery { … }` or declare it in builtins)",
+        "`engine` references `zigimg` but no declaration named `zigimg` is in scope of runtime `rt`",
+    };
+    for (msgs) |want| {
+        var found = false;
+        for (diags) |d| {
+            if (std.mem.eql(u8, d.message, want)) found = true;
+        }
+        try testing.expect(found);
+    }
+}
+
+test "E-REF-UNRESOLVED: runtime-scoped namespace shadows the builtin catalog" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\runtime rt {
+        \\  systems = ["x"]
+        \\  namespace eventd {
+        \\    member other
+        \\  }
+        \\  stream s {
+        \\    source = eventd.log
+        \\    type = T.U
+        \\  }
+        \\}
+        \\
+    );
+    const d = firstWithCode(diags, "E-REF-UNRESOLVED").?;
+    try testing.expectEqualStrings("`source` references `eventd.log` but `log` is not a declared member of namespace `eventd` (declared members: ['other'])", d.message);
+}
+
+test "E-REF-UNRESOLVED: 3-part accessor refs, deduped by span" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\runtime rt {
+        \\  systems = ["x"]
+        \\  container job {
+        \\    image = "x/y:1"
+        \\    environmentFiles = [secret.gone.path]
+        \\  }
+        \\}
+        \\
+    );
+    try testing.expectEqual(@as(usize, 1), countCode(diags, "E-REF-UNRESOLVED"));
+    const d = firstWithCode(diags, "E-REF-UNRESOLVED").?;
+    try testing.expectEqualStrings("`secret.gone.path` references `secret gone` but no such declaration is in scope of runtime `rt`", d.message);
+    try testing.expectEqualStrings("runtime rt", d.decl);
+}
+
+test "topology kinds are deferred by the ref walk only" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\runtime rt {
+        \\  systems = ["x"]
+        \\  probe p {
+        \\    from = nodeA
+        \\    to = nodeB
+        \\    via = edge.main
+        \\  }
+        \\}
+        \\
+    );
+    // `from = nodeA` inside a probe must NOT be resolved against the roster
+    try testing.expectEqual(@as(usize, 0), countCode(diags, "E-REF-UNRESOLVED"));
+}
+
+test "use-import binds the imported file's top-level decls into scope" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const b_items = switch (try check.parseSource(a, mini_builtins, b_file)) {
+        .ok => |items| items,
+        .fail => return error.BuiltinsParseFailed,
+    };
+    const Fixture = struct {
+        fn read(_: ?*anyopaque, aa: std.mem.Allocator, path: []const u8) error{OutOfMemory}!?[]const u8 {
+            _ = aa;
+            if (std.mem.eql(u8, path, "lib/common.vaked")) {
+                return "engine zigimg {\n  package = pkgs.zig\n}\n";
+            }
+            return null;
+        }
+    };
+    const src =
+        \\use "common.vaked"
+        \\
+        \\runtime rt {
+        \\  systems = ["x"]
+        \\  stream s {
+        \\    source = pkgs.src
+        \\    type = T.U
+        \\  }
+        \\  fiber f {
+        \\    engine = zigimg
+        \\    input = stream.s
+        \\    output = artifacts.out
+        \\  }
+        \\}
+        \\
+    ;
+    const reader = check.ImportReader{ .ctx = null, .read = Fixture.read };
+    switch (try check.checkSource(a, src, "lib/main.vaked", .{ .items = b_items, .src = mini_builtins, .file = b_file }, "lib", reader)) {
+        .ok => |diags| try testing.expectEqual(@as(usize, 0), countCode(diags, "E-REF-UNRESOLVED")),
+        .fail => return error.CheckParseFailed,
+    }
+}
+
+test "workflow: cycle path, depth bound, agent targets, determinism" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cyc = try runCheck(a,
+        \\mesh crew {
+        \\  node boss {
+        \\    role = "lead"
+        \\  }
+        \\}
+        \\
+        \\workflow w {
+        \\  node a {
+        \\    agent = crew.boss
+        \\    control = true
+        \\    effects = ["io"]
+        \\  }
+        \\  node b {
+        \\    agent = crew.nosuch
+        \\  }
+        \\  a -> b
+        \\  b -> a
+        \\}
+        \\
+    );
+    const c = firstWithCode(cyc, "E-WORKFLOW-CYCLE").?;
+    try testing.expectEqualStrings("workflow `w` step edges must form a DAG; cycle: a -> b -> a (express revision loops as `retries` on a step, not back-edges)", c.message);
+    const det = firstWithCode(cyc, "E-DETERMINISM-EFFECT").?;
+    try testing.expectEqualStrings("step `a` is `control = true` (pure control-flow) but declares side-effecting effect `io`; move the side effect into a non-control step (drop `control`, or split it out)", det.message);
+    const ag = firstWithCode(cyc, "E-REF-UNRESOLVED").?;
+    try testing.expectEqualStrings("step `b`: `agent = crew.nosuch` references mesh `crew` but it declares no node `nosuch`", ag.message);
+
+    const dep = try runCheck(a,
+        \\mesh crew {
+        \\  node boss {
+        \\    role = "lead"
+        \\  }
+        \\}
+        \\
+        \\workflow deep {
+        \\  maxDepth = 1
+        \\  node s1 {
+        \\    agent = crew.boss
+        \\  }
+        \\  node s2 {
+        \\    agent = crew.boss
+        \\  }
+        \\  s1 -> s2
+        \\}
+        \\
+    );
+    const d = firstWithCode(dep, "E-WORKFLOW-DEPTH").?;
+    try testing.expectEqualStrings("workflow `deep` has critical-path depth 2, exceeding the declared maxDepth = 1", d.message);
+}
+
+test "workflow agent head naming a non-mesh sibling decl" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\engine crew {
+        \\  package = pkgs.zig
+        \\}
+        \\
+        \\workflow w {
+        \\  node a {
+        \\    agent = crew.boss
+        \\  }
+        \\}
+        \\
+    );
+    const d = firstWithCode(diags, "E-REF-UNRESOLVED").?;
+    try testing.expectEqualStrings("step `a`: `agent = crew.boss` references `engine crew`, which is not a mesh — an agent must be a mesh node", d.message);
+}
+
+test "ebpf: unknown hook, bad intent, enforce-on-observe" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const uh = try runCheck(a, "ebpf g {\n  hook = \"sk_lookup\"\n  intent = \"observe\"\n}\n");
+    const d1 = firstWithCode(uh, "E-EBPF-UNKNOWN-HOOK").?;
+    try testing.expectEqualStrings("ebpf `g`: unknown hook `sk_lookup`; expected one of ['cgroup_connect', 'cgroup_skb', 'kprobe', 'kretprobe', 'lsm', 'override_return', 'perf', 'send_signal', 'tc', 'tracepoint', 'xdp']", d1.message);
+    const bi = try runCheck(a, "ebpf g {\n  hook = \"lsm\"\n  intent = \"prevent\"\n}\n");
+    const d2 = firstWithCode(bi, "E-EBPF-BAD-INTENT").?;
+    try testing.expectEqualStrings("ebpf `g`: intent must be \"observe\" or \"enforce\", got `prevent`", d2.message);
+    const eo = try runCheck(a, "ebpf g {\n  hook = \"kprobe\"\n  intent = \"enforce\"\n}\n");
+    const d3 = firstWithCode(eo, "E-EBPF-ENFORCE-ON-OBSERVE").?;
+    try testing.expectEqualStrings("ebpf `g` declares `intent = \"enforce\"` on observe-only hook `kprobe`; kprobe cannot change system behaviour. Use a verdict-capable hook (lsm, cgroup_connect/cgroup_skb, xdp/tc, override_return, send_signal) to enforce, or set `intent = \"observe\"`.", d3.message);
+}
+
+test "E-GENERIC-INCONSISTENT: catalog from-kind and item-type disagreement" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const wrong_kind = try runCheck(a,
+        \\stream events {
+        \\  source = a.b
+        \\  type = T.U
+        \\}
+        \\
+        \\catalog c {
+        \\  from = stream.events
+        \\  emit = artifacts.plan
+        \\}
+        \\
+    );
+    const d1 = firstWithCode(wrong_kind, "E-GENERIC-INCONSISTENT").?;
+    try testing.expectEqualStrings("catalog `from` must target an `index` (Index<T>); `stream.events` is a `stream`", d1.message);
+
+    const item = try runCheck(a,
+        \\index corpus {
+        \\  source = pkgs.docs
+        \\  schema = schema.docA
+        \\}
+        \\
+        \\catalog c {
+        \\  from = index.corpus
+        \\  schema = schema.docB
+        \\  emit = artifacts.plan
+        \\}
+        \\
+    );
+    const d2 = firstWithCode(item, "E-GENERIC-INCONSISTENT").?;
+    try testing.expectEqualStrings("catalog item type `docB` disagrees with index `corpus` item type `docA`", d2.message);
+    // `schema` is not a declared catalog field (closed) — Python reports it
+    try testing.expectEqual(@as(usize, 1), countCode(item, "E-CONFORM-UNKNOWN-FIELD"));
+}
+
+test "python-repr rendering of list and record values in E-CONFORM-TYPE" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\stream s {
+        \\  source = a.b
+        \\  type = T.U
+        \\  fps = [1, "two"]
+        \\  retention = { a = 1 }
+        \\}
+        \\
+    );
+    try testing.expectEqual(@as(usize, 2), countCode(diags, "E-CONFORM-TYPE"));
+    var found_list = false;
+    var found_record = false;
+    for (diags) |d| {
+        if (std.mem.eql(u8, d.message, "field `fps` of schema `stream` expects `Int` but got [{'lit': 'number', 'value': '1'}, {'lit': 'string', 'value': 'two'}]")) found_list = true;
+        if (std.mem.eql(u8, d.message, "field `retention` of schema `stream` expects `Duration` but got {'record': [{'assign': 'a', 'op': '=', 'value': {'lit': 'number', 'value': '1'}}]}")) found_record = true;
+    }
+    try testing.expect(found_list);
+    try testing.expect(found_record);
 }
 
 test "JSON serialization matches the golden field shape" {
