@@ -1371,6 +1371,273 @@ pub fn emitDocsRuntime(a: Allocator, g: *const graphmod.Graph, source_file: []co
 }
 
 // --------------------------------------------------------------------------- //
+// Emitter: zig.daemoncfg (per fiber) — gen/zig/<fiber>.json.
+// --------------------------------------------------------------------------- //
+
+/// A value in a Zig daemon config (0012 §5.2). Python builds real
+/// int/float/bool/str/list objects and renders them with `json.dumps`; this
+/// mirrors that, with two deliberate choices:
+///
+///   * `raw` carries a PRE-RENDERED number. `json.dumps(n) == str(n)` for both
+///     int and float in Python 3, so `coerceNumberStr` — which already
+///     reproduces `str(_coerce_number(v))` exactly — IS the JSON rendering.
+///     This sidesteps the whole precision trap: Python ints are
+///     arbitrary-precision and would not survive an i64 round-trip, and floats
+///     need CPython's repr presentation rather than Zig's `{d}`.
+///   * `object` is ORDERED (Python's `_Ordered`): §5.2 key order is the fixed
+///     schema order, NOT sorted.
+const ZigVal = union(enum) {
+    raw: []const u8,
+    string: []const u8,
+    boolean: bool,
+    none,
+    array: []const ZigVal,
+    object: []const ZigPair,
+    /// A props subtree that `_scalar_prop` returned unchanged (e.g. a nested
+    /// `record`). Python falls through to `json.dumps(val, ensure_ascii=False)`
+    /// with DEFAULT separators — `{"a": 1}`, not `{"a":1}`.
+    passthrough: json.Value,
+};
+
+const ZigPair = struct { key: []const u8, val: ZigVal };
+
+/// lower.py `_scalar_prop`, as a `ZigVal` (the JSON-valued projection). The
+/// string-rendering sibling used by docs.runtime is `scalarPropStr`.
+fn scalarPropVal(a: Allocator, v: json.Value) Error!ZigVal {
+    switch (v) {
+        .bool => |b| return .{ .boolean = b }, // `isinstance(raw, bool)`
+        .array => |arr| {
+            const out = try a.alloc(ZigVal, arr.len);
+            for (arr, 0..) |x, i| out[i] = try scalarPropVal(a, x);
+            return .{ .array = out };
+        },
+        else => {},
+    }
+    if (getProp(v, "lit")) |kind| {
+        const k = switch (kind) {
+            .string => |s| s,
+            else => "",
+        };
+        const value = getProp(v, "value") orelse return .none; // raw.get("value") -> None
+        const val = switch (value) {
+            .string => |s| s,
+            else => return .{ .passthrough = value },
+        };
+        if (std.mem.eql(u8, k, "number")) return .{ .raw = try coerceNumberStr(a, val) };
+        if (std.mem.eql(u8, k, "bool") or std.mem.eql(u8, k, "boolean")) {
+            return .{ .boolean = std.mem.eql(u8, val, "true") };
+        }
+        return .{ .string = val };
+    }
+    if (refOf(v)) |r| return .{ .string = r };
+    // Python returns `raw` unchanged -> json.dumps of the props subtree.
+    return .{ .passthrough = v };
+}
+
+/// `json.dumps(v, ensure_ascii=False)` with Python's DEFAULT separators
+/// (`", "` / `": "`), preserving insertion order. `writeCanonical` is the
+/// COMPACT form, so it cannot be reused here.
+fn jsonDumpsDefault(a: Allocator, v: json.Value, out: *std.ArrayListUnmanaged(u8)) Error!void {
+    switch (v) {
+        .object => |obj| {
+            try out.append(a, '{');
+            for (obj, 0..) |e, i| {
+                if (i > 0) try out.appendSlice(a, ", ");
+                try out.appendSlice(a, try jsonScalar(a, .{ .string = e.key }));
+                try out.appendSlice(a, ": ");
+                try jsonDumpsDefault(a, e.value, out);
+            }
+            try out.append(a, '}');
+        },
+        .array => |arr| {
+            try out.append(a, '[');
+            for (arr, 0..) |x, i| {
+                if (i > 0) try out.appendSlice(a, ", ");
+                try jsonDumpsDefault(a, x, out);
+            }
+            try out.append(a, ']');
+        },
+        else => try out.appendSlice(a, try jsonScalar(a, v)),
+    }
+}
+
+/// lower.py `_emit_zig_value`: 2-space indent, one member per line for
+/// objects, one-LINE arrays for scalar lists (`["png", "webp"]`), `": "` after
+/// keys, line-trailing commas between members.
+fn emitZigValue(a: Allocator, val: ZigVal, level: usize, out: *std.ArrayListUnmanaged(u8)) Error!void {
+    switch (val) {
+        .object => |pairs| {
+            if (pairs.len == 0) {
+                try out.appendSlice(a, "{}");
+                return;
+            }
+            const pad = try repeatStr(a, "  ", level);
+            const pad_in = try repeatStr(a, "  ", level + 1);
+            try out.appendSlice(a, "{\n");
+            for (pairs, 0..) |p, i| {
+                try out.appendSlice(a, pad_in);
+                try out.appendSlice(a, try jsonScalar(a, .{ .string = p.key }));
+                try out.appendSlice(a, ": ");
+                try emitZigValue(a, p.val, level + 1, out);
+                if (i < pairs.len - 1) try out.append(a, ',');
+                try out.append(a, '\n');
+            }
+            try out.appendSlice(a, pad);
+            try out.append(a, '}');
+        },
+        .array => |arr| {
+            try out.append(a, '[');
+            for (arr, 0..) |x, i| {
+                if (i > 0) try out.appendSlice(a, ", ");
+                try emitZigValue(a, x, level + 1, out);
+            }
+            try out.append(a, ']');
+        },
+        .raw => |s| try out.appendSlice(a, s),
+        .string => |s| try out.appendSlice(a, try jsonScalar(a, .{ .string = s })),
+        .boolean => |b| try out.appendSlice(a, if (b) "true" else "false"),
+        .none => try out.appendSlice(a, "null"),
+        .passthrough => |pv| try jsonDumpsDefault(a, pv, out),
+    }
+}
+
+/// lower.py `_emit_zig_json`: the §5.2 document body + a trailing newline.
+fn emitZigJson(a: Allocator, val: ZigVal) Error![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    try emitZigValue(a, val, 0, &out);
+    try out.append(a, '\n');
+    return out.toOwnedSlice(a);
+}
+
+/// lower.py `_stream_for_fiber_input`: follow `fiber.input` to its in-runtime
+/// stream node (if any). The addressed stream name is the ref's LAST segment
+/// (`input = stream.screenrec` -> `screenrec`).
+fn streamForFiberInput(rv: RuntimeView, fiber: graphmod.GraphNode) ?graphmod.GraphNode {
+    const inp = refOf(getProp(fiber.props, "input")) orelse return null;
+    var target_name = inp;
+    if (std.mem.lastIndexOfScalar(u8, inp, '.')) |i| target_name = inp[i + 1 ..];
+    for (rv.streams) |st| {
+        if (std.mem.eql(u8, st.name, target_name)) return st;
+    }
+    return null;
+}
+
+/// lower.py `_zig_config_for_fiber`: the ordered config object for a fiber
+/// (0012 §5.2 table row order), with absent optionals OMITTED (never null).
+fn zigConfigForFiber(a: Allocator, rv: RuntimeView, fib: graphmod.GraphNode, sf: []const u8) Error!ZigVal {
+    var pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
+    try pairs.append(a, .{
+        .key = "_generated",
+        .val = .{ .string = try header(a, sf, try std.fmt.allocPrint(a, "fiber {s}", .{fib.name})) },
+    });
+    if (fiberEngineName(fib)) |eng| {
+        try pairs.append(a, .{ .key = "engine", .val = .{ .string = eng } });
+        try pairs.append(a, .{
+            .key = "engine_package",
+            .val = .{ .string = try std.fmt.allocPrint(a, "packages.{s}", .{eng}) },
+        });
+    }
+
+    // input { stream, source, type, fps }
+    var input_pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
+    if (streamForFiberInput(rv, fib)) |st| {
+        try input_pairs.append(a, .{ .key = "stream", .val = .{ .string = st.name } });
+        if (refOf(getProp(st.props, "source"))) |s| {
+            try input_pairs.append(a, .{ .key = "source", .val = .{ .string = s } });
+        }
+        if (refOf(getProp(st.props, "type"))) |t| {
+            try input_pairs.append(a, .{ .key = "type", .val = .{ .string = t } });
+        }
+        if (litOf(getProp(st.props, "fps"))) |f| {
+            // `_coerce_number(st_fps)` -> a JSON NUMBER, not a string.
+            try input_pairs.append(a, .{ .key = "fps", .val = .{ .raw = try coerceNumberStr(a, f) } });
+        }
+    }
+    if (input_pairs.items.len > 0) {
+        try pairs.append(a, .{ .key = "input", .val = .{ .object = try input_pairs.toOwnedSlice(a) } });
+    }
+
+    // output { target }
+    if (refOf(getProp(fib.props, "output"))) |out_ref| {
+        const one = try a.alloc(ZigPair, 1);
+        one[0] = .{ .key = "target", .val = .{ .string = out_ref } };
+        try pairs.append(a, .{ .key = "output", .val = .{ .object = one } });
+    }
+
+    // policy { … } — source order, from the enrichGraph-attached sub-block.
+    const policy_pairs = try zigPolicyPairs(a, fib);
+    if (policy_pairs.len > 0) {
+        try pairs.append(a, .{ .key = "policy", .val = .{ .object = policy_pairs } });
+    }
+
+    // budget (optional) — omitted entirely when absent.
+    if (getProp(fib.props, "budget")) |budget| {
+        try pairs.append(a, .{ .key = "budget", .val = try scalarPropVal(a, budget) });
+    }
+
+    // observe (default false)
+    const observe: ZigVal = if (getProp(fib.props, "observe")) |o|
+        try scalarPropVal(a, o)
+    else
+        .{ .boolean = false };
+    try pairs.append(a, .{ .key = "observe", .val = observe });
+
+    return .{ .object = try pairs.toOwnedSlice(a) };
+}
+
+/// lower.py `_zig_policy_pairs` / `_fiber_policy_fields`: the fiber's
+/// `policy { … }` record projected in SOURCE order, which is the §5.2 emission
+/// order.
+fn zigPolicyPairs(a: Allocator, fib: graphmod.GraphNode) Error![]const ZigPair {
+    var pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
+    const arr: []const json.Value = blk: {
+        const pol = getProp(fib.props, "policy") orelse break :blk &.{};
+        const rec = getProp(pol, "record") orelse break :blk &.{};
+        switch (rec) {
+            .array => |x| break :blk x,
+            else => break :blk &.{},
+        }
+    };
+    for (arr) |e| {
+        const assign = getProp(e, "assign") orelse continue;
+        const name = switch (assign) {
+            .string => |s| s,
+            else => continue,
+        };
+        const raw = getProp(e, "value") orelse json.Value{ .null = {} };
+        try pairs.append(a, .{ .key = name, .val = try scalarPropVal(a, raw) });
+    }
+    return pairs.toOwnedSlice(a);
+}
+
+/// lower.py `emit_zig_daemoncfg`: one `gen/zig/<fiber>.json` per fiber
+/// (0012 §5.2). Key order is the fixed schema order (NOT sorted);
+/// `_generated` is always first; an absent optional is omitted, never null.
+pub fn emitZigDaemoncfg(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const rv_opt = try runtimeView(a, g);
+    const rv = rv_opt orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    var files: std.ArrayListUnmanaged(File) = .empty;
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    for (nodes) |fib| {
+        const cfg = try zigConfigForFiber(a, rv, fib, sf);
+        const text = try emitZigJson(a, cfg);
+        const path = try std.fmt.allocPrint(a, "gen/zig/{s}.json", .{fib.name});
+        try files.append(a, .{ .path = path, .content = text });
+        try entries.append(a, .{
+            .artifact = path,
+            .region = null,
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "fiber {s}", .{fib.name}),
+            .span = fib.provenance.?.span,
+            .emitter = "zig.daemoncfg",
+            .inputs_projection = try nodeProjection(a, fib),
+        });
+    }
+    return .{ .files = try files.toOwnedSlice(a), .entries = try entries.toOwnedSlice(a) };
+}
+
+// --------------------------------------------------------------------------- //
 // enrich_graph — recover load-bearing config sub-blocks the resolver drops.
 // --------------------------------------------------------------------------- //
 
@@ -1564,10 +1831,14 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
     try run(a, &files, &all_entries, try emitNixSpine(a, g, source_file));
     try run(a, &files, &all_entries, try emitDocsRuntime(a, g, source_file));
 
-    // --- gated targets not yet ported (slice 1) --------------------------- //
+    // Direct: per-fiber Zig daemon configs.
+    if (rv.fibers.len > 0) {
+        try run(a, &files, &all_entries, try emitZigDaemoncfg(a, g, source_file, rv.fibers));
+    }
+
+    // --- gated targets not yet ported ------------------------------------ //
     // Each condition mirrors lower.py's selection exactly, so a graph that
     // selects none of these lowers to a COMPLETE artifact set today.
-    if (rv.fibers.len > 0) try unported.append(a, "zig.daemoncfg");
     {
         var any_jsonl = false;
         for (rv.indexes) |i| {
