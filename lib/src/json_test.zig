@@ -41,6 +41,32 @@ test "Value array" {
     try testing.expectEqualStrings("[1,2]", out);
 }
 
+test "Value float" {
+    const v = json.Value{ .float = 1.5 };
+    const out = try v.toOwned(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("1.5", out);
+}
+
+test "Value object key with quote is escaped" {
+    // regression: keys must go through the same escape path as values
+    const v = json.Value{ .object = &.{
+        .{ .key = "he\"y", .value = json.Value{ .int = 1 } },
+    } };
+    const out = try v.toOwned(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{\"he\\\"y\":1}", out);
+}
+
+test "Value object key with control char is escaped" {
+    const v = json.Value{ .object = &.{
+        .{ .key = "a\nb", .value = json.Value{ .bool = false } },
+    } };
+    const out = try v.toOwned(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{\"a\\nb\":false}", out);
+}
+
 test "Value object" {
     const v = json.Value{ .object = &.{
         .{ .key = "a", .value = json.Value{ .int = 1 } },

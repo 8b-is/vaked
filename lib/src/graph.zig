@@ -1,4 +1,11 @@
 // GENESIS_SEAL: 7c242080
+//! Labeled Property Graph (LPG) containers — the semantic-graph model shared
+//! by the resolver and later pipeline stages (mirrors vakedc/graph.py).
+//!
+//! Ownership: `Graph` does NOT own any string or props storage reachable from
+//! its nodes and edges. Callers keep `id`/`kind`/`name`/`labels`/`props`
+//! slices alive for the graph's lifetime (arena-style: allocate them from an
+//! arena that outlives the graph). `deinit` frees only container storage.
 const std = @import("std");
 const span = @import("span.zig");
 const json = @import("json.zig");
@@ -37,8 +44,16 @@ pub const Graph = struct {
         self.edges.deinit(self.allocator);
     }
 
-    pub fn addNode(self: *Graph, node: GraphNode) !void {
-        try self.nodes.put(node.id, node);
+    /// Insert `node`, keyed by `node.id`. Duplicate ids are NOT overwritten:
+    /// the first insertion wins (vakedc keep-first semantics) and `false` is
+    /// returned so the caller can surface a diagnostic. Returns `true` when
+    /// the node was actually inserted. The graph does not copy `node`'s
+    /// strings — the caller keeps them alive (see module doc).
+    pub fn addNode(self: *Graph, node: GraphNode) error{OutOfMemory}!bool {
+        const gop = try self.nodes.getOrPut(node.id);
+        if (gop.found_existing) return false;
+        gop.value_ptr.* = node;
+        return true;
     }
 
     pub fn getNode(self: *const Graph, id: []const u8) ?GraphNode {
@@ -49,46 +64,47 @@ pub const Graph = struct {
         return self.nodes.contains(id);
     }
 
-    pub fn addEdge(self: *Graph, edge: GraphEdge) !void {
+    /// Append `edge`. Edges are a plain list: duplicates are allowed and
+    /// insertion order is preserved (matches vakedc's `Graph.add_edge`).
+    pub fn addEdge(self: *Graph, edge: GraphEdge) error{OutOfMemory}!void {
         try self.edges.append(self.allocator, edge);
     }
 };
 
-pub fn nodeId(filename: []const u8, chain: []const []const u8) []const u8 {
-    const stem = blk: {
-        if (std.mem.endsWith(u8, filename, ".vaked")) {
-            break :blk filename[0 .. filename.len - ".vaked".len];
-        }
-        break :blk filename;
-    };
-
-    const alloc = std.heap.page_allocator;
-
-    if (chain.len == 0) {
-        return std.fmt.allocPrint(alloc, "{s}#", .{stem}) catch @panic("nodeId OOM");
-    }
-
-    var total: usize = stem.len + 1;
+/// Stable, path-derived node id: `<filename>#<seg>/<seg>/...`.
+///
+/// `filename` is used verbatim — the caller passes the file's basename with
+/// its extension intact, exactly like vakedc's `graph.node_id` (e.g.
+/// `operator-field.vaked#operator-field`; an empty chain yields
+/// `operator-field.vaked#`, the file node's id). Caller owns the returned
+/// slice.
+pub fn nodeId(
+    allocator: std.mem.Allocator,
+    filename: []const u8,
+    chain: []const []const u8,
+) error{OutOfMemory}![]u8 {
+    var total: usize = filename.len + 1;
     for (chain, 0..) |c, i| {
         total += c.len;
-        if (i < chain.len - 1) total += 1;
+        if (i > 0) total += 1;
     }
 
-    const buf = alloc.alloc(u8, total) catch @panic("nodeId OOM");
+    const buf = try allocator.alloc(u8, total);
+    errdefer allocator.free(buf);
     var pos: usize = 0;
 
-    @memcpy(buf[pos .. pos + stem.len], stem);
-    pos += stem.len;
+    @memcpy(buf[pos .. pos + filename.len], filename);
+    pos += filename.len;
     buf[pos] = '#';
     pos += 1;
 
     for (chain, 0..) |c, i| {
-        @memcpy(buf[pos .. pos + c.len], c);
-        pos += c.len;
-        if (i < chain.len - 1) {
+        if (i > 0) {
             buf[pos] = '/';
             pos += 1;
         }
+        @memcpy(buf[pos .. pos + c.len], c);
+        pos += c.len;
     }
 
     return buf;
