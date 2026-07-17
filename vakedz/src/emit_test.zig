@@ -198,6 +198,81 @@ test "routes_to edges: (from,label,to,props-json) order with stable props tiebre
     try testing.expect(aa < bb);
 }
 
+// --------------------------------------------------------------------------
+// stablePropsKey — DIRECT literal-output tests.
+//
+// Why direct: the tiebreak only fires for duplicate (from,label,to) edge
+// groups, and NO corpus file has one, so tools/emit-diff/run.sh cannot catch a
+// regression here. The routes_to test above pins only relative ORDER, which is
+// insensitive to the separators themselves (any consistent separator yields the
+// same sort). These tests pin the exact bytes of Python's
+// `json.dumps(props, sort_keys=True, ensure_ascii=False)` DEFAULT separators
+// `(", ", ": ")` — the thing that actually differs from the compact document.
+// --------------------------------------------------------------------------
+
+test "stablePropsKey: literal json.dumps default-separator output" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // props {a: 1, b: [1, 2]} — python3 -c
+    //   'import json; print(json.dumps({"a":1,"b":[1,2]}, sort_keys=True, ensure_ascii=False))'
+    //   => {"a": 1, "b": [1, 2]}
+    // Note BOTH separators: ", " between entries AND array items, ": " after
+    // each key. A compact-separator regression would yield {"a":1,"b":[1,2]}.
+    const items = [_]lib.json.Value{ .{ .int = 1 }, .{ .int = 2 } };
+    const entries = [_]lib.json.Value.Entry{
+        .{ .key = "a", .value = .{ .int = 1 } },
+        .{ .key = "b", .value = .{ .array = &items } },
+    };
+    const key = try emit.stablePropsKey(a, .{ .object = &entries });
+    try testing.expectEqualStrings("{\"a\": 1, \"b\": [1, 2]}", key);
+}
+
+test "stablePropsKey: sort_keys=True reorders entries, nested objects included" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Entries supplied OUT of order (z before a) and a nested object likewise:
+    // json.dumps(..., sort_keys=True) sorts recursively, so both levels flip.
+    // python3: json.dumps({"z":{"n":True,"m":None},"a":"x"}, sort_keys=True,
+    //                     ensure_ascii=False)
+    //   => {"a": "x", "z": {"m": null, "n": true}}
+    const nested = [_]lib.json.Value.Entry{
+        .{ .key = "n", .value = .{ .bool = true } },
+        .{ .key = "m", .value = .null },
+    };
+    const entries = [_]lib.json.Value.Entry{
+        .{ .key = "z", .value = .{ .object = &nested } },
+        .{ .key = "a", .value = .{ .string = "x" } },
+    };
+    const key = try emit.stablePropsKey(a, .{ .object = &entries });
+    try testing.expectEqualStrings("{\"a\": \"x\", \"z\": {\"m\": null, \"n\": true}}", key);
+}
+
+test "stablePropsKey: empty props and escaping share lib.json's table" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // json.dumps({}, sort_keys=True) => {}  (no space inside an empty object)
+    const empty = [_]lib.json.Value.Entry{};
+    try testing.expectEqualStrings("{}", try emit.stablePropsKey(a, .{ .object = &empty }));
+
+    // Escaping routes through lib.json.writeEscapedString (the ONE table, no
+    // longer a copy in emit.zig): quote/newline escaped, non-ASCII raw UTF-8.
+    // json.dumps({'k"\n': 'né'}, sort_keys=True, ensure_ascii=False)
+    //   => {"k\"\n": "né"}
+    const esc = [_]lib.json.Value.Entry{
+        .{ .key = "k\"\n", .value = .{ .string = "né" } },
+    };
+    try testing.expectEqualStrings(
+        "{\"k\\\"\\n\": \"né\"}",
+        try emit.stablePropsKey(a, .{ .object = &esc }),
+    );
+}
+
 test "ensure_ascii=False parity: non-ASCII strings pass through as raw UTF-8" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

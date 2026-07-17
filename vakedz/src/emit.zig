@@ -175,7 +175,11 @@ fn entryKeyLess(_: void, x: json.Value.Entry, y: json.Value.Entry) bool {
 /// `json.dumps(props, sort_keys=True, ensure_ascii=False)` — Python's
 /// DEFAULT separators `(", ", ": ")` (unlike the compact document), keys
 /// sorted, same string escaping as json.dumps.
-fn stablePropsKey(a: std.mem.Allocator, props: json.Value) error{OutOfMemory}![]const u8 {
+///
+/// `pub` only so emit_test.zig can pin its literal output — the corpus never
+/// exercises this path (see `writeSpaced`), so a direct test is the only
+/// guard. It is not part of emit.zig's intended API; `toCanonicalJson` is.
+pub fn stablePropsKey(a: std.mem.Allocator, props: json.Value) error{OutOfMemory}![]const u8 {
     const canon = try canonValue(a, props);
     var aw: std.Io.Writer.Allocating = .init(a);
     errdefer aw.deinit();
@@ -186,6 +190,23 @@ fn stablePropsKey(a: std.mem.Allocator, props: json.Value) error{OutOfMemory}![]
 /// Write `v` like Python json.dumps with default separators (", " / ": ")
 /// and ensure_ascii=False. Only used for the edge tiebreak key; entry order
 /// is emit order (callers pass canonValue output).
+///
+/// !! NOT COVERED BY THE CORPUS !!  The tiebreak only decides an ordering when
+/// two edges share (from, label, to) and differ only in props — and NO file in
+/// the example corpus has a duplicate (from, label, to) edge group. So the
+/// byte-differential (`tools/emit-diff/run.sh`) can pass with this function
+/// arbitrarily wrong: every corpus edge is already fully ordered by the three
+/// preceding keys, and the props key is never consulted.
+///
+/// The SOLE guards are the unit tests in emit_test.zig:
+///   * "stablePropsKey: literal json.dumps default-separator output" — pins the
+///     `", "` / `": "` separators as a literal expected string, directly.
+///   * "edges sorted by (from,label,to,props-json)" (routes_to) — pins the
+///     downstream ORDERING only; it would still pass if the separators changed,
+///     since sort order is insensitive to a consistent separator choice.
+/// If you change this function, those tests are all that stand between you and
+/// a silent divergence from Python's `graph.py::_stable_props_key`. Do not
+/// delete them, and do not assume a green emit-diff means this path is right.
 fn writeSpaced(v: json.Value, w: *std.Io.Writer) std.Io.Writer.Error!void {
     switch (v) {
         .null => try w.writeAll("null"),
@@ -195,7 +216,7 @@ fn writeSpaced(v: json.Value, w: *std.Io.Writer) std.Io.Writer.Error!void {
             std.debug.assert(std.math.isFinite(f));
             try w.print("{d}", .{f});
         },
-        .string => |s| try writeEscapedString(s, w),
+        .string => |s| try json.writeEscapedString(s, w),
         .array => |arr| {
             try w.writeByte('[');
             for (arr, 0..) |x, i| {
@@ -208,38 +229,11 @@ fn writeSpaced(v: json.Value, w: *std.Io.Writer) std.Io.Writer.Error!void {
             try w.writeByte('{');
             for (obj, 0..) |e, i| {
                 if (i > 0) try w.writeAll(", ");
-                try writeEscapedString(e.key, w);
+                try json.writeEscapedString(e.key, w);
                 try w.writeAll(": ");
                 try writeSpaced(e.value, w);
             }
             try w.writeByte('}');
         },
     }
-}
-
-/// Same escaping as lib.json.Value.writeCanonical (private there) and
-/// Python json.dumps with ensure_ascii=False: named escapes for the JSON
-/// shorthands, \u00xx for remaining control bytes, raw UTF-8 passthrough
-/// otherwise.
-fn writeEscapedString(s: []const u8, w: *std.Io.Writer) std.Io.Writer.Error!void {
-    try w.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\r' => try w.writeAll("\\r"),
-            '\t' => try w.writeAll("\\t"),
-            0x08 => try w.writeAll("\\b"),
-            0x0c => try w.writeAll("\\f"),
-            else => {
-                if (c < 0x20) {
-                    try w.print("\\u{x:0>4}", .{c});
-                } else {
-                    try w.writeByte(c);
-                }
-            },
-        }
-    }
-    try w.writeByte('"');
 }

@@ -53,31 +53,6 @@ pub const Value = union(enum) {
         }
     }
 
-    /// Shared string-escape path for values AND object keys — a key
-    /// containing `"` or a control char must escape identically to a value.
-    fn writeEscapedString(s: []const u8, writer: anytype) !void {
-        try writer.writeByte('"');
-        for (s) |c| {
-            switch (c) {
-                '"' => try writer.writeAll("\\\""),
-                '\\' => try writer.writeAll("\\\\"),
-                '\n' => try writer.writeAll("\\n"),
-                '\r' => try writer.writeAll("\\r"),
-                '\t' => try writer.writeAll("\\t"),
-                0x08 => try writer.writeAll("\\b"),
-                0x0c => try writer.writeAll("\\f"),
-                else => {
-                    if (c < 0x20) {
-                        try writer.print("\\u{x:0>4}", .{c});
-                    } else {
-                        try writer.writeByte(c);
-                    }
-                },
-            }
-        }
-        try writer.writeByte('"');
-    }
-
     pub fn toOwned(self: Value, allocator: std.mem.Allocator) ![]u8 {
         var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
@@ -85,3 +60,39 @@ pub const Value = union(enum) {
         return aw.toOwnedSlice();
     }
 };
+
+/// The single JSON string-escape table in the tree — shared by values AND
+/// object keys (a key containing `"` or a control char must escape identically
+/// to a value), and by BOTH serializers: `Value.writeCanonical` (compact,
+/// `separators=(",", ":")`) and vakedz `emit.zig`'s `writeSpaced` (Python
+/// json.dumps DEFAULT separators, used for the edge-sort tiebreak).
+///
+/// It is `pub` precisely so those two serializers cannot drift: emit.zig used
+/// to carry a byte-for-byte copy of this table, which meant an escaping fix
+/// here would silently leave the tiebreak key on the old behaviour.
+///
+/// Semantics match Python `json.dumps(..., ensure_ascii=False)`: named escapes
+/// for the JSON shorthands, `\u00xx` for any remaining control byte, and raw
+/// UTF-8 passthrough for everything else (never `\uXXXX` for non-ASCII).
+pub fn writeEscapedString(s: []const u8, writer: anytype) !void {
+    try writer.writeByte('"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0x08 => try writer.writeAll("\\b"),
+            0x0c => try writer.writeAll("\\f"),
+            else => {
+                if (c < 0x20) {
+                    try writer.print("\\u{x:0>4}", .{c});
+                } else {
+                    try writer.writeByte(c);
+                }
+            },
+        }
+    }
+    try writer.writeByte('"');
+}
