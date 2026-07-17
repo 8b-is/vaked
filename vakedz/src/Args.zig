@@ -37,12 +37,6 @@ pub const LowerOptions = struct {
     /// Overrides the builtin catalog path (default:
     /// vaked/schema/builtins.vaked relative to the CWD).
     builtins: ?[]const u8 = null,
-    /// vakedz-only (NOT a vakedc flag): write the artifact tree even when the
-    /// graph selects registry targets this build has not ported yet, so the
-    /// per-artifact differential harness can compare the artifacts that ARE
-    /// ported. The tree is knowingly INCOMPLETE — never use it as a real
-    /// lowering. Without this flag such a graph is refused (exit 2).
-    allow_partial: bool = false,
 };
 
 /// Mirrors `python3 -m vakedc passes <file> [--json]`. Like lower, vakedc's
@@ -158,7 +152,6 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
         var file: ?[]const u8 = null;
         var out: ?[]const u8 = null;
         var builtins: ?[]const u8 = null;
-        var allow_partial = false;
 
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
@@ -169,8 +162,6 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
             } else if (std.mem.eql(u8, a, "--builtins") and i + 1 < args.len) {
                 i += 1;
                 builtins = args[i];
-            } else if (std.mem.eql(u8, a, "--allow-partial")) {
-                allow_partial = true;
             } else if (file == null) {
                 file = a;
             }
@@ -178,12 +169,7 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
             // single-file contract is enforced by the driver on `file`.
         }
 
-        return .{ .lower = .{
-            .file = file,
-            .out = out,
-            .builtins = builtins,
-            .allow_partial = allow_partial,
-        } };
+        return .{ .lower = .{ .file = file, .out = out, .builtins = builtins } };
     }
     if (std.mem.eql(u8, first, "passes")) {
         var file: ?[]const u8 = null;

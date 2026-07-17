@@ -111,9 +111,6 @@ pub fn main(init: std.process.Init) !void {
                 \\  --out DIR         Output directory for the artifact tree
                 \\                    (default: .vaked/lower/)
                 \\  --builtins PATH   Builtin catalog (default: vaked/schema/builtins.vaked)
-                \\  --allow-partial   Write the tree even when the graph selects registry
-                \\                    targets this build has not ported yet. The result is
-                \\                    knowingly INCOMPLETE (differential harness only).
                 \\
                 \\passes options:
                 \\  --json            Emit the pipeline result as JSON to stdout
@@ -600,34 +597,13 @@ fn runLower(allocator: std.mem.Allocator, io: std.Io, opts: Args.LowerOptions) !
     var res = try resolve_mod.buildGraph(aa, items, file);
     const result = try lower_mod.lower(aa, &res.graph, file, items);
 
-    // A graph selecting an emitter this port does not have yet must NOT be
-    // written as if it were a complete lowering: the tree would silently be
-    // missing artifacts. Refuse, name the targets, and exit 2 (a vakedz
-    // limitation, not a source diagnostic — so it can never be mistaken for
-    // vakedc's exit-1 "refusing to lower" path).
-    if (result.unported_targets.len > 0 and !opts.allow_partial) {
-        const ls = try io.lockStderr(&.{}, null);
-        defer io.unlockStderr();
-        const w = stderrWriter(ls);
-        try w.print("vakedz: lowering {s} selects registry targets this build has not ported yet:\n", .{file});
-        for (result.unported_targets) |t| try w.print("  - {s}\n", .{t});
-        try w.writeAll("vakedz: refusing to write a partial artifact tree (nothing written)\n");
-        try w.writeAll("vakedz: pass --allow-partial to write the ported artifacts anyway\n");
-        std.process.exit(2);
-    }
-
     // 4) write the tree. The manifest lands at <out>/provenance.json; the rest
     //    of the files are relative paths under <out> (0012 §6.2 erratum).
     const out_dir = opts.out orelse ".vaked/lower";
     const written = try writeTree(aa, io, out_dir, result);
     const ls = try io.lockStderr(&.{}, null);
     defer io.unlockStderr();
-    const w = stderrWriter(ls);
-    if (result.unported_targets.len > 0) {
-        try w.print("vakedz: WARNING: --allow-partial: {s} is an INCOMPLETE lowering; these selected targets emitted nothing:\n", .{out_dir});
-        for (result.unported_targets) |t| try w.print("  - {s}\n", .{t});
-    }
-    try w.print("vakedz: lowered {s} → {s} ({d} files)\n", .{ file, out_dir, written });
+    try stderrWriter(ls).print("vakedz: lowered {s} → {s} ({d} files)\n", .{ file, out_dir, written });
 }
 
 /// vakedc `__main__._write_tree`: write a LowerResult to `out_dir` — every

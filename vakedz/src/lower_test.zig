@@ -816,19 +816,17 @@ test "lower: otpSlug produces a legal Erlang module atom prefix" {
     }
 }
 
-// MILESTONE: operator-field is the richest golden, and with slice 3 every
-// emitter it selects is ported -- so it now lowers to a COMPLETE artifact set.
-// unported_targets going non-empty again for this fixture is a regression.
-test "lower: operator-field now lowers completely (no unported targets)" {
+// operator-field is the richest golden: it selects nix.spine, docs.runtime,
+// zig.daemoncfg, catalog.jsonl AND otp.supervision, and its frozen tree under
+// vaked/examples/lowering/ is what test_vakedc_lower.py pins vakedc against.
+// This asserts the emitted SET, so a dropped or stray artifact names itself
+// instead of surfacing as a byte diff.
+test "lower: operator-field emits exactly the frozen fixture tree" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     const result = try lowerSource(a, operator_field_src, fixture_path);
-    if (result.unported_targets.len != 0) {
-        for (result.unported_targets) |t| std.debug.print("unexpectedly unported: {s}\n", .{t});
-        return error.TestUnexpectedResult;
-    }
     // The full frozen fixture tree, minus provenance.json (built by the driver).
     const want = [_][]const u8{
         "flake.nix",
@@ -1080,10 +1078,6 @@ test "lower: NixOS cohort reproduces live vakedc for crabcc-umami byte-for-byte"
     try expectFile(result, "gen/nixos/host-resources.nix", golden_host_resources_nix);
     try expectFile(result, "gen/nixos/services.nix", golden_services_nix);
     try expectFile(result, "gen/caddy/ingress.nix", golden_caddy_ingress_nix);
-
-    // Every emitter crabcc-umami selects is ported -> it lowers completely,
-    // which is what promotes it to the harness's tier-1 full-tree diff -r.
-    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
 }
 
 test "lower: oci.containers reproduces live vakedc for browser-pool byte-for-byte" {
@@ -1101,7 +1095,6 @@ test "lower: oci.containers reproduces live vakedc for browser-pool byte-for-byt
     // environmentFiles secret accessor rendered UNQUOTED
     // (config.sops.secrets."...".path).
     try expectFile(result, "gen/nixos/oci-containers.nix", golden_oci_containers_nix);
-    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
 }
 
 fn expectFile(result: lower.LowerResult, path: []const u8, want: []const u8) !void {
@@ -1468,7 +1461,6 @@ test "lower: trust.config reproduces live vakedc byte-for-byte (floats included)
     // score = 0.9 / 0.7 are the only floats ANY fixture carries -- the
     // differential is otherwise blind to the float path.
     try expectFile(result, "gen/trust.json", golden_trust_json);
-    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
 }
 
 test "lower: workflow.spec + eventd.config reproduce live vakedc byte-for-byte" {
@@ -1483,7 +1475,6 @@ test "lower: workflow.spec + eventd.config reproduce live vakedc byte-for-byte" 
     const result = try lowerSource(a, sdd_src, "vaked/examples/sdd.vaked");
     try expectFile(result, "gen/workflow/sdd_waves.json", golden_sdd_waves_json);
     try expectFile(result, "gen/eventd.json", golden_eventd_json);
-    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
 }
 
 // _workflow_depth: the critical path in steps. sdd_waves is a 6-step chain
@@ -1881,7 +1872,6 @@ test "lower: ebpf.policy reproduces live vakedc byte-for-byte" {
 
     const result = try lowerSource(a, agent_egress_src, "vaked/examples/membrane/agent-egress.vaked");
     try expectFile(result, "gen/ebpf.policy.json", golden_ebpf_policy_json);
-    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
 }
 
 test "lower: colmena.hive reproduces live vakedc byte-for-byte" {
@@ -1894,28 +1884,4 @@ test "lower: colmena.hive reproduces live vakedc byte-for-byte" {
 
     const result = try lowerSource(a, agentfield_swe_src, "vaked/examples/agentfield-swe.vaked");
     try expectFile(result, "gen/colmena/hive.nix", golden_colmena_hive_nix);
-    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
-}
-
-// PORT COMPLETE: every registry target lower.py can select is ported, so no
-// graph can populate unported_targets any more. If this ever fails, a new
-// emitter landed in lower.py without a vakedz counterpart -- which is exactly
-// what it is here to catch.
-test "lower: no fixture selects an unported target (tier 2 == 0)" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const sources = [_][]const u8{
-        operator_field_src, crabcc_umami_src,       browser_pool_src,
-        sdd_src,            runtime_with_trust_src, agent_egress_src,
-        agentfield_swe_src,
-    };
-    for (sources) |src| {
-        const result = try lowerSource(a, src, "t.vaked");
-        if (result.unported_targets.len != 0) {
-            for (result.unported_targets) |t| std.debug.print("unported: {s}\n", .{t});
-            return error.TestUnexpectedResult;
-        }
-    }
 }

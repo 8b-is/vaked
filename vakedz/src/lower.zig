@@ -5,21 +5,55 @@
 //! Pure: no IO, no clock, no randomness — the caller writes `result.files`
 //! (that contract, and the process-exit contract, live in main.zig).
 //!
-//! PORT STATUS (slice 1 of N). Ported emitters:
-//!   * `nix.spine`    (lower.py `emit_nix_spine`,   L374-622)  -> flake.nix
-//!   * `docs.runtime` (lower.py `emit_docs_runtime`, L644-841) -> gen/RUNTIME.md
+//! PORT COMPLETE. Every target `lower.py`'s REGISTRY can select is ported and
+//! byte-identical to vakedc:
+//!   * `nix.spine`       (emit_nix_spine,       L374)  -> flake.nix
+//!   * `docs.runtime`    (emit_docs_runtime,    L644)  -> gen/RUNTIME.md
+//!   * `zig.daemoncfg`   (emit_zig_daemoncfg,   L931)  -> gen/zig/<fiber>.json
+//!   * `catalog.jsonl`   (emit_catalog_jsonl,   L1133) -> gen/catalog/<i>.jsonl
+//!   * `sops.secrets`    (emit_sops_secrets,    L1299) -> gen/nixos/sops.nix
+//!   * `host.resources`  (emit_host_resources,  L1332) -> gen/nixos/host-resources.nix
+//!   * `nixos.service`   (emit_nixos_service,   L1365) -> gen/nixos/services.nix
+//!   * `caddy.ingress`   (emit_caddy_ingress,   L1427) -> gen/caddy/ingress.nix
+//!   * `oci.containers`  (emit_oci_containers,  L1500) -> gen/nixos/oci-containers.nix
+//!   * `eventd.config`   (emit_eventd_config,   L1657) -> gen/eventd.json
+//!   * `trust.config`    (emit_trust_config,    L1682) -> gen/trust.json
+//!   * `memory.store`    (emit_memory_store,    L1764) -> gen/memory/<m>.json
+//!   * `otp.supervision` (emit_otp_supervision, L1880) -> gen/otp/*.erl
+//!   * `workflow.spec`   (emit_workflow_spec,   L2031) -> gen/workflow/<w>.json
+//!   * `colmena.hive`    (emit_colmena_hive,    L2123) -> gen/colmena/hive.nix
+//!   * `ebpf.policy`     (emit_ebpf_policy,     L2262) -> gen/ebpf.policy.json
 //! plus the driver infrastructure: `_RuntimeView`, `enrich_graph`,
-//! `ProvEntry`/`_build_provenance`, `inputs_hash` (real sha256), and the
+//! `ProvEntry`/`_build_provenance`, `inputs_hash` (a real sha256), and the
 //! `provenance_json_text` pretty-printer.
 //!
-//! NOT YET PORTED (each is presence-gated in `lower()`, so a runtime that does
-//! not declare the gating decls is already byte-complete): zig.daemoncfg,
-//! catalog.jsonl, sops.secrets, nixos.service, host.resources, caddy.ingress,
-//! oci.containers, otp.supervision, workflow.spec, memory.store, eventd.config,
-//! trust.config, ebpf.policy, colmena.hive. `lower()` returns
-//! `unported_targets` naming every gated emitter that WOULD have run, so the
-//! driver and the differential harness can refuse to claim parity on a file
-//! whose artifact set is incomplete. See `LowerResult.unported_targets`.
+//! `crabcc.index` has no emitter of its own: its provenance entries are
+//! produced inside `emitNixSpine` (the spine emitter), exactly as in Python.
+//! `catalog.sqlite`, `otel.config`, `systemd.units` and `surface.launcher` are
+//! the registry's DEFERRED rows — `emit_deferred` produces nothing and
+//! `lower()` never dispatches them, so there is nothing to port. NOTE
+//! `ebpf.policy` is NOT among them despite three stale docstrings in lower.py
+//! saying so (L41, L1554, and the test's EMITTER_REGISTRY comment): its
+//! registry row carries no `deferred=True` and L2452 dispatches it.
+//!
+//! FOUR serializers, deliberately distinct — reusing the wrong one produces
+//! valid, wrong bytes that only a byte-diff catches:
+//!   * `lib.json.writeCanonical` — compact `(",",":")`, emit order
+//!     (catalog.jsonl rows);
+//!   * `emitZigJson` — Python `_Ordered`, 2-space pretty, UNSORTED, one-line
+//!     scalar arrays (zig.daemoncfg / eventd / memory / workflow / trust's
+//!     top level);
+//!   * `jsonDumpsDefault` / `emitZigValueDumps` — `json.dumps` defaults: ONE
+//!     line, `(", ", ": ")` (trust.config's plain-dict entries);
+//!   * `jsonDumpsIndentSorted` — `json.dumps(indent=2, sort_keys=True)`:
+//!     pretty, keys SORTED, item separator without its trailing space
+//!     (ebpf.policy).
+//!
+//! And TWO number rules: `_scalar_prop`/`_coerce_number` COERCES (docs.runtime,
+//! zig.daemoncfg, trust/quorum, workflow) while `_nix_literal` renders the
+//! stored string VERBATIM (the whole NixOS cohort). `2.0` is `2.0` under the
+//! first and `2.0` under the second, but `007` is `7` under the first and `007`
+//! under the second. See the Python-derived table in lower_test.zig.
 //!
 //! Determinism: graph node iteration is a StringHashMap walk (nondeterministic
 //! order), so every output boundary sorts — `nodesSorted` (by id) mirrors
@@ -3504,10 +3538,6 @@ pub const LowerResult = struct {
     provenance: json.Value,
     /// The flat ProvEntry list (debug/tests).
     entries: []const ProvEntry,
-    /// Registry targets that this graph SELECTS but vakedz has not ported yet.
-    /// Empty ⇒ the artifact set is complete and byte-parity is claimable.
-    /// Non-empty ⇒ the caller MUST NOT present the output as a full lowering.
-    unported_targets: []const []const u8,
 };
 
 /// lower.py `lower`. Selection is entirely a read of the graph (0012 §3.3):
@@ -3545,12 +3575,10 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         .files = &.{},
         .provenance = try emptyProvenance(a, source_file),
         .entries = &.{},
-        .unported_targets = &.{},
     };
 
     var files: std.ArrayListUnmanaged(File) = .empty;
     var all_entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
-    var unported: std.ArrayListUnmanaged([]const u8) = .empty;
 
     const run = struct {
         fn call(
@@ -3655,11 +3683,6 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         try run(a, &files, &all_entries, try emitColmenaHive(a, g, source_file, rv.hosts));
     }
 
-    // Every registry target lower.py can select is now ported, so
-    // `unported_targets` is always empty. The field, `--allow-partial` and the
-    // harness's ARTIFACTS scoping are removed in the follow-up "port complete"
-    // commit; this is the last slice that could populate it.
-
     const sorted_files = try files.toOwnedSlice(a);
     std.sort.block(File, sorted_files, {}, struct {
         fn less(_: void, x: File, y: File) bool {
@@ -3672,7 +3695,6 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         .files = sorted_files,
         .provenance = try buildProvenance(a, source_file, entries),
         .entries = entries,
-        .unported_targets = try unported.toOwnedSlice(a),
     };
 }
 
