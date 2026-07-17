@@ -42,25 +42,51 @@ const graphmod = lib.graph;
 const spanmod = lib.span;
 const parser = @import("parser.zig");
 const resolve_mod = @import("resolve.zig");
-/// `stepsEdges` is a port of lower.py `_workflow_steps_edges`, which LIVES in
-/// lower.py — `passes/pass01_topology.py:16` does `from vakedc.lower import
-/// _workflow_steps_edges`. The Zig port inverted that: it lives in passes.zig,
-/// which already imports lower.zig for `runtimeView`. Importing it back makes
-/// lower <-> passes mutually importing.
-///
-/// Zig resolves file imports lazily, so the cycle compiles and every test
-/// passes; it is nonetheless the WRONG direction, and it is imported rather
-/// than copied because a third copy of this helper is strictly worse (#386
-/// already tracks childrenOf/nodesSorted/getProp/litOf being duplicated across
-/// these two files). See the report's #386 note for the recommended fix:
-/// either move `stepsEdges` + `Edge` down into lower.zig so passes.zig imports
-/// them (mirroring Python exactly, and killing the cycle), or lift all the
-/// shared graph projections into one module. Not done here because passes.zig
-/// has a live owner mid-flight.
-const passes_mod = @import("passes.zig");
 
 const Allocator = std.mem.Allocator;
 const Error = error{OutOfMemory};
+
+/// `(from_name, to_name)` — Python's `tuple[str, str]`. Lives here because its
+/// producer `stepsEdges` does; passes.zig re-exports both.
+pub const Edge = struct {
+    from: []const u8,
+    to: []const u8,
+};
+
+/// lower.py `_workflow_steps_edges` (L2004-2012): a workflow's `node` children
+/// in declaration order, and the `routes_to` edges among them as
+/// (from_name, to_name). Edge order is `graph.edges` order — Python iterates
+/// the same insertion-ordered list.
+///
+/// This lives in lower.zig, not passes.zig, because that is where Python puts
+/// it: `pass01_topology.py:16` does `from vakedc.lower import
+/// _workflow_steps_edges`. passes depends on lower; not the reverse.
+pub fn stepsEdges(
+    a: Allocator,
+    g: *const graphmod.Graph,
+    wf: graphmod.GraphNode,
+) Error!struct { steps: []const graphmod.GraphNode, edges: []const Edge } {
+    const children = try childrenOf(a, g, wf.id);
+    var steps: std.ArrayListUnmanaged(graphmod.GraphNode) = .empty;
+    for (children) |n| {
+        if (std.mem.eql(u8, n.kind, "node")) try steps.append(a, n);
+    }
+    const step_slice = try steps.toOwnedSlice(a);
+
+    // Python `ids = {n.id: n.name for n in steps}` — a dict keyed by id, so a
+    // duplicate id would keep the LAST name. Ids are unique in a built graph.
+    var ids: std.StringHashMapUnmanaged([]const u8) = .empty;
+    for (step_slice) |s2| try ids.put(a, s2.id, s2.name);
+
+    var edges: std.ArrayListUnmanaged(Edge) = .empty;
+    for (g.edges.items) |e| {
+        if (!std.mem.eql(u8, e.label, "routes_to")) continue;
+        const from = ids.get(e.source) orelse continue;
+        const to = ids.get(e.target) orelse continue;
+        try edges.append(a, .{ .from = from, .to = to });
+    }
+    return .{ .steps = step_slice, .edges = try edges.toOwnedSlice(a) };
+}
 
 /// lower.py `NIXPKGS_BASELINE_REV`: nixpkgs is emitted PINNED (0012 §4.1),
 /// never a moving channel ref. The 40-hex value is a disclosed placeholder
@@ -2792,7 +2818,7 @@ fn budgetProp(a: Allocator, prop: ?json.Value) Error!?ZigVal {
 /// lower.py `_workflow_depth`: critical path counted in steps (same semantics
 /// as the 0015 checker). `lower` runs only on a checked graph, so the edge set
 /// is a DAG and the recursion terminates.
-fn workflowDepth(a: Allocator, steps: []const graphmod.GraphNode, edges: []const passes_mod.Edge) Error!i64 {
+fn workflowDepth(a: Allocator, steps: []const graphmod.GraphNode, edges: []const Edge) Error!i64 {
     var succ: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
     for (steps) |s| try succ.put(a, s.name, .empty);
     for (edges) |e| {
@@ -2832,7 +2858,7 @@ fn workflowDepthOf(
 /// AND its step nodes AND the routes_to edges (they produce steps/edges/depth),
 /// so ALL of them key the inputsHash — editing a step's agent or rewiring the
 /// DAG must change the hash.
-fn workflowProjection(a: Allocator, wf: graphmod.GraphNode, steps: []const graphmod.GraphNode, edges: []const passes_mod.Edge) Error!json.Value {
+fn workflowProjection(a: Allocator, wf: graphmod.GraphNode, steps: []const graphmod.GraphNode, edges: []const Edge) Error!json.Value {
     const base = try nodeProjection(a, wf);
     const base_obj = switch (base) {
         .object => |o| o,
@@ -2862,7 +2888,7 @@ pub fn emitWorkflowSpec(a: Allocator, g: *const graphmod.Graph, source_file: []c
     var files: std.ArrayListUnmanaged(File) = .empty;
     var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
     for (nodes) |wf| {
-        const se = try passes_mod.stepsEdges(a, g, wf);
+        const se = try stepsEdges(a, g, wf);
         var pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
         try pairs.append(a, .{
             .key = "_generated",

@@ -116,11 +116,11 @@ pub const WorkflowIR = struct {
     diagnostics: []const diag.Diagnostic = &.{},
 };
 
-/// `(from_name, to_name)` — Python's `tuple[str, str]`.
-pub const Edge = struct {
-    from: []const u8,
-    to: []const u8,
-};
+/// `(from_name, to_name)` — Python's `tuple[str, str]`. Defined in lower.zig
+/// and re-exported here: its only producer, `stepsEdges`, is a port of
+/// lower.py `_workflow_steps_edges`, which lives in lower.py (this file's
+/// Python counterpart, pass01_topology.py:16, imports it FROM there).
+pub const Edge = lower_mod.Edge;
 
 /// `pass02_wal.py:64-72`. Field order here IS the emitted key order (Python
 /// dict insertion order); `wal`/`fetch`/`protocol` are constants in Stage 0.
@@ -222,36 +222,15 @@ fn litOf(v: ?json.Value) ?[]const u8 {
     };
 }
 
-/// lower.py `_workflow_steps_edges` (lower.py:2004-2012): a workflow's `node`
-/// children in declaration order, and the `routes_to` edges among them as
-/// (from_name, to_name). Edge order is `graph.edges` order — Python iterates
-/// the same insertion-ordered list.
-pub fn stepsEdges(
-    a: Allocator,
-    g: *const graphmod.Graph,
-    wf: graphmod.GraphNode,
-) Error!struct { steps: []const graphmod.GraphNode, edges: []const Edge } {
-    const children = try childrenOf(a, g, wf.id);
-    var steps: std.ArrayListUnmanaged(graphmod.GraphNode) = .empty;
-    for (children) |n| {
-        if (std.mem.eql(u8, n.kind, "node")) try steps.append(a, n);
-    }
-    const step_slice = try steps.toOwnedSlice(a);
-
-    // Python `ids = {n.id: n.name for n in steps}` — a dict keyed by id, so a
-    // duplicate id would keep the LAST name. Ids are unique in a built graph.
-    var ids: std.StringHashMapUnmanaged([]const u8) = .empty;
-    for (step_slice) |s| try ids.put(a, s.id, s.name);
-
-    var edges: std.ArrayListUnmanaged(Edge) = .empty;
-    for (g.edges.items) |e| {
-        if (!std.mem.eql(u8, e.label, "routes_to")) continue;
-        const from = ids.get(e.source) orelse continue;
-        const to = ids.get(e.target) orelse continue;
-        try edges.append(a, .{ .from = from, .to = to });
-    }
-    return .{ .steps = step_slice, .edges = try edges.toOwnedSlice(a) };
-}
+/// lower.py `_workflow_steps_edges`, re-exported from lower.zig.
+///
+/// It lives there because that is where Python puts it: pass01_topology.py:16
+/// does `from vakedc.lower import _workflow_steps_edges`, i.e. passes depends
+/// on lower, not the reverse. Keeping the definition here instead forced
+/// lower.zig to import passes.zig while passes.zig already imported lower.zig
+/// for `runtimeView` — a mutual import that Zig's lazy resolution tolerates
+/// but that should not exist. Mirroring Python's direction removes it.
+pub const stepsEdges = lower_mod.stepsEdges;
 
 // ---------------------------------------------------------------------------
 // Pass 1 — topology analysis (pass01_topology.py)
