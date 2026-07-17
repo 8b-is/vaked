@@ -1009,19 +1009,130 @@ fn scalarPropStr(a: Allocator, v: json.Value) Error![]const u8 {
     return "None";
 }
 
-/// lower.py `_coerce_number` composed with Python's `"%s"`. An int literal
-/// round-trips verbatim ("10" -> 10 -> "10"). A float goes through Python's
-/// `repr`, which normalizes ("1.50" -> 1.5); `{d}` on an f64 matches for the
-/// shortest-round-trip cases these fixtures use. A value that does not parse is
-/// returned unchanged (Python's ValueError branch).
-fn coerceNumberStr(a: Allocator, val: []const u8) Error![]const u8 {
-    // Python's int branch: `str(int("10"))` is "10", and a ValueError returns
-    // the original string — both paths render the input verbatim, so an
-    // integer literal needs no work at all.
+/// lower.py `_coerce_number` composed with Python's `"%s"` (i.e. `str()`).
+///
+///     if "." in value or "e" in value or "E" in value: return float(value)
+///     return int(value)                       # ValueError -> return value
+///
+/// The branch is chosen on the STRING, exactly like Python — not on the lexer's
+/// literal kind.
+///
+/// NOTE both branches are reachable from `docs.runtime` TODAY: `fiberPolicy` is
+/// an OPEN schema (vaked/schema/builtins.vaked), so an undeclared policy field
+/// of any literal type flows enrichGraph -> renderPolicyValue -> RUNTIME.md.
+/// The differential is structurally blind to it (no fixture carries a float or
+/// a leading zero), so the unit-test table in lower_test.zig is the only gate —
+/// keep it Python-derived.
+pub fn coerceNumberStr(a: Allocator, val: []const u8) Error![]const u8 {
     const is_float = std.mem.indexOfAny(u8, val, ".eE") != null;
-    if (!is_float) return val;
+    if (!is_float) return coerceIntStr(a, val);
     const f = std.fmt.parseFloat(f64, val) catch return val;
-    return std.fmt.allocPrint(a, "{d}", .{f});
+    return pythonFloatStr(a, f);
+}
+
+/// Python's `str(int(val))` for a grammatical integer literal: leading zeros
+/// are dropped, the sign is kept, an all-zero mantissa collapses to "0".
+/// Anything that is not `["-"] digit {digit}` raises ValueError in Python and
+/// returns the string unchanged.
+///
+/// Deliberately NOT routed through `parseInt(i64, …)`: Python ints are
+/// arbitrary-precision, so `int("99999999999999999999")` is fine while an i64
+/// would overflow and silently fall back to the unparsed string.
+fn coerceIntStr(a: Allocator, val: []const u8) Error![]const u8 {
+    var i: usize = 0;
+    const neg = val.len > 0 and val[0] == '-';
+    if (neg) i = 1;
+    if (i >= val.len) return val; // "" or "-": ValueError -> unchanged
+    for (val[i..]) |c| {
+        if (!std.ascii.isDigit(c)) return val; // ValueError -> unchanged
+    }
+    // Strip leading zeros, keeping at least one digit.
+    var start = i;
+    while (start + 1 < val.len and val[start] == '0') start += 1;
+    const digits = val[start..];
+    // Python: str(int("-000")) == "0" — there is no negative zero for ints.
+    if (digits.len == 1 and digits[0] == '0') return "0";
+    if (!neg) return digits;
+    if (start == i) return val; // sign already contiguous, nothing stripped
+    return std.mem.concat(a, u8, &.{ "-", digits });
+}
+
+/// Python's `repr(float)` / `str(float)` (identical since 3.1): the shortest
+/// digit string that round-trips, rendered with CPython's `format_float_short`
+/// presentation rules (Python/pystrtod.c, mode 'r'):
+///
+///   * scientific iff the decimal exponent `e` (value = d.ddd x 10^e) is
+///     `e < -4 or e >= 16`;
+///   * the exponent is always signed and zero-padded to at least 2 digits
+///     (`1e+16`, `1e-05`) — Zig's `{e}` emits `1e16` / `1e-5`;
+///   * fixed notation gets a forced `.0` when it would otherwise look like an
+///     integer (`2.0`, `-0.0`, `1000000000000000.0`) — Zig's `{d}` emits `2`;
+///   * `-0.0` keeps its sign.
+///
+/// Zig's `{e}` already yields the shortest round-trip digits (same Ryu-class
+/// algorithm as CPython's David Gay / short-repr path), so this parses that and
+/// re-presents it. `{d}` is NOT usable: it never switches to scientific and
+/// never forces `.0`.
+fn pythonFloatStr(a: Allocator, f: f64) Error![]const u8 {
+    var buf: [64]u8 = undefined;
+    // Shortest round-trip, always scientific: "[-]d[.ddd]e[-]X".
+    const sci = std.fmt.bufPrint(&buf, "{e}", .{f}) catch unreachable;
+
+    var rest = sci;
+    const neg = rest.len > 0 and rest[0] == '-';
+    if (neg) rest = rest[1..];
+
+    const epos = std.mem.indexOfScalar(u8, rest, 'e') orelse return std.fmt.allocPrint(a, "{s}", .{sci});
+    const mant = rest[0..epos];
+    const exp = std.fmt.parseInt(i32, rest[epos + 1 ..], 10) catch return std.fmt.allocPrint(a, "{s}", .{sci});
+
+    // Mantissa digits with the point removed: "1.23456" -> "123456".
+    var digits_buf: [32]u8 = undefined;
+    var n: usize = 0;
+    for (mant) |c| {
+        if (c == '.') continue;
+        digits_buf[n] = c;
+        n += 1;
+    }
+    const digits = digits_buf[0..n];
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    if (neg) try out.append(a, '-');
+
+    if (exp < -4 or exp >= 16) {
+        // Scientific: d[.ddd] e (sign) (>=2 exponent digits). No forced ".0".
+        try out.append(a, digits[0]);
+        if (digits.len > 1) {
+            try out.append(a, '.');
+            try out.appendSlice(a, digits[1..]);
+        }
+        try out.append(a, 'e');
+        try out.append(a, if (exp < 0) '-' else '+');
+        // f64's decimal exponent is at most 3 digits (|exp| <= 324).
+        const mag: u32 = @intCast(if (exp < 0) -@as(i64, exp) else @as(i64, exp));
+        var ebuf: [8]u8 = undefined;
+        try out.appendSlice(a, std.fmt.bufPrint(&ebuf, "{d:0>2}", .{mag}) catch unreachable);
+        return out.toOwnedSlice(a);
+    }
+
+    if (exp >= 0) {
+        const int_len: usize = @intCast(exp + 1);
+        if (int_len >= digits.len) {
+            try out.appendSlice(a, digits);
+            try out.appendNTimes(a, '0', int_len - digits.len);
+            try out.appendSlice(a, ".0"); // forced .0
+        } else {
+            try out.appendSlice(a, digits[0..int_len]);
+            try out.append(a, '.');
+            try out.appendSlice(a, digits[int_len..]);
+        }
+    } else {
+        // -4 <= exp < 0: "0." ++ (-exp-1) zeros ++ digits
+        try out.appendSlice(a, "0.");
+        try out.appendNTimes(a, '0', @intCast(-exp - 1));
+        try out.appendSlice(a, digits);
+    }
+    return out.toOwnedSlice(a);
 }
 
 /// lower.py `emit_docs_runtime` (0012 §5.1). Section order is fixed; ordering
@@ -1401,6 +1512,19 @@ pub const LowerResult = struct {
 /// driver-side `enrichGraph` pass runs first to recover load-bearing config
 /// sub-blocks; this is in-memory only and never touches `vakedz parse`'s graph
 /// JSON. The per-target emitters themselves remain pure functions of the graph.
+///
+/// !! MUTATES `g` IN PLACE !! (only when `items != null`). `enrichGraph` adds
+/// props — a fiber's `policy`, a service's `options`, a container's
+/// `environment` — to existing nodes; it adds no nodes or edges and is
+/// idempotent. This mirrors vakedc, whose `lower(graph, items)` calls
+/// `enrich_graph(graph, items)` on the caller's graph object.
+///
+/// Consequence for callers: a graph handed to `lower` is NOT safe to reuse
+/// afterwards where the pre-enrichment props matter — most importantly, do not
+/// serialize it with `emit.toCanonicalJson` expecting `vakedz parse` bytes,
+/// because the enriched props WOULD appear. `check` -> `lower` on one graph is
+/// fine (check runs first, and the driver in main.zig re-parses anyway); build
+/// a fresh graph if you need both the parse projection and the lowering.
 pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?[]const parser.Item) Error!LowerResult {
     if (items) |its| try enrichGraph(a, g, its);
 

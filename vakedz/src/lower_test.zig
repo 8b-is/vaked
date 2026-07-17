@@ -299,11 +299,24 @@ const golden_runtime_md =
 // header names (0012 sec 6.1).
 const fixture_path = "vaked/examples/operator-field.vaked";
 
+// Fixture-integrity guards. These goldens are hand-copied `\\` literals with
+// nothing else tying them to the files they mirror, so pin each one's byte
+// count (the emit_test.zig convention). CONVENTION FOR EVERY GOLDEN THIS PORT
+// ADDS: embed the bytes, then assert `.len` against `wc -c` of the source file.
+// A drifting fixture must fail loudly here, not silently weaken the parity
+// claim.
+fn assertFixtureIntegrity() !void {
+    try testing.expectEqual(@as(usize, 1518), operator_field_src.len); // vaked/examples/operator-field.vaked
+    try testing.expectEqual(@as(usize, 4578), golden_flake_nix.len); // vaked/examples/lowering/flake.nix
+    try testing.expectEqual(@as(usize, 2703), golden_runtime_md.len); // vaked/examples/lowering/gen/RUNTIME.md
+}
+
 test "lower: nix.spine reproduces the frozen flake.nix golden byte-for-byte" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
+    try assertFixtureIntegrity();
     const result = try lowerSource(a, operator_field_src, fixture_path);
     const got = fileContent(result, "flake.nix") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(golden_flake_nix, got);
@@ -314,6 +327,7 @@ test "lower: docs.runtime reproduces the frozen gen/RUNTIME.md golden byte-for-b
     defer arena.deinit();
     const a = arena.allocator();
 
+    try assertFixtureIntegrity();
     const result = try lowerSource(a, operator_field_src, fixture_path);
     const got = fileContent(result, "gen/RUNTIME.md") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(golden_runtime_md, got);
@@ -546,4 +560,67 @@ test "lower: nixAttrKey keeps a dotted ref as ONE quoted attribute" {
     // leading digit is not a bare ident
     try std.testing.expectEqualStrings("\"9lives\"", try lower.nixAttrKey(a, "9lives"));
     try std.testing.expectEqualStrings("\"\"", try lower.nixAttrKey(a, ""));
+}
+
+// --------------------------------------------------------------------------
+// _coerce_number — the number-rendering trap. Props store number literals as
+// STRINGS ({"lit":"number","value":"2.0"}); Python coerces to int/float and
+// renders with str(), so "2.0" -> 2.0 -> "2.0" and "007" -> 7 -> "7".
+//
+// This is reachable from docs.runtime TODAY: `fiberPolicy` is an OPEN schema,
+// so an undeclared policy field of any literal type reaches renderPolicyValue.
+// The lower-diff harness is STRUCTURALLY BLIND to it -- no fixture carries a
+// float or a leading zero, so it is green whether this helper is right or
+// wrong. THIS TABLE IS THE ONLY GATE.
+//
+// Every expectation below was DERIVED by running the reference on dev-cx53,
+// never hand-written:
+//   python3 -c 'from vakedc.lower import _coerce_number; print(str(_coerce_number(s)))'
+// Regenerate the same way when extending it. All inputs are grammatical per
+//   number = ["-"] digit {digit} ["." digit {digit}]
+// (no "+", no "_", no exponent in SOURCE) except the two ValueError probes.
+// --------------------------------------------------------------------------
+
+test "lower: coerceNumberStr matches Python's _coerce_number + str()" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        .{ .in = "2.0", .want = "2.0" },
+        .{ .in = "-0.0", .want = "-0.0" },
+        .{ .in = "0.0", .want = "0.0" },
+        .{ .in = "007", .want = "7" },
+        .{ .in = "-007", .want = "-7" },
+        .{ .in = "000", .want = "0" },
+        .{ .in = "-000", .want = "0" },
+        .{ .in = "0", .want = "0" },
+        .{ .in = "7", .want = "7" },
+        .{ .in = "-7", .want = "-7" },
+        .{ .in = "0.00001", .want = "1e-05" },
+        .{ .in = "0.0001", .want = "0.0001" },
+        .{ .in = "1000000000000000.0", .want = "1000000000000000.0" },
+        .{ .in = "10000000000000000.0", .want = "1e+16" },
+        .{ .in = "1.50", .want = "1.5" },
+        .{ .in = "1.5", .want = "1.5" },
+        .{ .in = "123.456", .want = "123.456" },
+        .{ .in = "-2.5", .want = "-2.5" },
+        .{ .in = "10", .want = "10" },
+        .{ .in = "99999999999999999999", .want = "99999999999999999999" },
+        .{ .in = "-99999999999999999999", .want = "-99999999999999999999" },
+        .{ .in = "3.14159", .want = "3.14159" },
+        .{ .in = "0.1", .want = "0.1" },
+        .{ .in = "100.0", .want = "100.0" },
+        .{ .in = "-1.0", .want = "-1.0" },
+        .{ .in = "12345678901234567890.0", .want = "1.2345678901234567e+19" },
+        .{ .in = "abc", .want = "abc" },
+        .{ .in = "", .want = "" },
+    };
+    for (cases) |c| {
+        const got = try lower.coerceNumberStr(a, c.in);
+        std.testing.expectEqualStrings(c.want, got) catch |e| {
+            std.debug.print("coerceNumberStr(\"{s}\"): want \"{s}\", got \"{s}\"\n", .{ c.in, c.want, got });
+            return e;
+        };
+    }
 }
