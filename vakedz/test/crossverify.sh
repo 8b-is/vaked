@@ -1,118 +1,89 @@
 #!/usr/bin/env bash
 # crossverify — the closed-loop dogfooding gate for vakedz.
 #
-# Builds nothing; takes a path to the vakedz binary, runs `vakedz parse` on each
-# example whose graph we have a committed golden for, and asserts byte-identical
-# output. Also re-derives each golden from the Python reference (`vakedc parse`)
-# and warns if the committed golden has drifted from it — so the Zig front-end
-# and the Python reference are pinned to the SAME bytes, forever.
+# WHAT THIS IS NOW (rewritten 2026-07-17, Zig rewrite plan Task 17)
+# ----------------------------------------------------------------
+# A thin aggregate runner over the FOUR differential harnesses that are the
+# port's real parity contract:
 #
-# Check parity gate: runs `vakedz check --json` on all vaked/examples/**/*.vaked
-# files and diffs output byte-for-byte against `python3 -m vakedc check --json`.
-# Any mismatch is a CI failure.
+#   tools/check-diff/run.sh    checker   — diagnostics (messages+spans+order)
+#   tools/emit-diff/run.sh     emitter   — canonical graph JSON, byte parity
+#   tools/lower-diff/run.sh    lowerer   — artifact tree, byte parity
+#   tools/passes-diff/run.sh   passes    — topology→WAL→AOT, byte parity
+#
+# Each compares vakedz against the Python reference (vakedc) across the corpus
+# and exits non-zero on any mismatch, naming the offending files. This script
+# runs all four, does not stop at the first failure, and reports a per-harness
+# verdict so a red run names the harness immediately.
+#
+# WHY THE OLD IMPLEMENTATION WAS RETIRED
+# --------------------------------------
+# The previous crossverify hand-rolled two gates that the harnesses above now
+# subsume, and it had rotted:
+#
+#   * It ran `vakedz parse --no-cache`. That flag no longer exists, so EVERY
+#     invocation died with "expected exactly one file" — the script could not
+#     pass at all.
+#   * Its golden gate diffed `vakedz parse` against two committed snapshots in
+#     vakedz/test/golden/. emit-diff compares vakedz against the LIVE vakedc
+#     reference on all 58 corpus files — a strict superset, and one that cannot
+#     rot the way a committed snapshot can.
+#   * Its check gate projected diagnostics to `code:severity:line:col`.
+#     check-diff does exactly that sweep AND adds two probe files gated on full
+#     message text, so message-string parity is regression-locked.
+#   * It swallowed reference failures (`python3 -m vakedc parse ... || true`)
+#     and had a SKIP bucket that only warned when ALL files skipped — i.e. a
+#     totally broken vakedc could yield a green run. The harnesses treat a
+#     one-sided failure as a hard mismatch and enforce a MIN_FILES floor, so a
+#     silently-empty sweep can never pass.
+#
+# The goldens under vakedz/test/golden/ have no remaining consumer.
 #
 # Usage:  vakedz/test/crossverify.sh [path/to/vakedz]
-set -euo pipefail
+#
+# Environment (forwarded to every harness):
+#   VAKEDZ  path to the vakedz binary   (default: ./zig-out/bin/vakedz,
+#                                        or $1 when given)
+#   PYTHON  python interpreter          (default: python3)
+#
+# vakedc is stdlib-only and is imported as `python3 -m vakedc` from the repo
+# root — no `pip install` is required.
+set -uo pipefail
 
-BIN="${1:-vakedz/zig-out/bin/vakedz}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 2
 
-if [[ ! -x "$BIN" ]]; then
-  echo "crossverify: vakedz binary not found at '$BIN' (run: cd vakedz && zig build)" >&2
+VAKEDZ="${1:-${VAKEDZ:-$ROOT/zig-out/bin/vakedz}}"
+export VAKEDZ
+export PYTHON="${PYTHON:-python3}"
+
+if [[ ! -x "$VAKEDZ" ]]; then
+  echo "crossverify: vakedz binary not found at '$VAKEDZ' (run: zig build)" >&2
   exit 2
 fi
 
-# source.vaked  ->  committed golden graph
-PAIRS=(
-  "vaked/examples/operator-field.vaked|vakedz/test/golden/operator-field.graph.json"
-  "vaked/examples/engines/zig.vaked|vakedz/test/golden/zig.graph.json"
-)
+HARNESSES=(check-diff emit-diff lower-diff passes-diff)
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-fail=0
-
-for pair in "${PAIRS[@]}"; do
-  src="${pair%%|*}"
-  golden="${pair##*|}"
-  out="$tmp/$(basename "$golden")"
-
-  "$BIN" parse "$src" --json "$out" --no-cache >/dev/null
-  if diff -u "$golden" "$out" >"$tmp/diff.txt"; then
-    echo "PASS  vakedz parse $src == $golden"
+failed=()
+for h in "${HARNESSES[@]}"; do
+  echo "=========================================================="
+  echo "crossverify: running tools/$h/run.sh"
+  echo "=========================================================="
+  if bash "tools/$h/run.sh"; then
+    echo "crossverify: PASS  $h"
   else
-    echo "FAIL  vakedz parse $src != $golden"
-    sed 's/^/      /' "$tmp/diff.txt" | head -40
-    fail=1
+    rc=$?
+    echo "crossverify: FAIL  $h (exit $rc)" >&2
+    failed+=("$h")
   fi
-
-  # Drift guard: the committed golden must still equal the Python reference.
-  if command -v python3 >/dev/null 2>&1 && [[ -d vakedc ]]; then
-    ref="$tmp/ref-$(basename "$golden")"
-    python3 -m vakedc parse "$src" --json "$ref" 2>/dev/null || true
-    if [[ -f "$ref" ]] && ! diff -q "$golden" "$ref" >/dev/null; then
-      echo "WARN  golden $golden has drifted from the vakedc reference — regenerate it"
-      fail=1
-    fi
-  fi
+  echo
 done
 
-# ---------------------------------------------------------------------------
-# Check parity gate: vakedz check --json  ==  python3 -m vakedc check --json
-# (byte-identical) on every vaked/examples/**/*.vaked file.
-# ---------------------------------------------------------------------------
-if command -v python3 >/dev/null 2>&1 && [[ -d vakedc ]]; then
-  # Collect all example files.
-  mapfile -t EXAMPLES < <(find vaked/examples -name '*.vaked' | sort)
-
-  check_skip=0
-  for example in "${EXAMPLES[@]}"; do
-    slug="$(echo "$example" | tr '/.' '-')"
-    zig_out="$tmp/check-zig-${slug}.json"
-    py_out="$tmp/check-py-${slug}.json"
-
-    # Run Zig checker; capture exit code manually (exit 1 = diagnostics found,
-    # which is valid; exit 2+ = internal error).  The `|| true` keeps set -e
-    # happy; we inspect the real rc via the assignment.
-    zig_rc=0
-    "$BIN" check --json "$example" >"$zig_out" 2>/dev/null || zig_rc=$?
-    if [[ $zig_rc -ge 2 ]]; then
-      echo "FAIL  vakedz check $example exited with error code $zig_rc"
-      fail=1
-      continue
-    fi
-
-    # Run Python reference checker.
-    py_rc=0
-    python3 -m vakedc check --json "$example" >"$py_out" 2>/dev/null || py_rc=$?
-    if [[ $py_rc -ge 2 ]]; then
-      echo "SKIP  vakedc check $example exited with error $py_rc (skipping parity for this file)"
-      check_skip=$((check_skip + 1))
-      continue
-    fi
-
-    if diff -u "$py_out" "$zig_out" >"$tmp/check-diff.txt"; then
-      echo "PASS  check-parity $example"
-    else
-      echo "FAIL  check-parity $example — vakedz and vakedc disagree"
-      sed 's/^/      /' "$tmp/check-diff.txt" | head -60
-      fail=1
-    fi
-  done
-
-  if [[ ${#EXAMPLES[@]} -eq 0 ]]; then
-    echo "WARN  no vaked/examples/**/*.vaked files found — check parity gate skipped"
-  elif [[ $check_skip -eq ${#EXAMPLES[@]} ]]; then
-    echo "WARN  all check-parity runs were skipped (vakedc unavailable?)"
-  fi
-else
-  echo "SKIP  check parity gate (python3 / vakedc not available)"
+echo "=========================================================="
+if [[ ${#failed[@]} -eq 0 ]]; then
+  echo "crossverify: OK — vakedz matches the vakedc reference on all four differentials"
+  exit 0
 fi
-
-if [[ "$fail" -eq 0 ]]; then
-  echo "crossverify: OK — vakedz is byte-identical to vakedc on all goldens"
-else
-  echo "crossverify: FAILED" >&2
-fi
-exit "$fail"
+echo "crossverify: FAILED — ${#failed[@]}/${#HARNESSES[@]} differential(s) mismatched: ${failed[*]}" >&2
+echo "crossverify: see the per-harness output above for the offending files" >&2
+exit 1
