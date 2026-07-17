@@ -107,6 +107,42 @@ test "open joins the cache dir under root" {
     try testing.expectEqualStrings(want, f.c.root);
 }
 
+// `Inputs` makes you NAME builtins; these make you MEAN it. `.builtins = ""`
+// compiles, so the emptiness check is the only thing standing between a
+// `readFileAlloc(...) orelse ""` and a permanently poisoned key.
+test "check rejects empty builtins" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const empty: cache.Inputs = .{ .check = .{ .builtins = "" } };
+    try testing.expectError(error.BuiltinsRequired, f.c.lookup("a.vaked", "src", empty));
+    try testing.expectError(error.BuiltinsRequired, f.c.put("a.vaked", "src", empty, "OUT"));
+}
+
+test "lower rejects empty builtins" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const empty: cache.Inputs = .{ .lower = .{ .builtins = "", .options = "{}" } };
+    try testing.expectError(error.BuiltinsRequired, f.c.lookup("a.vaked", "src", empty));
+    try testing.expectError(error.BuiltinsRequired, f.c.put("a.vaked", "src", empty, "OUT"));
+}
+
+// Empty options are ambiguous between "defaults" and "forgot", so defaults get
+// a canonical non-empty spelling instead.
+test "lower rejects empty options but accepts canonical defaults" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const empty: cache.Inputs = .{ .lower = .{ .builtins = "B", .options = "" } };
+    try testing.expectError(error.OptionsRequired, f.c.lookup("a.vaked", "src", empty));
+    try testing.expectError(error.OptionsRequired, f.c.put("a.vaked", "src", empty, "OUT"));
+
+    const defaults: cache.Inputs = .{ .lower = .{ .builtins = "B", .options = "{}" } };
+    try f.c.put("a.vaked", "src", defaults, "OUT");
+    const hit = try f.c.lookup("a.vaked", "src", defaults);
+    try testing.expect(hit != null);
+    defer testing.allocator.free(hit.?);
+    try testing.expectEqualStrings("OUT", hit.?);
+}
+
 test "open rejects an empty build id" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -232,7 +268,7 @@ test "phase isolation: a parse entry never serves a check lookup" {
     var f = try Fixture.init();
     defer f.deinit();
     try f.c.put("a.vaked", "src", .parse, "PARSE_OUT");
-    const lower_inputs: cache.Inputs = .{ .lower = .{ .builtins = "builtin fiber", .options = "" } };
+    const lower_inputs: cache.Inputs = .{ .lower = .{ .builtins = "builtin fiber", .options = "{}" } };
     try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", check_inputs));
     try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", lower_inputs));
 }
@@ -245,7 +281,7 @@ test "check and lower with identical inputs key differently" {
     var k_check: [64]u8 = undefined;
     var k_lower: [64]u8 = undefined;
     try f.c.deriveKey("a.vaked", "src", .{ .check = .{ .builtins = "B" } }, &k_check);
-    try f.c.deriveKey("a.vaked", "src", .{ .lower = .{ .builtins = "B", .options = "" } }, &k_lower);
+    try f.c.deriveKey("a.vaked", "src", .{ .lower = .{ .builtins = "B", .options = "{}" } }, &k_lower);
     try testing.expect(!std.mem.eql(u8, &k_check, &k_lower));
 }
 

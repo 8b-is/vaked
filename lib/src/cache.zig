@@ -81,10 +81,34 @@
 //!
 //! `build_id` must be the raw identity bytes (this module hashes them itself,
 //! and never accepts a pre-computed hash). It MUST change whenever compiler
-//! behaviour can change. Supply it from the build system, e.g. `git describe
-//! --always --dirty` plus a hash of the compiler sources — never a hand-edited
-//! constant, which is precisely how `GRAMMAR_VERSION` drifted. `--dirty`
-//! matters: an uncommitted parser edit changes output.
+//! behaviour can change, and it must never be a hand-edited constant — that is
+//! precisely how `GRAMMAR_VERSION` drifted.
+//!
+//! ## What `build_id` must cover — get this wrong and the bug comes back
+//!
+//! **The whole compiled module graph, not just `vakedz/src/**`.** `vakedz`
+//! imports this very package: `vakedz/src/emit.zig` does `@import("lib")` and
+//! emits through `lib/src/json.zig`, whose own doc warns its escape table must
+//! not drift from emit.zig's `writeSpaced`. So a fix to `json.zig` changes
+//! emitted output while `vakedz/src/**` is byte-identical. A `build_id` derived
+//! from `vakedz/src/**` alone would not move, the key would not move, and the
+//! stale output would be served — the exact wrong hit this field exists to
+//! prevent. Cover `vakedz/src/**` AND `lib/src/**`, and prefer deriving the
+//! file set from the build graph over a hardcoded directory list, so that a
+//! future third module cannot silently fall outside it.
+//!
+//! Recommended ingredients, all cheap and all able to change output:
+//!
+//! * A hash of every source file in the compiled module graph (see above).
+//! * `git describe --always --dirty`. Note what `--dirty` does and does not do:
+//!   it flags modifications to *tracked* files only, so it misses a brand-new
+//!   untracked `.zig` file that is nonetheless compiled in. The source hash is
+//!   what covers that case — the two are complements, not alternatives, which
+//!   is why both are listed.
+//! * `@import("builtin").zig_version` — a compiler upgrade can change codegen
+//!   and stdlib behaviour underneath identical sources.
+//! * `@import("builtin").mode` — optimize mode can change observable output
+//!   (e.g. safety checks, and any behaviour that differs under ReleaseFast).
 //!
 //! # Per-phase inputs: `Inputs`, not caller-supplied hashes
 //!
@@ -93,16 +117,33 @@
 //! module cannot read those files, so the caller must provide them — but it
 //! provides the **bytes**, not a hash or a name/hash pair.
 //!
-//! That distinction is the whole guardrail. An API taking a list of
-//! caller-hashed deps can only check that the list is non-empty, so
-//! `{ .name = "builtins", .bytes = "" }` type-checks, keys cleanly, and
-//! poisons that key permanently. `Inputs` is an enum-backed union, so
-//! `.check` cannot be constructed without builtins bytes at all: forgetting
-//! them is a compile error, and this module does the hashing.
+//! That distinction is the whole guardrail, and it has two halves, because
+//! `Inputs` alone prevents *omission*, not *emptiness*:
 //!
-//! This does not make the caller irrelevant — passing the *wrong* builtins
-//! still mis-keys. Keep the `Inputs` construction in the same function that
-//! reads the inputs, so the two cannot drift.
+//! 1. **Compile time — you must name the input.** `Inputs` is an enum-backed
+//!    union, so `.check` cannot be constructed without a `builtins` field.
+//!    Forgetting it is a compile error.
+//! 2. **Run time — you must mean it.** Naming the field is not meaning it:
+//!    `.check = .{ .builtins = "" }` compiles and would key cleanly. The
+//!    realistic path there is not malice but `readFileAlloc(...) orelse ""`,
+//!    or a `.builtins = ""` placeholder left behind during wiring. An empty
+//!    builtins catalog is never legitimate, and the same reasoning that
+//!    rejects an empty `build_id` applies verbatim: empty is
+//!    indistinguishable from "nobody wired this up". So `deriveKey` rejects
+//!    it (`error.BuiltinsRequired`), and both `lookup` and `put` inherit
+//!    that. Fail closed.
+//!
+//! `lower.options` gets the same treatment for the same reason
+//! (`error.OptionsRequired`), with one wrinkle: unlike builtins, empty
+//! options could *legitimately* mean "all defaults". That ambiguity is
+//! exactly the problem — `""` would mean both "defaults" and "forgot". So
+//! "defaults" has a canonical non-empty spelling: pass `"{}"`. It keys
+//! distinctly, and it is unambiguous evidence the caller decided.
+//!
+//! None of this makes the caller irrelevant: passing the *wrong* builtins
+//! still mis-keys, and no in-module check can catch that. Keep the `Inputs`
+//! construction in the same function that reads the inputs, so the two
+//! cannot drift.
 //!
 //! # On-disk layout
 //!
@@ -205,12 +246,16 @@ pub const Inputs = union(Phase) {
 
     pub const Check = struct {
         /// Contents of the builtins catalog (`vaked/schema/builtins.vaked`).
+        /// Must be non-empty: empty reads as "nobody wired this up".
         builtins: []const u8,
     };
 
     pub const Lower = struct {
+        /// Must be non-empty. See `Check.builtins`.
         builtins: []const u8,
         /// Canonical serialization of the lowering options that affect output.
+        /// Must be non-empty; spell "all defaults" as `"{}"`, so that the
+        /// bytes distinguish "decided on defaults" from "forgot to pass them".
         options: []const u8,
     };
 
@@ -237,6 +282,12 @@ pub const Error = error{
     /// which is the state that produces wrong hits across compiler upgrades.
     /// Fail closed.
     BuildIdRequired,
+    /// `check`/`lower` were given empty builtins. An empty builtins catalog is
+    /// never legitimate; naming the field is not the same as meaning it.
+    BuiltinsRequired,
+    /// `lower` was given empty options. Empty is ambiguous between "defaults"
+    /// and "forgot"; spell defaults `"{}"`.
+    OptionsRequired,
 };
 
 const Entry = struct {
@@ -338,15 +389,20 @@ pub const Cache = struct {
         const a = arena.allocator();
 
         // Deps are derived from `Inputs`, so the set is decided by the phase —
-        // a caller cannot omit, rename, or blank one.
+        // a caller cannot omit or rename one. The emptiness checks close the
+        // other half: `Inputs` makes you NAME builtins, these make you MEAN it.
         var dep_buf: [2]Dep = undefined;
         const deps: []const Dep = switch (inputs) {
             .parse => dep_buf[0..0],
             .check => |c| blk: {
+                if (c.builtins.len == 0) return Error.BuiltinsRequired;
                 dep_buf[0] = .{ .name = "builtins", .bytes = c.builtins };
                 break :blk dep_buf[0..1];
             },
             .lower => |l| blk: {
+                if (l.builtins.len == 0) return Error.BuiltinsRequired;
+                // "defaults" is spelled "{}", never "" — see the module doc.
+                if (l.options.len == 0) return Error.OptionsRequired;
                 dep_buf[0] = .{ .name = "builtins", .bytes = l.builtins };
                 dep_buf[1] = .{ .name = "options", .bytes = l.options };
                 break :blk dep_buf[0..2];
