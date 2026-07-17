@@ -18,6 +18,7 @@ tree (`flake.nix`, `gen/…`, `provenance.json`). Python 3, **stdlib only**.
 python3 -m vakedc parse <file.vaked> [--json PATH] [--sqlite PATH] [--print]
 python3 -m vakedc check <file.vaked> [--json] [--builtins PATH]
 python3 -m vakedc lower <file.vaked> [--out DIR] [--builtins PATH]
+python3 -m vakedc passes <file.vaked> [--json]
 ```
 
 `parse`: with no output flags, writes `.vaked/graph.json` (canonical JSON) and
@@ -61,7 +62,8 @@ and `vakedc.lower.lower(graph, items) -> LowerResult` (`.files`, `.provenance`).
 - **`emit.py`** — `to_canonical_json` (byte-identical across runs) and `to_sqlite` + `canonical_dump` (deterministic ordered SELECT).
 - **`check.py`** — 0011 stages 3–4. *Elaborate*: build a schema/capability registry from the built-in catalog LPG + the in-file user `schema`/`capability` decls (user decls override the catalog by name), and a per-domain attenuation partial order (reflexive-transitive closure of the `order` chains). *Check*: conformance (§1.1 five-clause rule incl. the Path-from-String acceptance), the closed constraint set (§3, incl. bounded-regex-dialect validation), capability validity + delegation-only-attenuates (§4.4), and generics consistency (§5). Pure: the only IO is reading the catalog. Emits sorted, source-mapped `Diagnostic`s.
 - **`lower.py`** — 0012 lowering. A static registry maps each target to a **pure** emitter `(graph, nodes) -> (files, provenance_entries)` (no IO/clock/randomness). The Nix spine (`nix.spine`) and runtime docs (`docs.runtime`) always run; `zig.daemoncfg` runs per fiber; `catalog.jsonl` per index with `emit ∋ catalog.jsonl`; the CrabCC index derivation (`crabcc.index`, for `emit ∋ nix.derivation`) folds into the spine; eBPF/OTel/systemd/surface-launcher are inert deferred slots (the surface launcher is the §7 no-op stub inside the spine). `inputsHash` is a real `"sha256-"+sha256(canonical_projection_json)` keyed **per projection** (the fiber-config region hashes the fiber node's props; the engine-package region hashes the resolved engine identity + pin — same decl, different projection, §6.2). `enrich_graph` recovers the load-bearing `policy { … }` block the minimal resolver drops, in memory only (the `parse` graph JSON is unchanged).
-- **`__main__.py`** — the `parse`, `check`, and `lower` CLIs (the `lower` write layer is the pipeline's only IO).
+- **`__main__.py`** — the `parse`, `check`, `lower`, `passes`, and `lsp` CLIs (the `lower` write layer is the pipeline's only IO).
+- **`passes/`** — the MLIR-mirror Stage-0 pass pipeline (0021–0024): Pass 1 topology (cycle/depth/bound), Pass 2 WAL injection, Pass 3 AOT supervisor index. Exercised by `tests/corpus/0024-differential/run_corpus.py` (CI: `corpus-0024`).
 
 The built-in catalog is **dogfooded** as Vaked source:
 [`vaked/schema/builtins.vaked`](../vaked/schema/builtins.vaked) (v0.3 `schema` /

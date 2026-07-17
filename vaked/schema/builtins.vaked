@@ -407,7 +407,7 @@ schema trust {
 # across network partitions.  Minimum votes, node set, timeout, failure fallback.
 schema quorum {
   field min        : Int        { > 0 }
-  field over       : List\<String\> { nonempty }
+  field over       : List<String> { nonempty }
   field timeout    : Duration
   field on_failure : String     { nonempty }
 }

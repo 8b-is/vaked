@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from .lexer import Token, tokenize, VakedLexError
 
-# The 29 declaration kinds (grammar `kind`, v0.4).  (`input` removed in #48 — its
+# The 36 declaration kinds (grammar `kind`, v0.5).  (`input` removed in #48 — its
 # niche is covered by `index` (build-time corpus) and `stream` (runtime flow).)
 KINDS = (
     "runtime", "engine", "host",
@@ -50,6 +50,9 @@ KINDS = (
     # The Third trio (design 0028): dyad principal, ceremony consensus-gate,
     # arbiter singleton. Parse-layer only here — checker/resolver/lowering follow.
     "dyad", "ceremony", "arbiter",
+    # v0.5 trio: trust scoring/decay/delegation, consensus thresholds, and
+    # synthetic request-response probes (see vaked/examples/v0.5/).
+    "trust", "quorum", "probe",
 )
 _KIND_SET = frozenset(KINDS)
 

@@ -95,6 +95,9 @@ _KIND_KEYWORDS = [
     "catalog", "stream", "fiber", "surface", "mesh", "device", "mediaPipeline",
     "parallel", "schema", "capability", "service", "secret", "hostResource",
     "ingress", "container", "memory",
+    "namespace", "arp_event",
+    "dyad", "ceremony", "arbiter",
+    "trust", "quorum", "probe",
 ]
 
 _COMMON_FIELDS = [
@@ -134,6 +137,13 @@ _BUILTINS_SUMMARY: Dict[str, str] = {
     "hostResource": "HostResource — host-managed database/resource (PostgreSQL/Redis).",
     "ingress": "Ingress — Caddy HTTP reverse-proxy vhost.",
     "container": "Container — OCI/Docker container.",
+    "namespace": "Namespace — named sub-namespace with member list (RFC 0017).\nFields: member (list of member names)",
+    "dyad": "Dyad — a principal intrinsically two (human + alum, co-rooted, v0.5).\nBlock body: assignments and node decls",
+    "ceremony": "Ceremony — consensus-freeze gate (v0.5).\nBlock body: assignments and node decls",
+    "arbiter": "Arbiter — unreachable singleton 'Third' that decides inheritance (v0.5).\nBlock body: assignments and node decls",
+    "trust": "Trust — first-class trust scoring with decay and delegation (v0.5).\nFields: score, half_life?, delegate, taint_as?\nAlso used as `trust = pinned { … }` on index nodes (v0.4).",
+    "quorum": "Quorum — declarative consensus thresholds (v0.5).\nFields: min, over, timeout, on_failure",
+    "probe": "Probe — synthetic request-response cycle for compaction safety (v0.5).\nFields: from, to, via, with?, on_result?",
 }
 
 
