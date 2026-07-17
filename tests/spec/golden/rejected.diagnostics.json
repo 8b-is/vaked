@@ -8,10 +8,10 @@
       "related": [],
       "severity": "error",
       "span": {
-        "byteEnd": 1075,
-        "byteStart": 1057,
+        "byteEnd": 1065,
+        "byteStart": 1047,
         "col": 3,
-        "line": 30
+        "line": 32
       }
     },
     {
@@ -22,10 +22,10 @@
       "related": [],
       "severity": "error",
       "span": {
-        "byteEnd": 1315,
-        "byteStart": 1314,
+        "byteEnd": 1305,
+        "byteStart": 1304,
         "col": 9,
-        "line": 39
+        "line": 41
       }
     },
     {
@@ -36,10 +36,10 @@
       "related": [],
       "severity": "error",
       "span": {
-        "byteEnd": 1471,
-        "byteStart": 1465,
+        "byteEnd": 1461,
+        "byteStart": 1455,
         "col": 3,
-        "line": 43
+        "line": 45
       }
     }
   ]
