@@ -314,12 +314,12 @@ test "parse nested union type inside generic args" {
 
 test "all 36 kinds recognized" {
     const expected = [_][]const u8{
-        "runtime", "engine", "host", "network", "filesystem", "mcp", "ebpf",
-        "budget", "observability", "runclass", "workflow", "index", "catalog",
-        "stream", "fiber", "surface", "mesh", "device", "mediaPipeline",
-        "parallel", "schema", "capability", "service", "secret", "hostResource",
-        "ingress", "container", "memory", "namespace", "arp_event",
-        "trust", "quorum", "probe", "dyad", "ceremony", "arbiter",
+        "runtime",    "engine",        "host",     "network",      "filesystem",    "mcp",       "ebpf",
+        "budget",     "observability", "runclass", "workflow",     "index",         "catalog",   "stream",
+        "fiber",      "surface",       "mesh",     "device",       "mediaPipeline", "parallel",  "schema",
+        "capability", "service",       "secret",   "hostResource", "ingress",       "container", "memory",
+        "namespace",  "arp_event",     "trust",    "quorum",       "probe",         "dyad",      "ceremony",
+        "arbiter",
     };
     for (expected) |k| {
         try testing.expect(parser.isKind(k));

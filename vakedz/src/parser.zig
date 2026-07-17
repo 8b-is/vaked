@@ -5,13 +5,13 @@ const Token = lex.Token;
 const Kind = lex.Kind;
 
 pub const KINDS = [_][]const u8{
-    "runtime",      "engine",      "host",       "network",    "filesystem",
-    "mcp",          "ebpf",        "budget",     "observability", "runclass",
-    "workflow",     "index",       "catalog",    "stream",     "fiber",
-    "surface",      "mesh",        "device",     "mediaPipeline", "parallel",
-    "schema",       "capability",  "service",    "secret",     "hostResource",
-    "ingress",      "container",   "memory",     "namespace",  "arp_event",
-    "trust",        "quorum",      "probe",      "dyad",       "ceremony",
+    "runtime",  "engine",     "host",    "network",       "filesystem",
+    "mcp",      "ebpf",       "budget",  "observability", "runclass",
+    "workflow", "index",      "catalog", "stream",        "fiber",
+    "surface",  "mesh",       "device",  "mediaPipeline", "parallel",
+    "schema",   "capability", "service", "secret",        "hostResource",
+    "ingress",  "container",  "memory",  "namespace",     "arp_event",
+    "trust",    "quorum",     "probe",   "dyad",          "ceremony",
     "arbiter",
 };
 
