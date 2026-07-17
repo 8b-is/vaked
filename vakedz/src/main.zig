@@ -7,6 +7,7 @@ const parser_mod = @import("parser.zig");
 const check_mod = @import("check.zig");
 const resolve_mod = @import("resolve.zig");
 const emit_mod = @import("emit.zig");
+const lower_mod = @import("lower.zig");
 
 test {
     _ = @import("lexer_test.zig");
@@ -15,6 +16,7 @@ test {
     _ = @import("resolve_test.zig");
     _ = @import("check_test.zig");
     _ = @import("emit_test.zig");
+    _ = @import("lower_test.zig");
 }
 
 test "fmtSource: check-mode change detection" {
@@ -67,7 +69,8 @@ pub fn main(init: std.process.Init) !void {
         .fmt => |f| try runFmt(allocator, io, f),
         .check => |c| try runCheck(allocator, io, c),
         .parse => |p| try runParse(allocator, io, p),
-        .lower, .cache => {
+        .lower => |l| try runLower(allocator, io, l),
+        .cache => {
             const ls = try io.lockStderr(&.{}, null);
             defer io.unlockStderr();
             try stderrWriter(ls).print("vakedz: {s} not yet implemented\n", .{@tagName(cmd)});
@@ -83,6 +86,7 @@ pub fn main(init: std.process.Init) !void {
                 \\  fmt       Format Vaked source files
                 \\  parse     Parse a .vaked file into the LPG (canonical JSON)
                 \\  check     Type-check Vaked files (0011 stages 3-4)
+                \\  lower     Lower a checked .vaked file to artifacts (0012)
                 \\  help      Show this help message
                 \\  version   Show version
                 \\
@@ -98,6 +102,14 @@ pub fn main(init: std.process.Init) !void {
                 \\check options:
                 \\  --json            Emit diagnostics as canonical JSON to stdout
                 \\  --builtins PATH   Builtin catalog (default: vaked/schema/builtins.vaked)
+                \\
+                \\lower options:
+                \\  --out DIR         Output directory for the artifact tree
+                \\                    (default: .vaked/lower/)
+                \\  --builtins PATH   Builtin catalog (default: vaked/schema/builtins.vaked)
+                \\  --allow-partial   Write the tree even when the graph selects registry
+                \\                    targets this build has not ported yet. The result is
+                \\                    knowingly INCOMPLETE (differential harness only).
                 \\
             );
         },
@@ -414,6 +426,147 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
 
     if (hard_fail) std.process.exit(2);
     if (any_diag) std.process.exit(1);
+}
+
+/// `vakedz lower <file> [--out DIR] [--builtins PATH]` — parse → resolve →
+/// check → lower (0012 §1), a port of vakedc `__main__._cmd_lower`.
+///
+/// Lowering is CHECK-GATED: any diagnostic ⇒ print them, emit NOTHING, exit 1.
+/// The exit contract is vakedc's, which differs from `check`'s:
+///   * 0 — the artifact tree was written;
+///   * 1 — cannot read the source file, a lex/parse error, or ANY diagnostic
+///         (nothing written);
+///   * 2 — the BUILTINS catalog could not be read or parsed.
+/// Note the asymmetry, faithfully reproduced: an unreadable SOURCE file exits
+/// 1 here (vakedc `_cmd_lower` returns 1), whereas `check` exits 2 for the
+/// same condition.
+fn runLower(allocator: std.mem.Allocator, io: std.Io, opts: Args.LowerOptions) !void {
+    const file = opts.file orelse {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).writeAll("vakedz lower: no file specified\n");
+        std.process.exit(2);
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // 1) read + parse the source. An unreadable source is exit 1 (vakedc).
+    const src = readFileAlloc(aa, io, file) catch |err| {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).print("vakedz: cannot read {s}: {}\n", .{ file, err });
+        std.process.exit(1);
+    };
+    const items = switch (try check_mod.parseSource(aa, src, file)) {
+        .ok => |its| its,
+        .fail => |msg| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: {s}\n", .{msg});
+            std.process.exit(1);
+        },
+    };
+
+    // 2) check FIRST — lowering only runs on a clean, validated graph.
+    //    Builtins failures are the only exit-2 path.
+    const b_path = opts.builtins orelse "vaked/schema/builtins.vaked";
+    const b_src = readFileAlloc(aa, io, b_path) catch |err| {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).print("vakedz: cannot read builtins {s}: {}\n", .{ b_path, err });
+        std.process.exit(2);
+    };
+    const b_items = switch (try check_mod.parseSource(aa, b_src, b_path)) {
+        .ok => |its| its,
+        .fail => |msg| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: builtins catalog failed to parse: {s}\n", .{msg});
+            std.process.exit(2);
+        },
+    };
+    const builtins = check_mod.Builtins{ .items = b_items, .src = b_src, .file = b_path };
+
+    var import_ctx = ImportIoCtx{ .io = io };
+    const reader = check_mod.ImportReader{ .ctx = &import_ctx, .read = readImportFile };
+    const base_dir = std.fs.path.dirname(file) orelse "";
+    const diags = switch (try check_mod.checkSource(aa, src, file, builtins, base_dir, reader)) {
+        .ok => |ds| ds,
+        .fail => |msg| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: {s}\n", .{msg});
+            std.process.exit(1);
+        },
+    };
+    if (diags.len > 0) {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        const w = stderrWriter(ls);
+        for (diags) |d| {
+            try w.print("{s}:{d}:{d}: {s}: {s}: {s} [{s}]\n", .{ d.file, d.line, d.col, @tagName(d.severity), d.code, d.message, d.decl });
+        }
+        try w.print("vakedz: {d} diagnostic{s} in {s}; refusing to lower (nothing written)\n", .{ diags.len, if (diags.len != 1) "s" else "", file });
+        std.process.exit(1);
+    }
+
+    // 3) resolve + lower. enrichGraph (config sub-blocks) runs inside lower()
+    //    when the parsed items are supplied.
+    var res = try resolve_mod.buildGraph(aa, items, file);
+    const result = try lower_mod.lower(aa, &res.graph, file, items);
+
+    // A graph selecting an emitter this port does not have yet must NOT be
+    // written as if it were a complete lowering: the tree would silently be
+    // missing artifacts. Refuse, name the targets, and exit 2 (a vakedz
+    // limitation, not a source diagnostic — so it can never be mistaken for
+    // vakedc's exit-1 "refusing to lower" path).
+    if (result.unported_targets.len > 0 and !opts.allow_partial) {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        const w = stderrWriter(ls);
+        try w.print("vakedz: lowering {s} selects registry targets this build has not ported yet:\n", .{file});
+        for (result.unported_targets) |t| try w.print("  - {s}\n", .{t});
+        try w.writeAll("vakedz: refusing to write a partial artifact tree (nothing written)\n");
+        try w.writeAll("vakedz: pass --allow-partial to write the ported artifacts anyway\n");
+        std.process.exit(2);
+    }
+
+    // 4) write the tree. The manifest lands at <out>/provenance.json; the rest
+    //    of the files are relative paths under <out> (0012 §6.2 erratum).
+    const out_dir = opts.out orelse ".vaked/lower";
+    const written = try writeTree(aa, io, out_dir, result);
+    const ls = try io.lockStderr(&.{}, null);
+    defer io.unlockStderr();
+    const w = stderrWriter(ls);
+    if (result.unported_targets.len > 0) {
+        try w.print("vakedz: WARNING: --allow-partial: {s} is an INCOMPLETE lowering; these selected targets emitted nothing:\n", .{out_dir});
+        for (result.unported_targets) |t| try w.print("  - {s}\n", .{t});
+    }
+    try w.print("vakedz: lowered {s} → {s} ({d} files)\n", .{ file, out_dir, written });
+}
+
+/// vakedc `__main__._write_tree`: write a LowerResult to `out_dir` — every
+/// emitted file at its relative path, plus `provenance.json` at the root.
+/// Returns the file count. The ONLY IO in the lowering pipeline (the emitters
+/// are pure). `result.files` is already sorted by path, matching Python's
+/// `sorted(result.files.items())`.
+fn writeTree(a: std.mem.Allocator, io: std.Io, out_dir: []const u8, result: lower_mod.LowerResult) !usize {
+    const cwd = std.Io.Dir.cwd();
+    var written: usize = 0;
+    for (result.files) |f| {
+        const dest = try std.fs.path.join(a, &.{ out_dir, f.path });
+        if (std.fs.path.dirname(dest)) |dir| try cwd.createDirPath(io, dir);
+        try cwd.writeFile(io, .{ .sub_path = dest, .data = f.content });
+        written += 1;
+    }
+    try cwd.createDirPath(io, out_dir);
+    const prov_text = try lower_mod.provenanceJsonText(a, result.provenance);
+    const prov_path = try std.fs.path.join(a, &.{ out_dir, "provenance.json" });
+    try cwd.writeFile(io, .{ .sub_path = prov_path, .data = prov_text });
+    written += 1;
+    return written;
 }
 
 const lib_diag = @import("lib").diagnostic;

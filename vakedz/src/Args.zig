@@ -25,11 +25,31 @@ pub const ParseOptions = struct {
     print: bool = false,
 };
 
+/// Mirrors `python3 -m vakedc lower <file> [--out DIR] [--builtins PATH]`.
+/// NOTE: unlike fmt/parse/check, lower takes exactly ONE file (vakedc's
+/// argparse declares a single positional `file`); `file` is null when none was
+/// given, which the driver reports as a usage error.
+pub const LowerOptions = struct {
+    file: ?[]const u8 = null,
+    /// Output directory for the artifact tree (default: `.vaked/lower/`
+    /// under the CWD, exactly like vakedc).
+    out: ?[]const u8 = null,
+    /// Overrides the builtin catalog path (default:
+    /// vaked/schema/builtins.vaked relative to the CWD).
+    builtins: ?[]const u8 = null,
+    /// vakedz-only (NOT a vakedc flag): write the artifact tree even when the
+    /// graph selects registry targets this build has not ported yet, so the
+    /// per-artifact differential harness can compare the artifacts that ARE
+    /// ported. The tree is knowingly INCOMPLETE — never use it as a real
+    /// lowering. Without this flag such a graph is refused (exit 2).
+    allow_partial: bool = false,
+};
+
 pub const Command = union(enum) {
     fmt: FmtOptions,
     parse: ParseOptions,
     check: CheckOptions,
-    lower,
+    lower: LowerOptions,
     cache,
     help,
     version,
@@ -123,7 +143,37 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
             .builtins = builtins,
         } };
     }
-    if (std.mem.eql(u8, first, "lower")) return .lower;
+    if (std.mem.eql(u8, first, "lower")) {
+        var file: ?[]const u8 = null;
+        var out: ?[]const u8 = null;
+        var builtins: ?[]const u8 = null;
+        var allow_partial = false;
+
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (std.mem.eql(u8, a, "--out") and i + 1 < args.len) {
+                i += 1;
+                out = args[i];
+            } else if (std.mem.eql(u8, a, "--builtins") and i + 1 < args.len) {
+                i += 1;
+                builtins = args[i];
+            } else if (std.mem.eql(u8, a, "--allow-partial")) {
+                allow_partial = true;
+            } else if (file == null) {
+                file = a;
+            }
+            // Extra positionals are ignored: argparse would error, but the
+            // single-file contract is enforced by the driver on `file`.
+        }
+
+        return .{ .lower = .{
+            .file = file,
+            .out = out,
+            .builtins = builtins,
+            .allow_partial = allow_partial,
+        } };
+    }
     if (std.mem.eql(u8, first, "cache")) return .cache;
 
     return .help;
