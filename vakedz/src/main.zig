@@ -9,6 +9,7 @@ test {
     _ = @import("lexer_test.zig");
     _ = @import("parser_test.zig");
     _ = @import("fmt_test.zig");
+    _ = @import("resolve_test.zig");
 }
 
 test "fmtSource: check-mode change detection" {
