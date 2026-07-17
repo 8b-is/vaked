@@ -181,6 +181,46 @@ test "format field decl with default and oneof" {
     );
 }
 
+test "format union type inside generic args" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\schema Box {
+        \\  field x : List<A|B>
+        \\}
+    ,
+        \\schema Box {
+        \\  field x : List<A | B>
+        \\}
+    );
+    // idempotency: canonical output re-formats to itself
+    try expectFormatted(a,
+        \\schema Box {
+        \\  field x : List<A | B>
+        \\}
+    ,
+        \\schema Box {
+        \\  field x : List<A | B>
+        \\}
+    );
+}
+
+test "format nested union type inside generic args" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFormatted(a,
+        \\schema Box {
+        \\  field input : List<Stream<T> | Graph | Catalog<T>> { nonempty }
+        \\}
+    ,
+        \\schema Box {
+        \\  field input : List<Stream<T> | Graph | Catalog<T>> { nonempty }
+        \\}
+    );
+}
+
 test "format node decl" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

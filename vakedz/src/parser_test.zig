@@ -285,6 +285,33 @@ test "parse zero-arg function type" {
     }
 }
 
+test "parse union type inside generic args" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "schema Box {\n  field x : List<A | B>\n}";
+    const items = try parseSource(a, src);
+    switch (items[0].decl.body[0]) {
+        .field => |f| try testing.expectEqualStrings("List<A | B>", f.type_text),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse nested union type inside generic args" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = "schema Box {\n  field input : List<Stream<T> | Graph | Catalog<T>> { nonempty }\n}";
+    const items = try parseSource(a, src);
+    switch (items[0].decl.body[0]) {
+        .field => |f| {
+            try testing.expectEqualStrings("input", f.name);
+            try testing.expectEqualStrings("List<Stream<T> | Graph | Catalog<T>>", f.type_text);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "all 36 kinds recognized" {
     const expected = [_][]const u8{
         "runtime", "engine", "host", "network", "filesystem", "mcp", "ebpf",

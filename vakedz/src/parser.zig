@@ -682,31 +682,40 @@ pub const Parser = struct {
 
     fn typeText(self: *Parser) ![]const u8 {
         var out = std.array_list.Managed(u8).init(self.a);
-        try self.typeAtom(&out);
-        while (self.isOp("|")) {
-            self.i += 1;
-            try out.appendSlice(" | ");
-            try self.typeAtom(&out);
-        }
+        try self.typeInto(&out);
         return out.toOwnedSlice();
     }
 
-    fn typeAtom(self: *Parser, out: *std.array_list.Managed(u8)) !void {
+    // EBNF: type = type_atom { "|" type_atom }
+    fn typeInto(self: *Parser, out: *std.array_list.Managed(u8)) error{ OutOfMemory, Parse }!void {
+        try self.typeAtom(out);
+        while (self.isOp("|")) {
+            self.i += 1;
+            try out.appendSlice(" | ");
+            try self.typeAtom(out);
+        }
+    }
+
+    // EBNF: type_atom = qualname [ "<" type { "," type } ">" ]
+    //                 | "(" [ type { "," type } ] ")" "->" type
+    // Generic args, function params, and the return type are full `type`
+    // productions — unions are legal inside them.
+    fn typeAtom(self: *Parser, out: *std.array_list.Managed(u8)) error{ OutOfMemory, Parse }!void {
         if (self.isOp("(")) {
             self.i += 1;
             try out.append('(');
             if (!self.isOp(")")) {
-                try self.typeAtom(out);
+                try self.typeInto(out);
                 while (self.isOp(",")) {
                     self.i += 1;
                     try out.appendSlice(", ");
-                    try self.typeAtom(out);
+                    try self.typeInto(out);
                 }
             }
             _ = try self.expectOp(")");
             _ = try self.expectOp("->");
             try out.appendSlice(") -> ");
-            try self.typeAtom(out);
+            try self.typeInto(out);
             return;
         }
         const id = try self.expectIdent();
@@ -720,11 +729,11 @@ pub const Parser = struct {
         if (self.isOp("<")) {
             self.i += 1;
             try out.append('<');
-            try self.typeAtom(out);
+            try self.typeInto(out);
             while (self.isOp(",")) {
                 self.i += 1;
                 try out.appendSlice(", ");
-                try self.typeAtom(out);
+                try self.typeInto(out);
             }
             _ = try self.expectOp(">");
             try out.append('>');
