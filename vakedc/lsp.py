@@ -15,14 +15,11 @@ import io
 import json
 import sys
 import threading
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .lexer import VakedLexError, tokenize
+from .check import check_source, default_builtins_path, load_builtins
+from .lexer import VakedLexError
 from .parser import VakedSyntaxError, parse_source
-from .resolve import build_graph
-from .check import check_source, load_builtins, default_builtins_path
-
 
 # ---------------------------------------------------------------------------
 # JSON-RPC framing
@@ -41,8 +38,8 @@ def _read_message(stdin: io.RawIOBase) -> Optional[dict]:
             length = int(header[len("Content-Length:"):].strip())
         except ValueError:
             continue
-        # blank line
-        blank = stdin.readline()
+        # consume the blank separator line of the LSP header framing
+        stdin.readline()
         body = stdin.read(length)
         if not body:
             return None
@@ -115,19 +112,26 @@ _REFINEMENT_WORDS = [
 ]
 
 _BUILTINS_SUMMARY: Dict[str, str] = {
-    "index": "Index<T> — reproducible source of structured content.\nFields: source, normalize?, chunk?, emit, schema, trust",
+    "index": "Index<T> — reproducible source of structured content.\nFields: source, normalize?, chunk?, emit, "
+             "schema, trust",
     "catalog": "Catalog<T> — queryable materialization of an index.\nFields: from (index ref), key, emit",
     "stream": "Stream<T> — typed runtime event flow.\nFields: source, type, retention, fps?",
-    "fiber": "Fiber<I,O> — policy-bound execution lane.\nFields: engine, input (stream ref), output (artifact ref), policy{...}",
-    "surface": "Surface — operator-facing visualization/UI.\nFields: mode (raylib|...), fps?, input (list of stream/graph/catalog), views (list of view names), budget?",
+    "fiber": "Fiber<I,O> — policy-bound execution lane.\nFields: engine, input (stream ref), output (artifact ref), "
+             "policy{...}",
+    "surface": "Surface — operator-facing visualization/UI.\nFields: mode (raylib|...), fps?, "
+               "input (list of stream/graph/catalog), views (list of view names), budget?",
     "mesh": "Mesh<Node,Edge> — agent/process/tool/device topology.\nContains: node decls, -> delegation edges",
     "device": "Device — hardware/driver node (open schema).\nFields: driver, mount, permissions, observe?",
     "mediaPipeline": "MediaPipeline — source→stages→sink media graph (open).\nFields: source, stages, sink",
-    "parallel": "ParallelGroup — supervised group of fibers.\nFields: fibers (list of fiber refs), strategy, supervisor (otp)",
+    "parallel": "ParallelGroup — supervised group of fibers.\nFields: fibers (list of fiber refs), strategy, "
+                "supervisor (otp)",
     "workflow": "Workflow — typed agent-step DAG.\nContains: steps with on/use, -> ordering edges",
-    "memory": "Memory<T> — runtime-accumulated, mined, replayable store.\nFields: source (stream list), schema, mine (normalizer), scope, retention, emit",
-    "schema": "Schema declaration — defines a named type with field constraints.\nFields: field declarations with : type and {refinements}",
-    "capability": "Capability declaration — defines grant partial orders for a domain.\nFields: grant sets, order chains",
+    "memory": "Memory<T> — runtime-accumulated, mined, replayable store.\nFields: source (stream list), schema, "
+              "mine (normalizer), scope, retention, emit",
+    "schema": "Schema declaration — defines a named type with field constraints.\n"
+              "Fields: field declarations with : type and {refinements}",
+    "capability": "Capability declaration — defines grant partial orders for a domain.\nFields: grant sets, "
+                  "order chains",
     "budget": "Budget — resource bounds.\nFields: tokens, wallClock, toolCalls, fuel (optional)",
     "runtime": "Runtime — top-level declaration grouping all other kinds.",
     "engine": "Engine — execution engine declaration.",
@@ -137,13 +141,18 @@ _BUILTINS_SUMMARY: Dict[str, str] = {
     "hostResource": "HostResource — host-managed database/resource (PostgreSQL/Redis).",
     "ingress": "Ingress — Caddy HTTP reverse-proxy vhost.",
     "container": "Container — OCI/Docker container.",
-    "namespace": "Namespace — named sub-namespace with member list (RFC 0017).\nFields: member (list of member names)",
-    "dyad": "Dyad — a principal intrinsically two (human + alum, co-rooted, v0.5).\nBlock body: assignments and node decls",
+    "namespace": "Namespace — named sub-namespace with member list (RFC 0017).\n"
+                 "Fields: member (list of member names)",
+    "dyad": "Dyad — a principal intrinsically two (human + alum, co-rooted, v0.5).\n"
+            "Block body: assignments and node decls",
     "ceremony": "Ceremony — consensus-freeze gate (v0.5).\nBlock body: assignments and node decls",
-    "arbiter": "Arbiter — unreachable singleton 'Third' that decides inheritance (v0.5).\nBlock body: assignments and node decls",
-    "trust": "Trust — first-class trust scoring with decay and delegation (v0.5).\nFields: score, half_life?, delegate, taint_as?\nAlso used as `trust = pinned { … }` on index nodes (v0.4).",
+    "arbiter": "Arbiter — unreachable singleton 'Third' that decides inheritance (v0.5).\n"
+               "Block body: assignments and node decls",
+    "trust": "Trust — first-class trust scoring with decay and delegation (v0.5).\nFields: score, half_life?, "
+             "delegate, taint_as?\nAlso used as `trust = pinned { … }` on index nodes (v0.4).",
     "quorum": "Quorum — declarative consensus thresholds (v0.5).\nFields: min, over, timeout, on_failure",
-    "probe": "Probe — synthetic request-response cycle for compaction safety (v0.5).\nFields: from, to, via, with?, on_result?",
+    "probe": "Probe — synthetic request-response cycle for compaction safety (v0.5).\nFields: from, to, via, with?, "
+             "on_result?",
 }
 
 

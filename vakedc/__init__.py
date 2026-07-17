@@ -13,14 +13,18 @@ See ``vakedc/README.md``,
 
 from __future__ import annotations
 
-from .lexer import tokenize, VakedLexError, PINNED_UNICODE
-from .parser import parse, parse_source, VakedSyntaxError
-from .graph import Graph
-from .resolve import build_graph
-from .emit import to_canonical_json, to_sqlite, canonical_dump
 from .check import (
-    check_source, check_file, load_builtins, default_builtins_path, Diagnostic,
+    Diagnostic,
+    check_file,
+    check_source,
+    default_builtins_path,
+    load_builtins,
 )
+from .emit import canonical_dump, to_canonical_json, to_sqlite
+from .graph import Graph
+from .lexer import PINNED_UNICODE, VakedLexError, tokenize
+from .parser import VakedSyntaxError, parse_source
+from .resolve import build_graph
 
 __all__ = [
     "parse_file", "parse_string", "tokenize", "build_graph",

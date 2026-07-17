@@ -28,7 +28,7 @@ spans; the graph builder turns these into LPG nodes/edges.
 
 from __future__ import annotations
 
-from .lexer import Token, tokenize, VakedLexError
+from .lexer import Token, tokenize
 
 # The 36 declaration kinds (grammar `kind`, v0.5).  (`input` removed in #48 — its
 # niche is covered by `index` (build-time corpus) and `stream` (runtime flow).)

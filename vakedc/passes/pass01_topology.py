@@ -11,9 +11,10 @@ Reference: ``vakedc/check.py:1727-1785``.
 
 from __future__ import annotations
 
-from vakedc.graph import Graph, GraphNode
 from vakedc.check import Diagnostic
+from vakedc.graph import Graph, GraphNode
 from vakedc.lower import _workflow_steps_edges
+
 from . import WorkflowIR
 
 
@@ -104,7 +105,6 @@ def _analyse_one(graph: Graph, wf: GraphNode) -> WorkflowIR:
 
     # --- Depth bound enforcement (check.py:1771-1785) ---
     from vakedc.lower import _lit
-    bindings = wf.props  # Already-resolved props from the graph
     md_raw = wf.props.get("maxDepth")
     if md_raw is not None:
         try:

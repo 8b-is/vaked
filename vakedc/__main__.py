@@ -36,14 +36,13 @@ import os
 import sys
 import time
 
-from .lexer import VakedLexError
-from .parser import VakedSyntaxError
-from .resolve import build_graph
-from .parser import parse_source
-from .emit import to_canonical_json, to_sqlite
-from .check import check_source, load_builtins, default_builtins_path
 from . import lower as lower_mod
 from . import tracing as _T
+from .check import check_source, default_builtins_path, load_builtins
+from .emit import to_canonical_json, to_sqlite
+from .lexer import VakedLexError
+from .parser import VakedSyntaxError, parse_source
+from .resolve import build_graph
 
 
 def _cmd_lsp(args) -> int:

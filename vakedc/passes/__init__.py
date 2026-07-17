@@ -11,10 +11,9 @@ dialect pass design (0013, 0019--0024). Each pass maps to one MLIR pass:
 
 Usage::
 
-    from vakedc.passes import PassPipeline, PassResult
+    from vakedc.passes import run_pipeline
 
-    pipe = PassPipeline()
-    result = pipe.run(graph, workflow_nodes)
+    result = run_pipeline(graph, workflow_nodes)
     # result.diagnostics  — Pass 1 cycle/depth errors
     # result.workflows    — Pass 2 WAL-injected workflow descriptions
     # result.artifacts    — Pass 3 emitted gen/ artifacts
@@ -27,11 +26,11 @@ Each pass is importable separately for unit testing:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dc_field
-from typing import Any
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 
-from vakedc.graph import Graph, GraphNode
 from vakedc.check import Diagnostic
+from vakedc.graph import Graph, GraphNode
 
 
 @dataclass

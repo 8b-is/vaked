@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 
 from . import parser as P
-from .graph import Graph, GraphNode, GraphEdge, Provenance, Span, node_id
+from .graph import Graph, GraphEdge, GraphNode, Provenance, Span, node_id
 
 # Fields whose ref value(s) are data-flow dependencies.
 _DEPENDS_FIELDS = frozenset(("input", "output", "from", "source", "engine"))

@@ -56,13 +56,12 @@ from __future__ import annotations
 import ipaddress
 import os
 from bisect import bisect_left
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 
 from . import parser as P
 from .lexer import tokenize
 from .parser import parse_source
-from .resolve import build_graph
-
 
 # --------------------------------------------------------------------------- #
 # Diagnostic record
@@ -555,7 +554,6 @@ def _check_namespace_wellformed(spec: NamespaceSpec, smap_for, diags):
     subsumed, and the intent is unclear).  Reported as ``E-SCHEMA-REFINEMENT``
     (reuse; a load-time structural error on a declaration body)."""
     if spec.open and spec.members:
-        smap = smap_for(spec.origin_file)
         ds, de, dl, dc = spec.decl_span
         span = (ds, de, dl, dc)
         _emit(diags, "E-SCHEMA-REFINEMENT", spec.origin_file, span, spec,
@@ -780,7 +778,6 @@ def _check_field_constraints(vprop, fspec: FieldSpec, decl, smap, file, diags, d
         elif kind == "oneof":
             allowed = [(x.kind, x.value) for x in getattr(r[1], "items", [])]
             if isinstance(vprop, dict) and "lit" in vprop:
-                k = (vprop.get("lit") or "").upper()
                 if not _litprop_in_oneof(vprop, allowed):
                     _emit(diags, "E-CONSTRAINT-ONEOF", file, vspan, decl,
                           f"field `{fspec.name}`: value {_render_vprop(vprop)} is "
@@ -1686,7 +1683,6 @@ def _check_mesh(mesh_decl, registry, smap, file, diags, network_decls=None):
     node_grants = {}        # node name -> list[(domain, grant)]
     node_needs = {}         # node name -> list[(domain, grant)] (declared `needs`)
     node_decls = {}
-    ds, de, dl, dc = (mesh_decl.byteStart, mesh_decl.byteEnd, mesh_decl.line, mesh_decl.col)
 
     for st in mesh_decl.body:
         if isinstance(st, P.NodeDecl):

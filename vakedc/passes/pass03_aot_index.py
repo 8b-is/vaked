@@ -14,9 +14,17 @@ from __future__ import annotations
 
 from vakedc.graph import Graph
 from vakedc.lower import (
-    _header, _lit, _coerce_number, _budget_prop, _ref, _runtime_view,
-    _eventd_log_path, _Ordered, _emit_zig_json,
+    _budget_prop,
+    _coerce_number,
+    _emit_zig_json,
+    _eventd_log_path,
+    _header,
+    _lit,
+    _Ordered,
+    _ref,
+    _runtime_view,
 )
+
 from . import WorkflowIR
 
 

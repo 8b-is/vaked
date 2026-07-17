@@ -20,6 +20,7 @@ Reference: ``vakedc/lower.py`` (emit_workflow_spec embeds eventd log path).
 from __future__ import annotations
 
 from vakedc.graph import Graph
+
 from . import WorkflowIR
 
 
