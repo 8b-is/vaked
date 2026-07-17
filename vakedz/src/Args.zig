@@ -15,9 +15,19 @@ pub const CheckOptions = struct {
     builtins: ?[]const u8 = null,
 };
 
+/// Mirrors `python3 -m vakedc parse <file> [--json P] [--sqlite P]
+/// [--print]`. NOTE: unlike check's boolean `--json`, parse's `--json`
+/// takes a PATH argument (vakedc parity).
+pub const ParseOptions = struct {
+    paths: []const []const u8,
+    json: ?[]const u8 = null,
+    sqlite: ?[]const u8 = null,
+    print: bool = false,
+};
+
 pub const Command = union(enum) {
     fmt: FmtOptions,
-    parse,
+    parse: ParseOptions,
     check: CheckOptions,
     lower,
     cache,
@@ -60,7 +70,35 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
             .stdout = stdout,
         } };
     }
-    if (std.mem.eql(u8, first, "parse")) return .parse;
+    if (std.mem.eql(u8, first, "parse")) {
+        var json: ?[]const u8 = null;
+        var sqlite: ?[]const u8 = null;
+        var print = false;
+        var paths = std.ArrayList([]const u8).empty;
+
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (std.mem.eql(u8, a, "--json") and i + 1 < args.len) {
+                i += 1;
+                json = args[i];
+            } else if (std.mem.eql(u8, a, "--sqlite") and i + 1 < args.len) {
+                i += 1;
+                sqlite = args[i];
+            } else if (std.mem.eql(u8, a, "--print")) {
+                print = true;
+            } else {
+                paths.append(allocator, a) catch return .help;
+            }
+        }
+
+        return .{ .parse = .{
+            .paths = paths.toOwnedSlice(allocator) catch return .help,
+            .json = json,
+            .sqlite = sqlite,
+            .print = print,
+        } };
+    }
     if (std.mem.eql(u8, first, "check")) {
         var json = false;
         var builtins: ?[]const u8 = null;

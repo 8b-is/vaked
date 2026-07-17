@@ -5,6 +5,8 @@ const fmt_mod = @import("Fmt.zig");
 const lex = @import("lexer.zig");
 const parser_mod = @import("parser.zig");
 const check_mod = @import("check.zig");
+const resolve_mod = @import("resolve.zig");
+const emit_mod = @import("emit.zig");
 
 test {
     _ = @import("lexer_test.zig");
@@ -64,7 +66,8 @@ pub fn main(init: std.process.Init) !void {
     switch (cmd) {
         .fmt => |f| try runFmt(allocator, io, f),
         .check => |c| try runCheck(allocator, io, c),
-        .parse, .lower, .cache => {
+        .parse => |p| try runParse(allocator, io, p),
+        .lower, .cache => {
             const ls = try io.lockStderr(&.{}, null);
             defer io.unlockStderr();
             try stderrWriter(ls).print("vakedz: {s} not yet implemented\n", .{@tagName(cmd)});
@@ -78,6 +81,7 @@ pub fn main(init: std.process.Init) !void {
                 \\
                 \\commands:
                 \\  fmt       Format Vaked source files
+                \\  parse     Parse a .vaked file into the LPG (canonical JSON)
                 \\  check     Type-check Vaked files (0011 stages 3-4)
                 \\  help      Show this help message
                 \\  version   Show version
@@ -85,6 +89,11 @@ pub fn main(init: std.process.Init) !void {
                 \\fmt options:
                 \\  --check    Exit 1 if any file would change (CI gate)
                 \\  --stdout   Print formatted result to stdout
+                \\
+                \\parse options:
+                \\  --json PATH    Write canonical JSON to PATH (default: .vaked/graph.json)
+                \\  --sqlite PATH  NOT IMPLEMENTED (SQLite serialization deferred; exits 2)
+                \\  --print        Write canonical JSON to stdout
                 \\
                 \\check options:
                 \\  --json            Emit diagnostics as canonical JSON to stdout
@@ -202,6 +211,99 @@ fn runFmt(allocator: std.mem.Allocator, io: std.Io, opts: Args.FmtOptions) !void
     // exit 2: lex/parse/IO errors; exit 1: --check found unformatted files
     if (any_error) std.process.exit(2);
     if (opts.check and any_changed) std.process.exit(1);
+}
+
+/// `vakedz parse <file> [--json PATH] [--sqlite PATH] [--print]` — parse a
+/// .vaked file into the LPG and emit the canonical JSON graph, mirroring
+/// `python3 -m vakedc parse` (`_cmd_parse`): with no output flag the JSON
+/// lands in .vaked/graph.json; `--json PATH` writes it to PATH; `--print`
+/// streams it to stdout (byte-identical to Python — the emit differential
+/// tools/emit-diff/run.sh locks this). Exit codes mirror `_cmd_parse`:
+/// 0 emitted, 1 read / lex / parse error, 2 usage error.
+///
+/// DIVERGENCES (documented, stderr/SQLite only — never stdout bytes):
+///   * SQLite is deferred (no SQLite in the Zig stdlib; vakedz is
+///     stdlib-only — see emit.zig `sqlite_deferred`): `--sqlite` exits 2
+///     with a message instead of writing graph.db, and the default mode
+///     writes only .vaked/graph.json (Python also writes .vaked/graph.db).
+///   * the default-mode "wrote ..." notice on stderr names only the JSON
+///     path (and says so).
+fn runParse(allocator: std.mem.Allocator, io: std.Io, opts: Args.ParseOptions) !void {
+    // Args.parse hands over ownership of the paths slice; free it on the
+    // normal-return path so a Debug-build DebugAllocator exit stays quiet
+    // (std.process.exit paths below never reach the leak check).
+    defer allocator.free(opts.paths);
+    if (opts.paths.len != 1) {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).writeAll("vakedz parse: expected exactly one file\n");
+        std.process.exit(2);
+    }
+    if (opts.sqlite != null) {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).writeAll("vakedz parse: --sqlite is not implemented yet (SQLite serialization deferred — Zig stdlib has no SQLite and vakedz is stdlib-only)\n");
+        std.process.exit(2);
+    }
+    const path = opts.paths[0];
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const source = readFileAlloc(aa, io, path) catch |err| {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).print("vakedz: cannot read {s}: {}\n", .{ path, err });
+        std.process.exit(1);
+    };
+    const items = switch (try check_mod.parseSource(aa, source, path)) {
+        .ok => |items| items,
+        .fail => |msg| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: {s}\n", .{msg});
+            std.process.exit(1);
+        },
+    };
+
+    // Shared pipeline with check (checkSource runs the same parseSource +
+    // buildGraph): resolve the LPG, ignore collision diagnostics — Python's
+    // parse command has no check stage and emits the keep-first graph.
+    var res = try resolve_mod.buildGraph(aa, items, path);
+    defer res.graph.deinit();
+    const canonical = try emit_mod.toCanonicalJson(aa, &res.graph, path);
+
+    // Output targets (Python `_cmd_parse`): explicit --json wins; otherwise
+    // default under .vaked/. --print never suppresses the writes.
+    const explicit = opts.json != null; // --sqlite already rejected above
+    var json_path: ?[]const u8 = opts.json;
+    const cwd = std.Io.Dir.cwd();
+    if (!explicit) {
+        cwd.createDirPath(io, ".vaked") catch |err| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: cannot create .vaked: {}\n", .{err});
+            std.process.exit(1);
+        };
+        json_path = ".vaked/graph.json";
+    }
+    if (json_path) |jp| {
+        cwd.writeFile(io, .{ .sub_path = jp, .data = canonical }) catch |err| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: cannot write {s}: {}\n", .{ jp, err });
+            std.process.exit(1);
+        };
+    }
+
+    if (opts.print) {
+        try std.Io.File.stdout().writeStreamingAll(io, canonical);
+    } else if (!explicit) {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).print("vakedz: wrote {s} (graph.db deferred — no SQLite in the Zig stdlib)\n", .{json_path.?});
+    }
 }
 
 /// The ImportReader the checker uses for `use`-imported files: reads via the
