@@ -1963,6 +1963,511 @@ pub fn emitOtpSupervision(a: Allocator, g: *const graphmod.Graph, source_file: [
 }
 
 // --------------------------------------------------------------------------- //
+// NixOS-deployment cohort emitters (#1-#6).
+//
+// Each lowers a cohort kind to a NixOS-module fragment under gen/ that the
+// deferred (§4.3) nixosModules.<runtime> body imports. Shared value
+// vocabulary: `Bind` (loopback()/bind()), `secret.X.path`, `hostResource.X.dsn`.
+// All gate on presence, so a runtime without them emits nothing (operator-field
+// stays byte-identical).
+//
+// NOTE on numbers: this cohort renders number literals VERBATIM via
+// `_nix_literal` (`str(val)` on the stored string) — it does NOT go through
+// `_coerce_number`. So `2.0` stays `2.0` and `007` stays `007` here, unlike the
+// `_scalar_prop` path used by docs.runtime/zig.daemoncfg. Do not "helpfully"
+// route these through coerceNumberStr.
+// --------------------------------------------------------------------------- //
+
+/// lower.py `_module_header`: the NixOS-module fragment header.
+fn moduleHeader(a: Allocator, L: *Lines, sf: []const u8, decl: []const u8, summary: []const u8) Error!void {
+    try L.addFmt("# {s}", .{try header(a, sf, decl)});
+    try L.add("#");
+    try L.addFmt("# {s}", .{summary});
+    try L.add("# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).");
+}
+
+/// lower.py `_nix_literal`: string→quoted, bool→true/false, number→BARE
+/// (verbatim, no `_coerce_number`), other scalars→quoted. Null when `vprop` is
+/// not a literal.
+fn nixLiteral(a: Allocator, vprop: ?json.Value) Error!?[]const u8 {
+    const v = vprop orelse return null;
+    const kind_v = getProp(v, "lit") orelse return null;
+    const kind = switch (kind_v) {
+        .string => |s| s,
+        else => "",
+    };
+    const val = litOf(v); // may be null -> Python renders the text "None"
+    if (std.mem.eql(u8, kind, "string")) return try std.fmt.allocPrint(a, "\"{s}\"", .{optStr(val)});
+    if (std.mem.eql(u8, kind, "bool")) {
+        // Python: `"true" if str(val).lower() == "true" else "false"`
+        const s = optStr(val);
+        const lowered = try std.ascii.allocLowerString(a, s);
+        return if (std.mem.eql(u8, lowered, "true")) "true" else "false";
+    }
+    if (std.mem.eql(u8, kind, "number")) return optStr(val); // BARE, verbatim
+    return try std.fmt.allocPrint(a, "\"{s}\"", .{optStr(val)});
+}
+
+const BindParts = struct { addr: []const u8, host_port: []const u8, container_port: ?[]const u8 };
+
+/// lower.py `_bind_parts`: decompose a Bind call (`loopback(...)`/`bind(...)`)
+/// into (addr, host_port, container_port); container_port is null for non-OCI
+/// forms. Ports are the raw string literals.
+fn bindParts(a: Allocator, prop: ?json.Value) Error!?BindParts {
+    const call = (try appCall(a, prop)) orelse return null;
+    if (std.mem.eql(u8, call.ref, "loopback")) {
+        if (call.args.len == 1) return BindParts{ .addr = "127.0.0.1", .host_port = optStr(call.args[0]), .container_port = null };
+        if (call.args.len == 2) return BindParts{ .addr = "127.0.0.1", .host_port = optStr(call.args[0]), .container_port = optStr(call.args[1]) };
+        return null;
+    }
+    if (std.mem.eql(u8, call.ref, "bind") and call.args.len == 2) {
+        return BindParts{ .addr = optStr(call.args[0]), .host_port = optStr(call.args[1]), .container_port = null };
+    }
+    return null;
+}
+
+/// lower.py `_render_bind`: `host:port` (or OCI `host:hp:cp`).
+fn renderBind(a: Allocator, prop: ?json.Value) Error!?[]const u8 {
+    const p = (try bindParts(a, prop)) orelse return null;
+    if (p.container_port) |cp| return try std.fmt.allocPrint(a, "{s}:{s}:{s}", .{ p.addr, p.host_port, cp });
+    return try std.fmt.allocPrint(a, "{s}:{s}", .{ p.addr, p.host_port });
+}
+
+/// lower.py `_secret_sops_name`: a `secret` node's `name` field literal.
+fn secretSopsName(node: graphmod.GraphNode) ?[]const u8 {
+    return litOf(getProp(node.props, "name"));
+}
+
+/// lower.py `_host_resource_dsn`: the connection URL `hostResource.X.dsn`
+/// lowers to (postgresql today; a fixed per-kind template — §2.4 projection).
+fn hostResourceDsn(a: Allocator, node: graphmod.GraphNode) Error!?[]const u8 {
+    const kind = litOf(getProp(node.props, "kind")) orelse return null;
+    if (!std.mem.eql(u8, kind, "postgresql")) return null;
+    const name = litOf(getProp(node.props, "name"));
+    return try std.fmt.allocPrint(a, "postgresql:///{s}?host=/run/postgresql", .{optStr(name)});
+}
+
+/// lower.py `_accessor_nix`: a 3-part accessor ref (`secret.X.path` /
+/// `hostResource.X.dsn`) rendered to Nix, resolving X against the runtime's
+/// decls (the checker has already proven X exists).
+fn accessorNix(a: Allocator, rv: RuntimeView, ref_dotted: []const u8) Error!?[]const u8 {
+    var it = std.mem.splitScalar(u8, ref_dotted, '.');
+    var parts: [4][]const u8 = undefined;
+    var n: usize = 0;
+    while (it.next()) |p| {
+        if (n == 4) return null; // more than 3 segments
+        parts[n] = p;
+        n += 1;
+    }
+    if (n != 3) return null;
+    const head = parts[0];
+    const name = parts[1];
+    const field = parts[2];
+    if (std.mem.eql(u8, head, "secret") and std.mem.eql(u8, field, "path")) {
+        // secret.X.path -> a Nix expression referencing config (UNQUOTED).
+        for (rv.secrets) |s| {
+            if (!std.mem.eql(u8, s.name, name)) continue;
+            const key = secretSopsName(s) orelse name;
+            return try std.fmt.allocPrint(a, "config.sops.secrets.\"{s}\".path", .{key});
+        }
+    }
+    if (std.mem.eql(u8, head, "hostResource") and std.mem.eql(u8, field, "dsn")) {
+        // hostResource.X.dsn -> a string VALUE, so a QUOTED Nix string.
+        for (rv.host_resources) |hr| {
+            if (!std.mem.eql(u8, hr.name, name)) continue;
+            const dsn = (try hostResourceDsn(a, hr)) orelse return null;
+            return try std.fmt.allocPrint(a, "\"{s}\"", .{dsn});
+        }
+    }
+    return null;
+}
+
+const NamedProp = struct { name: []const u8, value: ?json.Value };
+
+/// lower.py `_record_value_props`: `[(name, value-prop)]` of a config-block
+/// record, source order — PRESERVING ref/app values (unlike `_record_entries`,
+/// which keeps only literals).
+fn recordValueProps(a: Allocator, prop: ?json.Value) Error![]const NamedProp {
+    var out: std.ArrayListUnmanaged(NamedProp) = .empty;
+    const v = prop orelse return out.toOwnedSlice(a);
+    const rec = getProp(v, "record") orelse return out.toOwnedSlice(a);
+    const arr = switch (rec) {
+        .array => |x| x,
+        else => return out.toOwnedSlice(a),
+    };
+    for (arr) |e| {
+        const assign = getProp(e, "assign") orelse continue;
+        const name = switch (assign) {
+            .string => |s| s,
+            else => continue,
+        };
+        try out.append(a, .{ .name = name, .value = getProp(e, "value") });
+    }
+    return out.toOwnedSlice(a);
+}
+
+/// lower.py `_render_setting`: an accessor ref (secret.X.path /
+/// hostResource.X.dsn), else a literal; other refs pass through bare.
+fn renderSetting(a: Allocator, rv: RuntimeView, vprop: ?json.Value) Error![]const u8 {
+    if (refOf(vprop)) |ref| {
+        if (try accessorNix(a, rv, ref)) |acc| return acc;
+        return ref;
+    }
+    if (try nixLiteral(a, vprop)) |lit| return lit;
+    return "null";
+}
+
+/// lower.py `_SECRET_SOPS_OPTIONS` — fixed emission order.
+const secret_sops_options = [_][]const u8{ "owner", "mode" };
+
+/// lower.py `emit_sops_secrets` (#2): one `gen/nixos/sops.nix` declaring every
+/// `secret` node's `sops.secrets."<name>"` entry. owner/mode only when present.
+pub fn emitSopsSecrets(a: Allocator, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    if (nodes.len == 0) return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    var L = Lines.init(a);
+    try moduleHeader(a, &L, sf, try std.fmt.allocPrint(a, "secret {s}", .{nodes[0].name}), "sops-managed runtime secrets.");
+    try L.add("{ config, ... }:");
+    try L.add("{");
+    for (nodes) |sec| {
+        const name = secretSopsName(sec) orelse continue;
+        try L.addFmt("  sops.secrets.\"{s}\" = {{", .{name});
+        for (secret_sops_options) |opt| {
+            if (litOf(getProp(sec.props, opt))) |val| {
+                try L.addFmt("    {s} = \"{s}\";", .{ opt, val });
+            }
+        }
+        try L.add("  };");
+    }
+    try L.add("}");
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/nixos/sops.nix", .content = try L.text() };
+    // NOTE: the entry list covers ALL nodes, including any skipped above for a
+    // missing `name` (Python builds it with a separate comprehension).
+    const entries = try a.alloc(ProvEntry, nodes.len);
+    for (nodes, 0..) |s, i| {
+        entries[i] = .{
+            .artifact = "gen/nixos/sops.nix",
+            .region = try std.fmt.allocPrint(a, "sops.secrets.\"{s}\"", .{secretSopsName(s) orelse s.name}),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "secret {s}", .{s.name}),
+            .span = s.provenance.?.span,
+            .emitter = "sops.secrets",
+            .inputs_projection = try nodeProjection(a, s),
+        };
+    }
+    return .{ .files = files, .entries = entries };
+}
+
+/// lower.py `emit_host_resources` (#5): one `gen/nixos/host-resources.nix`
+/// provisioning the box's shared DBs.
+///
+/// !! REPLICATED vakedc BUG (0012 #5) !! The Python filter is
+///     `_lit(hr.props.get("create")) is not False`
+/// but `_lit` returns the STRING "false" for a `create = false` literal, and
+/// `"false" is not False` is ALWAYS True — so `create = false` does NOT exclude
+/// the resource, contradicting the emitter's own docstring ("postgresql with
+/// create != false"). Reproduced bug-compatibly here BY DEFAULT (verified
+/// against the reference); reported rather than fixed. A `create = false`
+/// hostResource still lands in ensureDatabases/ensureUsers.
+pub fn emitHostResources(a: Allocator, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    var pg: std.ArrayListUnmanaged(graphmod.GraphNode) = .empty;
+    for (nodes) |hr| {
+        const kind = litOf(getProp(hr.props, "kind")) orelse continue;
+        if (!std.mem.eql(u8, kind, "postgresql")) continue;
+        // `_lit(...) is not False` — see the bug note above: always true.
+        try pg.append(a, hr);
+    }
+    if (pg.items.len == 0) return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+
+    var L = Lines.init(a);
+    try moduleHeader(a, &L, sf, try std.fmt.allocPrint(a, "hostResource {s}", .{nodes[0].name}), "host-managed resources (shared services.postgresql).");
+    try L.add("{ ... }:");
+    try L.add("{");
+    {
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (pg.items) |hr| try names.append(a, optStr(litOf(getProp(hr.props, "name"))));
+        try L.addFmt("  services.postgresql.ensureDatabases = [ {s} ];", .{try joinQuoted(a, names.items, " ")});
+    }
+    try L.add("  services.postgresql.ensureUsers = [");
+    for (pg.items) |hr| {
+        try L.addFmt("    {{ name = \"{s}\"; ensureDBOwnership = true; }}", .{optStr(litOf(getProp(hr.props, "name")))});
+    }
+    try L.add("  ];");
+    try L.add("}");
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/nixos/host-resources.nix", .content = try L.text() };
+    const entries = try a.alloc(ProvEntry, pg.items.len);
+    for (pg.items, 0..) |hr, i| {
+        entries[i] = .{
+            .artifact = "gen/nixos/host-resources.nix",
+            .region = try std.mem.concat(a, u8, &.{ "services.postgresql/", hr.name }),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "hostResource {s}", .{hr.name}),
+            .span = hr.provenance.?.span,
+            .emitter = "host.resources",
+            .inputs_projection = try nodeProjection(a, hr),
+        };
+    }
+    return .{ .files = files, .entries = entries };
+}
+
+/// lower.py `emit_nixos_service` (#1): one `gen/nixos/services.nix` declaring
+/// every `service` node as `services.<name> = { enable; package;
+/// [createPostgresqlDatabase;] settings { [HOSTNAME/PORT;] <options> } }`.
+pub fn emitNixosService(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    if (nodes.len == 0) return .{ .files = &.{}, .entries = &.{} };
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+
+    var L = Lines.init(a);
+    try moduleHeader(a, &L, sf, try std.fmt.allocPrint(a, "service {s}", .{nodes[0].name}), "nixpkgs-packaged systemd services.");
+    try L.add("{ config, pkgs, ... }:");
+    try L.add("{");
+    for (nodes) |svc| {
+        try L.addFmt("  services.{s} = {{", .{svc.name});
+        try L.add("    enable = true;");
+        if (refOf(getProp(svc.props, "package"))) |pkg| try L.addFmt("    package = {s};", .{pkg});
+        // a hostResource database dependency -> createPostgresqlDatabase shortcut.
+        if (refOf(getProp(svc.props, "database")) != null) try L.add("    createPostgresqlDatabase = true;");
+        if (litOf(getProp(svc.props, "user"))) |user| try L.addFmt("    user = \"{s}\";", .{user});
+        if (litOf(getProp(svc.props, "stateDir"))) |sd| try L.addFmt("    stateDir = \"{s}\";", .{sd});
+        // settings: bind (HOSTNAME/PORT) + forwarded options.
+        const bind = try bindParts(a, getProp(svc.props, "bind"));
+        const opt_entries = try recordValueProps(a, getProp(svc.props, "options"));
+        if (bind != null or opt_entries.len > 0) {
+            try L.add("    settings = {");
+            if (bind) |b| {
+                try L.addFmt("      HOSTNAME = \"{s}\";", .{b.addr});
+                try L.addFmt("      PORT = {s};", .{b.host_port});
+            }
+            for (opt_entries) |e| {
+                try L.addFmt("      {s} = {s};", .{ e.name, try renderSetting(a, rv, e.value) });
+            }
+            try L.add("    };");
+        }
+        try L.add("  };");
+    }
+    try L.add("}");
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/nixos/services.nix", .content = try L.text() };
+    const entries = try a.alloc(ProvEntry, nodes.len);
+    for (nodes, 0..) |svc, i| {
+        entries[i] = .{
+            .artifact = "gen/nixos/services.nix",
+            .region = try std.mem.concat(a, u8, &.{ "services.", svc.name }),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "service {s}", .{svc.name}),
+            .span = svc.provenance.?.span,
+            .emitter = "nixos.service",
+            .inputs_projection = try nodeProjection(a, svc),
+        };
+    }
+    return .{ .files = files, .entries = entries };
+}
+
+/// lower.py `_render_upstream`: an ingress `upstream` (Bind | String) — the
+/// string literal verbatim, or a Bind rendered host:port.
+fn renderUpstream(a: Allocator, prop: ?json.Value) Error!?[]const u8 {
+    if (litOf(prop)) |lit| return lit;
+    return renderBind(a, prop);
+}
+
+/// lower.py `emit_caddy_ingress` (#4): one `gen/caddy/ingress.nix` — a Caddy
+/// virtualHost per `ingress` node: `import <tls>` (if any) + `reverse_proxy
+/// <upstream>` + raw extraConfig.
+pub fn emitCaddyIngress(a: Allocator, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    if (nodes.len == 0) return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+
+    var L = Lines.init(a);
+    try moduleHeader(a, &L, sf, try std.fmt.allocPrint(a, "ingress {s}", .{nodes[0].name}), "Caddy HTTP reverse-proxy virtual hosts.");
+    try L.add("{ ... }:");
+    try L.add("{");
+    for (nodes) |ing| {
+        const domain = litOf(getProp(ing.props, "domain"));
+        const upstream = try renderUpstream(a, getProp(ing.props, "upstream"));
+        const tls = litOf(getProp(ing.props, "tls"));
+        const extra = litOf(getProp(ing.props, "extraConfig"));
+        try L.addFmt("  services.caddy.virtualHosts.\"{s}\".extraConfig = ''", .{optStr(domain)});
+        if (tls) |t| try L.addFmt("    import {s}", .{t});
+        try L.addFmt("    reverse_proxy {s}", .{optStr(upstream)});
+        if (extra) |e| {
+            // Python `str.splitlines()`: splits on \n/\r/\r\n and yields NO
+            // trailing empty element for a trailing newline.
+            for (try pySplitLines(a, e)) |raw_line| {
+                try L.addFmt("    {s}", .{raw_line});
+            }
+        }
+        try L.add("  '';");
+    }
+    try L.add("}");
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/caddy/ingress.nix", .content = try L.text() };
+    const entries = try a.alloc(ProvEntry, nodes.len);
+    for (nodes, 0..) |ing, i| {
+        const domain = litOf(getProp(ing.props, "domain"));
+        // Python: `_lit(...) or ing.name` — an EMPTY domain is falsy too.
+        const region_name = if (domain != null and domain.?.len > 0) domain.? else ing.name;
+        entries[i] = .{
+            .artifact = "gen/caddy/ingress.nix",
+            .region = try std.fmt.allocPrint(a, "virtualHosts.\"{s}\"", .{region_name}),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "ingress {s}", .{ing.name}),
+            .span = ing.provenance.?.span,
+            .emitter = "caddy.ingress",
+            .inputs_projection = try nodeProjection(a, ing),
+        };
+    }
+    return .{ .files = files, .entries = entries };
+}
+
+/// Python's `str.splitlines()` for the line kinds a .vaked string literal can
+/// carry: splits on \n, \r\n and \r, and does NOT yield a trailing empty
+/// element when the text ends with a line break. (Python also splits on a
+/// handful of Unicode line boundaries — \v \f \x1c-\x1e     — which
+/// a Caddy config block will not contain; noted rather than silently assumed.)
+fn pySplitLines(a: Allocator, s: []const u8) Error![]const []const u8 {
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '\n' or s[i] == '\r') {
+            try out.append(a, s[start..i]);
+            if (s[i] == '\r' and i + 1 < s.len and s[i + 1] == '\n') i += 1;
+            i += 1;
+            start = i;
+        } else i += 1;
+    }
+    if (start < s.len) try out.append(a, s[start..]);
+    return out.toOwnedSlice(a);
+}
+
+/// lower.py `_BYTES_SUFFIX_TO_DOCKER`. Iteration order is the dict's insertion
+/// order (GB, MB, KB, B) and the loop `if suffix and s.endswith(suffix)` skips
+/// the empty "B" key's own entry only via the `if suffix` guard — but "B" IS a
+/// real key with value "", so `2B` -> `--memory=2`. Order matters: "GB" is
+/// tested before "B", so `2GB` -> `--memory=2g`, not `--memory=2G`.
+const bytes_suffix_to_docker = [_]struct { suffix: []const u8, docker: []const u8 }{
+    .{ .suffix = "GB", .docker = "g" },
+    .{ .suffix = "MB", .docker = "m" },
+    .{ .suffix = "KB", .docker = "k" },
+    .{ .suffix = "B", .docker = "" },
+};
+
+/// lower.py `_render_memory_flag`: `memory = 2GB` -> `--memory=2g`.
+fn renderMemoryFlag(a: Allocator, mem_prop: ?json.Value) Error!?[]const u8 {
+    const val = litOf(mem_prop) orelse return null;
+    const s = std.mem.trim(u8, val, " \t\n\r\x0b\x0c"); // Python str.strip() default
+    for (bytes_suffix_to_docker) |m| {
+        if (m.suffix.len == 0) continue; // `if suffix and ...`
+        if (!std.mem.endsWith(u8, s, m.suffix)) continue;
+        const head = std.mem.trim(u8, s[0 .. s.len - m.suffix.len], " \t\n\r\x0b\x0c");
+        return try std.fmt.allocPrint(a, "--memory={s}{s}", .{ head, m.docker });
+    }
+    return try std.fmt.allocPrint(a, "--memory={s}", .{s});
+}
+
+/// lower.py `_container_extra_options`: Docker flags in FIXED order —
+/// --memory, --network, --health-cmd, then the author's extraOptions verbatim.
+fn containerExtraOptions(a: Allocator, c: graphmod.GraphNode) Error![]const []const u8 {
+    var opts: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (try renderMemoryFlag(a, getProp(c.props, "memory"))) |mem| try opts.append(a, mem);
+    if (litOf(getProp(c.props, "network"))) |n| try opts.append(a, try std.fmt.allocPrint(a, "--network={s}", .{n}));
+    if (litOf(getProp(c.props, "healthCmd"))) |h| try opts.append(a, try std.fmt.allocPrint(a, "--health-cmd={s}", .{h}));
+    try opts.appendSlice(a, try strList(a, getProp(c.props, "extraOptions")));
+    return opts.toOwnedSlice(a);
+}
+
+/// lower.py `_nix_str_array`.
+fn nixStrArray(a: Allocator, values: []const []const u8) Error![]const u8 {
+    return std.fmt.allocPrint(a, "[ {s} ]", .{try joinQuoted(a, values, " ")});
+}
+
+/// lower.py `emit_oci_containers` (#6): one `gen/nixos/oci-containers.nix`
+/// collecting every `container` node into
+/// `virtualisation.oci-containers.containers`.
+pub fn emitOciContainers(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    if (nodes.len == 0) return .{ .files = &.{}, .entries = &.{} };
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+
+    var L = Lines.init(a);
+    try moduleHeader(a, &L, sf, try std.fmt.allocPrint(a, "container {s}", .{nodes[0].name}), "OCI/Docker containers (memory/network/healthCmd → extraOptions).");
+    try L.add("{ config, ... }:");
+    try L.add("{");
+    try L.add("  virtualisation.oci-containers.containers = {");
+    for (nodes) |c| {
+        try L.addFmt("    {s} = {{", .{c.name});
+        // Python interpolates `_nix_literal(...)` with %s: a non-literal image
+        // renders the text "None".
+        try L.addFmt("      image = {s};", .{optStr(try nixLiteral(a, getProp(c.props, "image")))});
+        if (getProp(c.props, "ports")) |ports_v| {
+            switch (ports_v) {
+                .array => |ports| if (ports.len > 0) {
+                    var rendered: std.ArrayListUnmanaged([]const u8) = .empty;
+                    // `_render_bind(p)` may be None -> Python's '"%s"' yields "None".
+                    for (ports) |p| try rendered.append(a, optStr(try renderBind(a, p)));
+                    try L.addFmt("      ports = {s};", .{try nixStrArray(a, rendered.items)});
+                },
+                else => {},
+            }
+        }
+        const env = try recordValueProps(a, getProp(c.props, "environment"));
+        if (env.len > 0) {
+            try L.add("      environment = {");
+            for (env) |e| {
+                try L.addFmt("        {s} = {s};", .{ e.name, try renderSetting(a, rv, e.value) });
+            }
+            try L.add("      };");
+        }
+        if (getProp(c.props, "environmentFiles")) |ef_v| {
+            switch (ef_v) {
+                .array => |ef| if (ef.len > 0) {
+                    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+                    for (ef) |x| {
+                        // Python: `_accessor_nix(rv, _ref(x)) or (_ref(x) or "")`
+                        const r = refOf(x);
+                        const acc = if (r) |rr| try accessorNix(a, rv, rr) else null;
+                        try paths.append(a, acc orelse (r orelse ""));
+                    }
+                    try L.addFmt("      environmentFiles = [ {s} ];", .{try std.mem.join(a, " ", paths.items)});
+                },
+                else => {},
+            }
+        }
+        const vols = try strList(a, getProp(c.props, "volumes"));
+        if (vols.len > 0) try L.addFmt("      volumes = {s};", .{try nixStrArray(a, vols)});
+        const extra = try containerExtraOptions(a, c);
+        if (extra.len > 0) try L.addFmt("      extraOptions = {s};", .{try nixStrArray(a, extra)});
+        try L.add("    };");
+    }
+    try L.add("  };");
+    try L.add("}");
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/nixos/oci-containers.nix", .content = try L.text() };
+    const entries = try a.alloc(ProvEntry, nodes.len);
+    for (nodes, 0..) |c, i| {
+        entries[i] = .{
+            .artifact = "gen/nixos/oci-containers.nix",
+            .region = try std.mem.concat(a, u8, &.{ "oci-containers.containers.", c.name }),
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "container {s}", .{c.name}),
+            .span = c.provenance.?.span,
+            .emitter = "oci.containers",
+            .inputs_projection = try nodeProjection(a, c),
+        };
+    }
+    return .{ .files = files, .entries = entries };
+}
+
+// --------------------------------------------------------------------------- //
 // enrich_graph — recover load-bearing config sub-blocks the resolver drops.
 // --------------------------------------------------------------------------- //
 
@@ -2186,14 +2691,30 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         }
     }
 
+    // Direct: NixOS-deployment cohort (#1-#6), each gated on presence. The
+    // order here is lower.py's `lower()` call order, which fixes the order
+    // entries land in the flat list (and so their per-artifact order in the
+    // manifest): secrets -> host_resources -> services -> ingresses ->
+    // containers.
+    if (rv.secrets.len > 0) {
+        try run(a, &files, &all_entries, try emitSopsSecrets(a, source_file, rv.secrets));
+    }
+    if (rv.host_resources.len > 0) {
+        try run(a, &files, &all_entries, try emitHostResources(a, source_file, rv.host_resources));
+    }
+    if (rv.services.len > 0) {
+        try run(a, &files, &all_entries, try emitNixosService(a, g, source_file, rv.services));
+    }
+    if (rv.ingresses.len > 0) {
+        try run(a, &files, &all_entries, try emitCaddyIngress(a, source_file, rv.ingresses));
+    }
+    if (rv.containers.len > 0) {
+        try run(a, &files, &all_entries, try emitOciContainers(a, g, source_file, rv.containers));
+    }
+
     // --- gated targets not yet ported ------------------------------------ //
     // Each condition mirrors lower.py's selection exactly, so a graph that
     // selects none of these lowers to a COMPLETE artifact set today.
-    if (rv.secrets.len > 0) try unported.append(a, "sops.secrets");
-    if (rv.host_resources.len > 0) try unported.append(a, "host.resources");
-    if (rv.services.len > 0) try unported.append(a, "nixos.service");
-    if (rv.ingresses.len > 0) try unported.append(a, "caddy.ingress");
-    if (rv.containers.len > 0) try unported.append(a, "oci.containers");
     if (rv.workflows.len > 0) try unported.append(a, "workflow.spec");
     if (rv.memories.len > 0) try unported.append(a, "memory.store");
     if (rv.memories.len > 0 or rv.workflows.len > 0) try unported.append(a, "eventd.config");

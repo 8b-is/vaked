@@ -814,3 +814,309 @@ test "lower: operator-field now lowers completely (no unported targets)" {
     try std.testing.expectEqual(want.len, result.files.len);
     for (want, result.files) |w, f| try std.testing.expectEqualStrings(w, f.path);
 }
+
+// ==========================================================================
+// Slice 4: the NixOS-deployment cohort (#1-#6).
+//
+// vaked/examples/lowering/ only freezes operator-field, which declares NO
+// cohort decls -- so these goldens were DERIVED from LIVE vakedc on dev-cx53
+// (`python3 -m vakedc lower <fixture> --out ...`), per the standing rule that
+// the tracked .vaked/lower/** is span-drifted and must not be trusted (#385).
+// Regenerate the same way.
+//
+// Coverage (the only two fixtures that exercise the cohort at all):
+//   crabcc-umami  -> sops.secrets, host.resources, nixos.service, caddy.ingress
+//   browser-pool  -> sops.secrets, oci.containers
+// ==========================================================================
+
+const crabcc_umami_src =
+    \\# crabcc-umami — dogfood: the umami NixOS service as a Vaked capability graph.
+    \\#
+    \\# Reference implementation: nix-base/hosts/public-services-host/umami.nix
+    \\#
+    \\# This is the #1-#6 cohort dogfood, now expressed with the real constructs the
+    \\# gaps motivated (was a pile of `# GAP:` stubs). It checks clean: every kind
+    \\# exists (service/secret/hostResource/ingress), every value type resolves
+    \\# (Bind via loopback(); secret.X.path / hostResource.X.dsn accessors), and the
+    \\# closed-world resolver validates the in-runtime refs.
+    \\#
+    \\#   services.umami.enable                   → service umami
+    \\#   createPostgresqlDatabase / DATABASE_URL → hostResource umamiDb (.dsn)
+    \\#   APP_SECRET_FILE = sops.secrets.path     → secret umamiAppSecret (.path)
+    \\#   HOSTNAME=127.0.0.1 PORT=3003            → bind = loopback(3003)
+    \\#   DISABLE_TELEMETRY = true                → options { … }
+    \\#   Caddy reverse_proxy                     → ingress umamiIngress
+    \\
+    \\runtime "crabcc-umami" {
+    \\  systems = ["x86_64-linux"]
+    \\
+    \\  # sops-managed runtime secret (was GAP #3). Consumed via secret.X.path below;
+    \\  # lowers to a sops.secrets."umami_app_secret" entry.
+    \\  secret umamiAppSecret {
+    \\    provider = "sops"
+    \\    name = "umami_app_secret"
+    \\    owner = "umami"
+    \\  }
+    \\
+    \\  # shared host PostgreSQL (was GAP #2). Exposes hostResource.umamiDb.dsn and
+    \\  # provisions the database/user on the box's services.postgresql.
+    \\  hostResource umamiDb {
+    \\    kind = "postgresql"
+    \\    name = "umami"
+    \\    create = true
+    \\  }
+    \\
+    \\  # the umami systemd service (was GAP #1 + #4 + #5). nixpkgs-packaged, bound to
+    \\  # loopback, with its secret + database wired through the option set.
+    \\  service umami {
+    \\    package = pkgs.umami
+    \\    bind = loopback(3003)
+    \\    # → HOSTNAME=127.0.0.1, PORT=3003
+    \\    secrets = [umamiAppSecret]
+    \\    database = umamiDb
+    \\    options {
+    \\      DISABLE_TELEMETRY = true
+    \\      APP_SECRET_FILE = secret.umamiAppSecret.path
+    \\      DATABASE_URL = hostResource.umamiDb.dsn
+    \\    }
+    \\  }
+    \\
+    \\  # Caddy HTTP reverse-proxy vhost (was GAP #6, a misused raylib surface).
+    \\  ingress umamiIngress {
+    \\    domain = "analytics.crabcc.app"
+    \\    upstream = loopback(3003)
+    \\    tls = "crabcc_sec"
+    \\  }
+    \\}
+++ "\n";
+
+const browser_pool_src =
+    \\# browser-pool — dogfood: the public-services-host OCI browser pool as a Vaked graph.
+    \\#
+    \\# Reference implementation: nix-base/hosts/public-services-host/browser-pool.nix
+    \\#
+    \\# Exercises the `container` kind (#6) with Bind port mappings (#3, host:container)
+    \\# and sops secret-file injection (#2, via secret.X.path). Lowers to
+    \\# virtualisation.oci-containers.containers.<name>. Checks clean.
+    \\
+    \\runtime "browser-pool" {
+    \\  systems = ["x86_64-linux"]
+    \\
+    \\  # sops-managed env files injected into the containers (was inline sops refs).
+    \\  secret browserlessEnv {
+    \\    provider = "sops"
+    \\    name = "browserless_env"
+    \\  }
+    \\  secret brwsEnv {
+    \\    provider = "sops"
+    \\    name = "brws_env"
+    \\  }
+    \\
+    \\  container browserless {
+    \\    image = "ghcr.io/browserless/chromium:latest"
+    \\    ports = [loopback(3030, 3000)]
+    \\    # 127.0.0.1:3030:3000
+    \\    environment { CONCURRENT = "4" }
+    \\    environmentFiles = [secret.browserlessEnv.path]
+    \\    memory = 2GB
+    \\    healthCmd = "curl -f http://localhost:3000/pressure || exit 1"
+    \\    extraOptions = ["--shm-size=1g"]
+    \\  }
+    \\
+    \\  container lightpanda {
+    \\    image = "lightpanda/browser:nightly"
+    \\    ports = [loopback(9222, 9222)]
+    \\    memory = 512MB
+    \\  }
+    \\
+    \\  container brws {
+    \\    image = "europe-west2-docker.pkg.dev/example/brws:latest"
+    \\    network = "host"
+    \\    volumes = ["/etc/browser-pool.json:/etc/browser-pool.json:ro"]
+    \\    environmentFiles = [secret.brwsEnv.path]
+    \\    memory = 256MB
+    \\  }
+    \\}
+++ "\n";
+
+const golden_sops_nix =
+    \\# generated by Vaked from crabcc-umami.vaked:secret umamiAppSecret — do not edit
+    \\#
+    \\# sops-managed runtime secrets.
+    \\# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).
+    \\{ config, ... }:
+    \\{
+    \\  sops.secrets."umami_app_secret" = {
+    \\    owner = "umami";
+    \\  };
+    \\}
+++ "\n";
+
+const golden_host_resources_nix =
+    \\# generated by Vaked from crabcc-umami.vaked:hostResource umamiDb — do not edit
+    \\#
+    \\# host-managed resources (shared services.postgresql).
+    \\# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).
+    \\{ ... }:
+    \\{
+    \\  services.postgresql.ensureDatabases = [ "umami" ];
+    \\  services.postgresql.ensureUsers = [
+    \\    { name = "umami"; ensureDBOwnership = true; }
+    \\  ];
+    \\}
+++ "\n";
+
+const golden_services_nix =
+    \\# generated by Vaked from crabcc-umami.vaked:service umami — do not edit
+    \\#
+    \\# nixpkgs-packaged systemd services.
+    \\# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).
+    \\{ config, pkgs, ... }:
+    \\{
+    \\  services.umami = {
+    \\    enable = true;
+    \\    package = pkgs.umami;
+    \\    createPostgresqlDatabase = true;
+    \\    settings = {
+    \\      HOSTNAME = "127.0.0.1";
+    \\      PORT = 3003;
+    \\      DISABLE_TELEMETRY = true;
+    \\      APP_SECRET_FILE = config.sops.secrets."umami_app_secret".path;
+    \\      DATABASE_URL = "postgresql:///umami?host=/run/postgresql";
+    \\    };
+    \\  };
+    \\}
+++ "\n";
+
+const golden_caddy_ingress_nix =
+    \\# generated by Vaked from crabcc-umami.vaked:ingress umamiIngress — do not edit
+    \\#
+    \\# Caddy HTTP reverse-proxy virtual hosts.
+    \\# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).
+    \\{ ... }:
+    \\{
+    \\  services.caddy.virtualHosts."analytics.crabcc.app".extraConfig = ''
+    \\    import crabcc_sec
+    \\    reverse_proxy 127.0.0.1:3003
+    \\  '';
+    \\}
+++ "\n";
+
+const golden_oci_containers_nix =
+    \\# generated by Vaked from browser-pool.vaked:container browserless — do not edit
+    \\#
+    \\# OCI/Docker containers (memory/network/healthCmd → extraOptions).
+    \\# NixOS module fragment imported by nixosModules.<runtime> (0012 §4.3).
+    \\{ config, ... }:
+    \\{
+    \\  virtualisation.oci-containers.containers = {
+    \\    browserless = {
+    \\      image = "ghcr.io/browserless/chromium:latest";
+    \\      ports = [ "127.0.0.1:3030:3000" ];
+    \\      environment = {
+    \\        CONCURRENT = "4";
+    \\      };
+    \\      environmentFiles = [ config.sops.secrets."browserless_env".path ];
+    \\      extraOptions = [ "--memory=2g" "--health-cmd=curl -f http://localhost:3000/pressure || exit 1" "--shm-size=1g" ];
+    \\    };
+    \\    lightpanda = {
+    \\      image = "lightpanda/browser:nightly";
+    \\      ports = [ "127.0.0.1:9222:9222" ];
+    \\      extraOptions = [ "--memory=512m" ];
+    \\    };
+    \\    brws = {
+    \\      image = "europe-west2-docker.pkg.dev/example/brws:latest";
+    \\      environmentFiles = [ config.sops.secrets."brws_env".path ];
+    \\      volumes = [ "/etc/browser-pool.json:/etc/browser-pool.json:ro" ];
+    \\      extraOptions = [ "--memory=256m" "--network=host" ];
+    \\    };
+    \\  };
+    \\}
+++ "\n";
+
+const crabcc_umami_path = "vaked/examples/crabcc-umami.vaked";
+const browser_pool_path = "vaked/examples/containers/browser-pool.vaked";
+
+test "lower: NixOS cohort reproduces live vakedc for crabcc-umami byte-for-byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 2137), crabcc_umami_src.len);
+    try testing.expectEqual(@as(usize, 275), golden_sops_nix.len);
+    try testing.expectEqual(@as(usize, 371), golden_host_resources_nix.len);
+    try testing.expectEqual(@as(usize, 561), golden_services_nix.len);
+    try testing.expectEqual(@as(usize, 343), golden_caddy_ingress_nix.len);
+
+    const result = try lowerSource(a, crabcc_umami_src, crabcc_umami_path);
+    try expectFile(result, "gen/nixos/sops.nix", golden_sops_nix);
+    try expectFile(result, "gen/nixos/host-resources.nix", golden_host_resources_nix);
+    try expectFile(result, "gen/nixos/services.nix", golden_services_nix);
+    try expectFile(result, "gen/caddy/ingress.nix", golden_caddy_ingress_nix);
+
+    // Every emitter crabcc-umami selects is ported -> it lowers completely,
+    // which is what promotes it to the harness's tier-1 full-tree diff -r.
+    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
+}
+
+test "lower: oci.containers reproduces live vakedc for browser-pool byte-for-byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 1390), browser_pool_src.len);
+    try testing.expectEqual(@as(usize, 1106), golden_oci_containers_nix.len);
+
+    const result = try lowerSource(a, browser_pool_src, browser_pool_path);
+    // Exercises the whole container vocabulary: memory GB->g and MB->m,
+    // --network, --health-cmd, author extraOptions verbatim and LAST, an OCI
+    // 3-part loopback bind (127.0.0.1:3030:3000), volumes, and an
+    // environmentFiles secret accessor rendered UNQUOTED
+    // (config.sops.secrets."...".path).
+    try expectFile(result, "gen/nixos/oci-containers.nix", golden_oci_containers_nix);
+    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
+}
+
+fn expectFile(result: lower.LowerResult, path: []const u8, want: []const u8) !void {
+    const got = fileContent(result, path) orelse {
+        std.debug.print("emitter produced no {s}\n", .{path});
+        return error.TestUnexpectedResult;
+    };
+    std.testing.expectEqualStrings(want, got) catch |e| {
+        std.debug.print("byte mismatch in {s}\n", .{path});
+        return e;
+    };
+}
+
+// The `create = false` hostResource filter (lower.py L1336) is a REPLICATED
+// vakedc BUG: `_lit(...) is not False` compares a STRING ("false") against the
+// bool False, so it is always true and `create = false` does NOT exclude the
+// resource -- contradicting the emitter's own docstring. Verified against the
+// reference on dev-cx53:
+//   >>> _lit({"lit":"bool","value":"false"})  -> 'false'   (a str)
+//   >>> 'false' is not False                  -> True
+// Reproduced bug-compatibly by default and reported, NOT fixed.
+test "lower: host.resources replicates vakedc's create=false filter bug" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\runtime app {
+        \\  systems = ["x86_64-linux"]
+        \\  hostResource db {
+        \\    kind = "postgresql"
+        \\    name = "appdb"
+        \\    create = false
+        \\  }
+        \\}
+        \\
+    ;
+    const result = try lowerSource(a, src, "t.vaked");
+    const got = fileContent(result, "gen/nixos/host-resources.nix") orelse {
+        std.debug.print("create=false wrongly EXCLUDED the resource -- the vakedc bug was 'fixed'; parity is broken\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    // Bug-compatible: it is still provisioned despite create = false.
+    try std.testing.expect(std.mem.indexOf(u8, got, "ensureDatabases = [ \"appdb\" ]") != null);
+}
