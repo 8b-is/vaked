@@ -637,7 +637,10 @@ fn regexDialectError(a: std.mem.Allocator, regex_literal: []const u8) error{OutO
         }
         if (c == '(') {
             if (i + 1 < n and body[i + 1] == '?') {
-                const kind: u8 = if (i + 2 < n) body[i + 2] else 0;
+                // rendered as a SLICE so a pattern ending in `(?` formats as
+                // an empty string, exactly like Python's `body[i+2:i+3]`
+                const kind_s: []const u8 = if (i + 2 < n) body[i + 2 .. i + 3] else "";
+                const kind: u8 = if (kind_s.len == 1) kind_s[0] else 0;
                 if (kind == '=' or kind == '!') {
                     return try std.fmt.allocPrint(a, "lookahead ((?{c}…)) is not in the bounded dialect", .{kind});
                 }
@@ -654,7 +657,7 @@ fn regexDialectError(a: std.mem.Allocator, regex_literal: []const u8) error{OutO
                     i += 3; // non-capturing group is fine
                     continue;
                 }
-                return try std.fmt.allocPrint(a, "extended group ((?{c}…)) is not in the bounded dialect", .{kind});
+                return try std.fmt.allocPrint(a, "extended group ((?{s}…)) is not in the bounded dialect", .{kind_s});
             }
             i += 1;
             continue;
@@ -686,6 +689,8 @@ const Rx = struct {
         class: Class,
         start,
         end,
+        wordb, // \b
+        nwordb, // \B
         empty,
     };
 
@@ -697,6 +702,8 @@ const Rx = struct {
         jmp: u32,
         assert_start,
         assert_end,
+        assert_wordb,
+        assert_nwordb,
         match,
     };
 
@@ -739,19 +746,28 @@ const Rx = struct {
 
         fn parsePiece(self: *ParseState) error{ OutOfMemory, BadRegex }!*const Node {
             const atom = try self.parseAtom();
-            const c = self.peek() orelse return atom;
+            const rep = (try self.parseQuantifier(atom)) orelse return atom;
+            // A trailing '?' makes the quantifier lazy (`a+?`, `a{1,2}?`).
+            // For pure acceptance (fullmatch yes/no) lazy ≡ greedy, so it is
+            // swallowed — it must NOT fall through as a literal '?' atom.
+            if (self.peek() == '?') self.i += 1;
+            return rep;
+        }
+
+        fn parseQuantifier(self: *ParseState, atom: *const Node) error{ OutOfMemory, BadRegex }!?*const Node {
+            const c = self.peek() orelse return null;
             switch (c) {
                 '?' => {
                     self.i += 1;
-                    return self.node(.{ .rep = .{ .child = atom, .min = 0, .max = 1 } });
+                    return try self.node(.{ .rep = .{ .child = atom, .min = 0, .max = 1 } });
                 },
                 '*' => {
                     self.i += 1;
-                    return self.node(.{ .rep = .{ .child = atom, .min = 0, .max = null } });
+                    return try self.node(.{ .rep = .{ .child = atom, .min = 0, .max = null } });
                 },
                 '+' => {
                     self.i += 1;
-                    return self.node(.{ .rep = .{ .child = atom, .min = 1, .max = null } });
+                    return try self.node(.{ .rep = .{ .child = atom, .min = 1, .max = null } });
                 },
                 '{' => {
                     // {m} | {m,n} | {m,} — anything else is a literal '{'
@@ -759,7 +775,7 @@ const Rx = struct {
                     self.i += 1;
                     const m = self.parseInt() orelse {
                         self.i = save;
-                        return atom;
+                        return null;
                     };
                     var max: ?u32 = m;
                     if (self.peek() == ',') {
@@ -768,12 +784,12 @@ const Rx = struct {
                     }
                     if (self.peek() != '}') {
                         self.i = save;
-                        return atom;
+                        return null;
                     }
                     self.i += 1;
-                    return self.node(.{ .rep = .{ .child = atom, .min = m, .max = max } });
+                    return try self.node(.{ .rep = .{ .child = atom, .min = m, .max = max } });
                 },
-                else => return atom,
+                else => return null,
             }
         }
 
@@ -828,7 +844,15 @@ const Rx = struct {
                         items[0] = item;
                         return self.node(.{ .class = .{ .negated = false, .items = items } });
                     }
-                    return self.node(.{ .char = escapedChar(e) });
+                    return switch (e) {
+                        'b' => self.node(.wordb),
+                        'B' => self.node(.nwordb),
+                        // under fullmatch semantics \A ≡ ^ and \Z ≡ $
+                        'A' => self.node(.start),
+                        'Z' => self.node(.end),
+                        'x' => self.node(.{ .char = try self.hexEscape() }),
+                        else => self.node(.{ .char = escapeChar(e) orelse return error.BadRegex }),
+                    };
                 },
                 ')' => return error.BadRegex,
                 else => {
@@ -859,7 +883,7 @@ const Rx = struct {
                         try items.append(self.a, item);
                         continue;
                     }
-                    lo = escapedChar(e);
+                    lo = try self.classEscapeChar(e);
                 } else {
                     lo = c;
                     self.i += 1;
@@ -873,11 +897,15 @@ const Rx = struct {
                         self.i += 1;
                         const e = self.peek() orelse return error.BadRegex;
                         self.i += 1;
-                        hi = escapedChar(e);
+                        hi = try self.classEscapeChar(e);
                     } else {
                         hi = hc;
                         self.i += 1;
                     }
+                    // Python rejects inverted ranges (`[z-a]` → re.error), and
+                    // the check-time caller skips on error — mirror that
+                    // instead of compiling a never-matching range.
+                    if (lo > hi) return error.BadRegex;
                     try items.append(self.a, .{ .range = .{ lo, hi } });
                 } else {
                     try items.append(self.a, .{ .range = .{ lo, lo } });
@@ -885,6 +913,24 @@ const Rx = struct {
             }
             self.i += 1; // closing ']'
             return .{ .negated = negated, .items = try items.toOwnedSlice(self.a) };
+        }
+
+        /// `\xHH` — exactly two hex digits, like Python (fewer → re.error).
+        fn hexEscape(self: *ParseState) error{BadRegex}!u8 {
+            if (self.i + 1 >= self.pat.len) return error.BadRegex;
+            const v = std.fmt.parseInt(u8, self.pat[self.i .. self.i + 2], 16) catch return error.BadRegex;
+            self.i += 2;
+            return v;
+        }
+
+        /// Char-valued escape INSIDE a character class: `\b` is backspace
+        /// there (Python semantics), `\xHH` is hex; the rest via escapeChar.
+        fn classEscapeChar(self: *ParseState, e: u8) error{BadRegex}!u8 {
+            return switch (e) {
+                'b' => 0x08,
+                'x' => try self.hexEscape(),
+                else => escapeChar(e) orelse error.BadRegex,
+            };
         }
     };
 
@@ -900,15 +946,26 @@ const Rx = struct {
         };
     }
 
-    fn escapedChar(c: u8) u8 {
+    /// Char-valued escapes shared by atom and class positions. Unknown
+    /// ASCII-letter escapes are reserved in Python (`re.error: bad escape`),
+    /// and `\1`-`\9` are backreferences — both return null → BadRegex → the
+    /// check-time caller skips, matching Python's silent re.error path.
+    /// Genuinely unsupported (also null): `\u`/`\U`/`\N` unicode escapes and
+    /// octal `\0oo` beyond bare `\0` — Python compiles these; a value checked
+    /// against such a pattern is skipped rather than mis-checked.
+    fn escapeChar(c: u8) ?u8 {
         return switch (c) {
             'n' => '\n',
             'r' => '\r',
             't' => '\t',
             'f' => 0x0c,
             'v' => 0x0b,
+            'a' => 0x07,
             '0' => 0,
-            else => c,
+            else => {
+                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '1' and c <= '9')) return null;
+                return c; // escaped metacharacter / punctuation → literal
+            },
         };
     }
 
@@ -936,6 +993,12 @@ const Rx = struct {
     }
 
     const max_rep_copies: u32 = 1024;
+    /// Total compiled-program cap. max_rep_copies bounds each repetition
+    /// LEVEL only; nested counted repetitions multiply (`((a{k}){k}){k}` is
+    /// k³ instructions), so the program size is capped too → BadRegex → the
+    /// check-time caller skips (Python's re handles such patterns; a value
+    /// checked against one is skipped rather than exhausting memory).
+    const max_insts: usize = 65536;
 
     const Compiler = struct {
         a: std.mem.Allocator,
@@ -945,14 +1008,21 @@ const Rx = struct {
             return @intCast(self.prog.items.len);
         }
 
+        fn push(self: *Compiler, inst: Inst) error{ OutOfMemory, BadRegex }!void {
+            if (self.prog.items.len >= max_insts) return error.BadRegex;
+            try self.prog.append(self.a, inst);
+        }
+
         fn emitNode(self: *Compiler, n: *const Node) error{ OutOfMemory, BadRegex }!void {
             switch (n.*) {
                 .empty => {},
-                .char => |c| try self.prog.append(self.a, .{ .char = c }),
-                .any => try self.prog.append(self.a, .any),
-                .class => |cls| try self.prog.append(self.a, .{ .class = cls }),
-                .start => try self.prog.append(self.a, .assert_start),
-                .end => try self.prog.append(self.a, .assert_end),
+                .char => |c| try self.push(.{ .char = c }),
+                .any => try self.push(.any),
+                .class => |cls| try self.push(.{ .class = cls }),
+                .start => try self.push(.assert_start),
+                .end => try self.push(.assert_end),
+                .wordb => try self.push(.assert_wordb),
+                .nwordb => try self.push(.assert_nwordb),
                 .cat => |seq| for (seq) |ch| try self.emitNode(ch),
                 .alt => |alts| {
                     var jmps: std.ArrayList(u32) = .empty;
@@ -961,11 +1031,11 @@ const Rx = struct {
                     while (i < alts.len) : (i += 1) {
                         if (i + 1 < alts.len) {
                             const sp = self.pc();
-                            try self.prog.append(self.a, .{ .split = .{ 0, 0 } });
+                            try self.push(.{ .split = .{ 0, 0 } });
                             self.prog.items[sp] = .{ .split = .{ self.pc(), 0 } };
                             try self.emitNode(alts[i]);
                             try jmps.append(self.a, self.pc());
-                            try self.prog.append(self.a, .{ .jmp = 0 });
+                            try self.push(.{ .jmp = 0 });
                             self.prog.items[sp].split[1] = self.pc();
                         } else {
                             try self.emitNode(alts[i]);
@@ -988,7 +1058,7 @@ const Rx = struct {
                         var j: u32 = r.min;
                         while (j < mx) : (j += 1) {
                             const sp = self.pc();
-                            try self.prog.append(self.a, .{ .split = .{ 0, 0 } });
+                            try self.push(.{ .split = .{ 0, 0 } });
                             self.prog.items[sp] = .{ .split = .{ self.pc(), 0 } };
                             try splits.append(self.a, sp);
                             try self.emitNode(r.child);
@@ -998,10 +1068,10 @@ const Rx = struct {
                     } else {
                         // greedy star: L1: split(L2, L3); L2: e; jmp L1; L3:
                         const l1 = self.pc();
-                        try self.prog.append(self.a, .{ .split = .{ 0, 0 } });
+                        try self.push(.{ .split = .{ 0, 0 } });
                         self.prog.items[l1] = .{ .split = .{ self.pc(), 0 } };
                         try self.emitNode(r.child);
-                        try self.prog.append(self.a, .{ .jmp = l1 });
+                        try self.push(.{ .jmp = l1 });
                         self.prog.items[l1].split[1] = self.pc();
                     }
                 },
@@ -1019,7 +1089,7 @@ const Rx = struct {
         if (ps.i != pat.len) return error.BadRegex;
         var comp = Compiler{ .a = a };
         try comp.emitNode(root);
-        try comp.prog.append(a, .match);
+        try comp.push(.match);
         const prog = comp.prog.items;
 
         // Pike VM without captures.
@@ -1028,7 +1098,7 @@ const Rx = struct {
         const on_c = try a.alloc(bool, prog.len);
         const on_n = try a.alloc(bool, prog.len);
         @memset(on_c, false);
-        try addThread(prog, &clist, on_c, 0, 0, s.len, a);
+        try addThread(prog, &clist, on_c, 0, s, 0, a);
         var pos: usize = 0;
         while (pos <= s.len) : (pos += 1) {
             var matched_here = false;
@@ -1041,37 +1111,49 @@ const Rx = struct {
                     },
                     .char => |c| {
                         if (pos < s.len and s[pos] == c)
-                            try addThread(prog, &nlist, on_n, pcv + 1, pos + 1, s.len, a);
+                            try addThread(prog, &nlist, on_n, pcv + 1, s, pos + 1, a);
                     },
                     .any => {
                         if (pos < s.len and s[pos] != '\n')
-                            try addThread(prog, &nlist, on_n, pcv + 1, pos + 1, s.len, a);
+                            try addThread(prog, &nlist, on_n, pcv + 1, s, pos + 1, a);
                     },
                     .class => |cls| {
                         if (pos < s.len and classMatch(cls, s[pos]))
-                            try addThread(prog, &nlist, on_n, pcv + 1, pos + 1, s.len, a);
+                            try addThread(prog, &nlist, on_n, pcv + 1, s, pos + 1, a);
                     },
                     else => {},
                 }
             }
             if (pos == s.len) return matched_here;
             std.mem.swap(std.ArrayList(u32), &clist, &nlist);
-            @memcpy(on_c, on_n);
         }
         return false;
     }
 
-    fn addThread(prog: []const Inst, list: *std.ArrayList(u32), seen: []bool, pcv: u32, pos: usize, len: usize, a: std.mem.Allocator) error{OutOfMemory}!void {
+    fn isWordChar(c: u8) bool {
+        return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+    }
+
+    /// Python `\b`: a word char on exactly one side of the position.
+    fn wordBoundary(s: []const u8, pos: usize) bool {
+        const before = pos > 0 and isWordChar(s[pos - 1]);
+        const after = pos < s.len and isWordChar(s[pos]);
+        return before != after;
+    }
+
+    fn addThread(prog: []const Inst, list: *std.ArrayList(u32), seen: []bool, pcv: u32, s: []const u8, pos: usize, a: std.mem.Allocator) error{OutOfMemory}!void {
         if (seen[pcv]) return;
         seen[pcv] = true;
         switch (prog[pcv]) {
-            .jmp => |t| try addThread(prog, list, seen, t, pos, len, a),
+            .jmp => |t| try addThread(prog, list, seen, t, s, pos, a),
             .split => |ts| {
-                try addThread(prog, list, seen, ts[0], pos, len, a);
-                try addThread(prog, list, seen, ts[1], pos, len, a);
+                try addThread(prog, list, seen, ts[0], s, pos, a);
+                try addThread(prog, list, seen, ts[1], s, pos, a);
             },
-            .assert_start => if (pos == 0) try addThread(prog, list, seen, pcv + 1, pos, len, a),
-            .assert_end => if (pos == len) try addThread(prog, list, seen, pcv + 1, pos, len, a),
+            .assert_start => if (pos == 0) try addThread(prog, list, seen, pcv + 1, s, pos, a),
+            .assert_end => if (pos == s.len) try addThread(prog, list, seen, pcv + 1, s, pos, a),
+            .assert_wordb => if (wordBoundary(s, pos)) try addThread(prog, list, seen, pcv + 1, s, pos, a),
+            .assert_nwordb => if (!wordBoundary(s, pos)) try addThread(prog, list, seen, pcv + 1, s, pos, a),
             else => try list.append(a, pcv),
         }
     }
@@ -1635,6 +1717,13 @@ fn enrichCollisions(c: *Checker, resolve_diags: []const Diagnostic, infos: []con
         // Match the resolve diagnostic to the Python-shape collision by the
         // later decl's byte range; unmatched ones (node collisions etc.) are
         // dropped — check.py does not emit them.
+        //
+        // TODO(check slice 2): collisions only resolve.zig detects — duplicate
+        // `node` names, decl-vs-node in one body, and children of a dropped
+        // duplicate body — are filtered here for check.py parity and are
+        // therefore invisible to every current CLI surface. Surface them via
+        // the future `parse`/`lower` subcommands, which consume resolve
+        // diagnostics directly instead of the check-shaped subset.
         for (infos) |info| {
             if (info.later.byte_start != d.byte_start or info.later.byte_end != d.byte_end) continue;
             const it = info.later;
@@ -1671,7 +1760,7 @@ fn enrichCollisions(c: *Checker, resolve_diags: []const Diagnostic, infos: []con
 // STABLE (Python list.sort is stable; ties keep emission order)
 // --------------------------------------------------------------------------- #
 
-fn diagLess(_: void, x: Diagnostic, y: Diagnostic) bool {
+pub fn diagLess(_: void, x: Diagnostic, y: Diagnostic) bool {
     const fo = std.mem.order(u8, x.file, y.file);
     if (fo != .eq) return fo == .lt;
     if (x.byte_start != y.byte_start) return x.byte_start < y.byte_start;

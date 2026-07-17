@@ -639,6 +639,112 @@ test "regex engine: bounded-dialect semantics" {
     try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/[^0-9]+/", "a1c"));
 }
 
+test "regex engine: lazy quantifiers accept like greedy (never literal '?')" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/a+?/", "aa"));
+    // regression: the trailing '?' must not match as a literal char
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/a+?/", "aa?"));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/a*?/", ""));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/a{1,2}?/", "aa"));
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/a{1,2}?/", "aaa"));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/a{2}?/", "aa"));
+}
+
+test "regex engine: word boundaries, \\A/\\Z anchors, hex and class escapes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/\\bfoo\\b/", "foo"));
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/foo\\B/", "foo"));
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/\\Bfoo/", "foo"));
+    // \b between word chars is not a boundary
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/fo\\bo/", "foo"));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/fo\\Bo/", "foo"));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/\\Afoo\\Z/", "foo"));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/a\\x41/", "aA"));
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/a\\x41/", "aB"));
+    // inside a class, \b is BACKSPACE (Python semantics)
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/[\\b]/", "\x08"));
+}
+
+test "regex engine: unsupported escapes and bad classes skip (null, like Python re.error)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // reserved ASCII-letter escape — re.error in Python too
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/\\q/", "q"));
+    // \uXXXX compiles in Python but is unsupported here → skip, never mis-check
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/\\uABCD/", "x"));
+    // inverted range — re.error in Python
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/[z-a]/", "x"));
+    // bare \x without two hex digits — re.error in Python
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/\\x4/", "x"));
+}
+
+test "regex engine: nested counted repetition is capped, sane nesting works" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // ~10^6 compiled instructions — must refuse (BadRegex → null), not OOM
+    try testing.expectEqual(@as(?bool, null), try check.regexFullMatch(a, "/((a{100}){100}){100}/", "aaa"));
+    try testing.expectEqual(@as(?bool, true), try check.regexFullMatch(a, "/(a{2}){2}/", "aaaa"));
+    try testing.expectEqual(@as(?bool, false), try check.regexFullMatch(a, "/(a{2}){2}/", "aaa"));
+}
+
+test "nested sibling collision: scopenote says 'sibling declarations'" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const diags = try runCheck(a,
+        \\runtime r {
+        \\  systems = ["one"]
+        \\  schema dup {
+        \\  }
+        \\  capability dup {
+        \\    grant x
+        \\  }
+        \\}
+        \\
+    );
+    try testing.expectEqual(@as(usize, 1), countCode(diags, "E-DECL-NAME-COLLISION"));
+    const d = firstWithCode(diags, "E-DECL-NAME-COLLISION").?;
+    try testing.expectEqualStrings("`capability dup` collides with `schema dup` (a different kind, same name): sibling declarations share a kind-agnostic graph id, so the later one is silently dropped — rename one", d.message);
+    try testing.expectEqual(@as(usize, 1), d.related.len);
+}
+
+test "collision inside a dropped duplicate body is filtered (check.py parity)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // resolve.zig reports TWO collisions here (the second `runtime dup` AND
+    // its inner `stream s`, whose kind-agnostic chain id dup/s already
+    // exists); check.py reports only the top-level one — the second
+    // runtime's body is a fresh sibling scope.
+    const diags = try runCheck(a,
+        \\runtime dup {
+        \\  systems = ["one"]
+        \\  stream s {
+        \\    source = a.b
+        \\    type = c.d
+        \\  }
+        \\}
+        \\
+        \\runtime dup {
+        \\  systems = ["one"]
+        \\  stream s {
+        \\    source = a.b
+        \\    type = c.d
+        \\  }
+        \\}
+        \\
+    );
+    try testing.expectEqual(@as(usize, 1), countCode(diags, "E-DECL-NAME-COLLISION"));
+    const d = firstWithCode(diags, "E-DECL-NAME-COLLISION").?;
+    try testing.expectEqualStrings("runtime dup", d.decl);
+}
+
 test "JSON serialization matches the golden field shape" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

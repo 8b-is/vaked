@@ -286,7 +286,7 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
         // Merged across files; already per-file sorted, re-sorted stably by
         // (file, byteStart, byteEnd, code) — single-file output is identical
         // to vakedc's ordering.
-        std.sort.insertion(lib_diag.Diagnostic, all.items, {}, jsonDiagLess);
+        std.sort.insertion(lib_diag.Diagnostic, all.items, {}, check_mod.diagLess);
         const doc = try check_mod.diagnosticsToJson(aa, all.items);
         try std.Io.File.stdout().writeStreamingAll(io, doc);
     }
@@ -296,11 +296,3 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !
 }
 
 const lib_diag = @import("lib").diagnostic;
-
-fn jsonDiagLess(_: void, x: lib_diag.Diagnostic, y: lib_diag.Diagnostic) bool {
-    const fo = std.mem.order(u8, x.file, y.file);
-    if (fo != .eq) return fo == .lt;
-    if (x.byte_start != y.byte_start) return x.byte_start < y.byte_start;
-    if (x.byte_end != y.byte_end) return x.byte_end < y.byte_end;
-    return std.mem.order(u8, x.code, y.code) == .lt;
-}
