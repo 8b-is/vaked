@@ -8,6 +8,7 @@ const check_mod = @import("check.zig");
 const resolve_mod = @import("resolve.zig");
 const emit_mod = @import("emit.zig");
 const lower_mod = @import("lower.zig");
+const passes_mod = @import("passes.zig");
 
 test {
     _ = @import("lexer_test.zig");
@@ -17,6 +18,7 @@ test {
     _ = @import("check_test.zig");
     _ = @import("emit_test.zig");
     _ = @import("lower_test.zig");
+    _ = @import("passes_test.zig");
 }
 
 test "fmtSource: check-mode change detection" {
@@ -70,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
         .check => |c| try runCheck(allocator, io, c),
         .parse => |p| try runParse(allocator, io, p),
         .lower => |l| try runLower(allocator, io, l),
+        .passes => |p| try runPasses(allocator, io, p),
         .cache => {
             const ls = try io.lockStderr(&.{}, null);
             defer io.unlockStderr();
@@ -87,6 +90,7 @@ pub fn main(init: std.process.Init) !void {
                 \\  parse     Parse a .vaked file into the LPG (canonical JSON)
                 \\  check     Type-check Vaked files (0011 stages 3-4)
                 \\  lower     Lower a checked .vaked file to artifacts (0012)
+                \\  passes    Run the MLIR-mirror pass pipeline (topology->WAL->AOT)
                 \\  help      Show this help message
                 \\  version   Show version
                 \\
@@ -110,6 +114,10 @@ pub fn main(init: std.process.Init) !void {
                 \\  --allow-partial   Write the tree even when the graph selects registry
                 \\                    targets this build has not ported yet. The result is
                 \\                    knowingly INCOMPLETE (differential harness only).
+                \\
+                \\passes options:
+                \\  --json            Emit the pipeline result as JSON to stdout
+                \\                    (workflows, diagnostics, artifacts, status)
                 \\
             );
         },
@@ -316,6 +324,81 @@ fn runParse(allocator: std.mem.Allocator, io: std.Io, opts: Args.ParseOptions) !
         defer io.unlockStderr();
         try stderrWriter(ls).print("vakedz: wrote {s} (graph.db deferred — no SQLite in the Zig stdlib)\n", .{json_path.?});
     }
+}
+
+/// `vakedz passes <file> [--json]` — the MLIR-mirror pass pipeline (0021-0024),
+/// port of `python3 -m vakedc passes` (`_cmd_passes`). With `--json` the
+/// structured document goes to stdout; otherwise human-readable diagnostics go
+/// to stderr.
+///
+/// Exit codes mirror `_cmd_passes` EXACTLY, and note they differ from `check`'s:
+/// a read error and a lex/parse error both exit 1 here (check exits 2), because
+/// `_cmd_passes` `return 1`s on both. Otherwise `1 if result.diagnostics else 0`.
+/// A usage error (no file) exits 2 — argparse's own contract.
+///
+/// `passes` runs parse_source + build_graph only — NO checker, so no builtin
+/// catalog is loaded and collision diagnostics are ignored (the keep-first
+/// graph is analysed), exactly like `_cmd_passes`.
+fn runPasses(allocator: std.mem.Allocator, io: std.Io, opts: Args.PassesOptions) !void {
+    const path = opts.file orelse {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).writeAll("vakedz passes: expected exactly one file\n");
+        std.process.exit(2);
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const source = readFileAlloc(aa, io, path) catch |err| {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).print("vakedz: cannot read {s}: {}\n", .{ path, err });
+        std.process.exit(1);
+    };
+    const items = switch (try check_mod.parseSource(aa, source, path)) {
+        .ok => |items| items,
+        .fail => |msg| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: {s}\n", .{msg});
+            std.process.exit(1);
+        },
+    };
+
+    var res = try resolve_mod.buildGraph(aa, items, path);
+    defer res.graph.deinit();
+
+    const wf_nodes = try passes_mod.workflowNodes(aa, &res.graph);
+    const result = try passes_mod.runPipeline(aa, &res.graph, wf_nodes, path);
+
+    if (opts.json) {
+        const text = try passes_mod.resultToJsonText(aa, result);
+        try std.Io.File.stdout().writeStreamingAll(io, text);
+    } else {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        const w = stderrWriter(ls);
+        for (result.diagnostics) |d| {
+            // Python `_format_diag` (__main__.py:112-114).
+            try w.print("{s}:{d}:{d}: {s}: {s}: {s} [{s}]\n", .{
+                d.file, d.line, d.col, @tagName(d.severity), d.code, d.message, d.decl,
+            });
+        }
+        if (result.diagnostics.len > 0) {
+            const n = result.diagnostics.len;
+            try w.print("vakedz: {d} diagnostic{s} in {s}\n", .{
+                n, if (n != 1) "s" else "", path,
+            });
+        } else {
+            try w.print("vakedz: passes OK — {d} workflow(s), {d} artifact(s)\n", .{
+                result.workflows.len, result.artifacts.len,
+            });
+        }
+    }
+
+    if (result.diagnostics.len > 0) std.process.exit(1);
 }
 
 /// The ImportReader the checker uses for `use`-imported files: reads via the

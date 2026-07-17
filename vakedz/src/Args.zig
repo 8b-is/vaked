@@ -45,11 +45,22 @@ pub const LowerOptions = struct {
     allow_partial: bool = false,
 };
 
+/// Mirrors `python3 -m vakedc passes <file> [--json]`. Like lower, vakedc's
+/// argparse declares a single positional `file`; `file` is null when none was
+/// given, which the driver reports as a usage error. NOTE: `passes` has NO
+/// `--builtins` flag — `_cmd_passes` runs parse_source + build_graph only,
+/// never the checker, so no builtin catalog is loaded.
+pub const PassesOptions = struct {
+    file: ?[]const u8 = null,
+    json: bool = false,
+};
+
 pub const Command = union(enum) {
     fmt: FmtOptions,
     parse: ParseOptions,
     check: CheckOptions,
     lower: LowerOptions,
+    passes: PassesOptions,
     cache,
     help,
     version,
@@ -173,6 +184,24 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
             .builtins = builtins,
             .allow_partial = allow_partial,
         } };
+    }
+    if (std.mem.eql(u8, first, "passes")) {
+        var file: ?[]const u8 = null;
+        var json = false;
+
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (std.mem.eql(u8, a, "--json")) {
+                json = true;
+            } else if (file == null) {
+                file = a;
+            }
+            // Extra positionals are ignored: argparse would error, but the
+            // single-file contract is enforced by the driver on `file`.
+        }
+
+        return .{ .passes = .{ .file = file, .json = json } };
     }
     if (std.mem.eql(u8, first, "cache")) return .cache;
 
