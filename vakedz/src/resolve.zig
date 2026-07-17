@@ -534,71 +534,19 @@ const Resolver = struct {
     // --- value -> props serialization (resolve.py `_value_to_props`) -------
 
     fn valueToProps(self: *Resolver, v: parser.Expr) error{OutOfMemory}!json.Value {
-        switch (v) {
-            .literal => |lit| {
-                const obj = try self.a.alloc(json.Value.Entry, 2);
-                obj[0] = .{ .key = "lit", .value = .{ .string = @tagName(lit.kind) } };
-                obj[1] = .{ .key = "value", .value = .{ .string = lit.value } };
-                return .{ .object = obj };
-            },
-            .list => |items| {
-                const arr = try self.a.alloc(json.Value, items.len);
-                for (items, 0..) |it, i| arr[i] = try self.valueToProps(it);
-                return .{ .array = arr };
-            },
-            .record => |entries| {
-                const obj = try self.a.alloc(json.Value.Entry, 1);
-                obj[0] = .{ .key = "record", .value = try self.recordToProps(entries) };
-                return .{ .object = obj };
-            },
-            .app => |ap| {
-                var n: usize = 1;
-                if (ap.args != null) n += 1;
-                if (ap.record != null) n += 1;
-                const obj = try self.a.alloc(json.Value.Entry, n);
-                obj[0] = .{ .key = "ref", .value = .{ .string = try ap.ref.dotted(self.a) } };
-                var i: usize = 1;
-                if (ap.args) |args| {
-                    const arr = try self.a.alloc(json.Value, args.len);
-                    for (args, 0..) |arg, j| arr[j] = try self.valueToProps(arg);
-                    obj[i] = .{ .key = "args", .value = .{ .array = arr } };
-                    i += 1;
-                }
-                if (ap.record) |entries| {
-                    obj[i] = .{ .key = "record", .value = try self.recordToProps(entries) };
-                }
-                return .{ .object = obj };
-            },
-        }
+        return valueToPropsAlloc(self.a, v);
     }
 
     fn recordToProps(self: *Resolver, entries: []const parser.RecordEntry) error{OutOfMemory}!json.Value {
-        const arr = try self.a.alloc(json.Value, entries.len);
-        for (entries, 0..) |e, i| arr[i] = try self.entryToProps(e);
-        return .{ .array = arr };
+        return recordToPropsAlloc(self.a, entries);
     }
 
     fn entryToProps(self: *Resolver, e: parser.RecordEntry) error{OutOfMemory}!json.Value {
-        switch (e) {
-            .assign => |asn| {
-                const obj = try self.a.alloc(json.Value.Entry, 3);
-                obj[0] = .{ .key = "assign", .value = .{ .string = asn.target } };
-                obj[1] = .{ .key = "op", .value = .{ .string = asn.op } };
-                obj[2] = .{ .key = "value", .value = try self.valueToProps(asn.value.*) };
-                return .{ .object = obj };
-            },
-            .inherit => |names| {
-                const obj = try self.a.alloc(json.Value.Entry, 1);
-                obj[0] = .{ .key = "inherit", .value = try self.stringArray(names) };
-                return .{ .object = obj };
-            },
-        }
+        return entryToPropsAlloc(self.a, e);
     }
 
     fn stringArray(self: *Resolver, names: []const []const u8) error{OutOfMemory}!json.Value {
-        const arr = try self.a.alloc(json.Value, names.len);
-        for (names, 0..) |nm, i| arr[i] = .{ .string = nm };
-        return .{ .array = arr };
+        return stringArrayAlloc(self.a, names);
     }
 
     fn fieldToProps(self: *Resolver, f: parser.FieldDecl) error{OutOfMemory}!json.Value {
@@ -669,6 +617,83 @@ const Resolver = struct {
         return .{ .array = arr };
     }
 };
+
+// --- value -> props serialization, as free functions of the allocator ------
+//
+// resolve.py `_value_to_props` and friends. Factored out of `Resolver` (whose
+// methods only ever threaded `self.a` through, and now delegate here) so the
+// lowering driver's `enrich_graph` pass can reuse the EXACT same projection —
+// vakedc does the same thing via `from .resolve import _value_to_props`.
+// Behavior is unchanged: byte-for-byte the same props as before the split.
+
+/// resolve.py `_value_to_props`.
+pub fn valueToPropsAlloc(a: std.mem.Allocator, v: parser.Expr) error{OutOfMemory}!json.Value {
+    switch (v) {
+        .literal => |lit| {
+            const obj = try a.alloc(json.Value.Entry, 2);
+            obj[0] = .{ .key = "lit", .value = .{ .string = @tagName(lit.kind) } };
+            obj[1] = .{ .key = "value", .value = .{ .string = lit.value } };
+            return .{ .object = obj };
+        },
+        .list => |items| {
+            const arr = try a.alloc(json.Value, items.len);
+            for (items, 0..) |it, i| arr[i] = try valueToPropsAlloc(a, it);
+            return .{ .array = arr };
+        },
+        .record => |entries| {
+            const obj = try a.alloc(json.Value.Entry, 1);
+            obj[0] = .{ .key = "record", .value = try recordToPropsAlloc(a, entries) };
+            return .{ .object = obj };
+        },
+        .app => |ap| {
+            var n: usize = 1;
+            if (ap.args != null) n += 1;
+            if (ap.record != null) n += 1;
+            const obj = try a.alloc(json.Value.Entry, n);
+            obj[0] = .{ .key = "ref", .value = .{ .string = try ap.ref.dotted(a) } };
+            var i: usize = 1;
+            if (ap.args) |args| {
+                const arr = try a.alloc(json.Value, args.len);
+                for (args, 0..) |arg, j| arr[j] = try valueToPropsAlloc(a, arg);
+                obj[i] = .{ .key = "args", .value = .{ .array = arr } };
+                i += 1;
+            }
+            if (ap.record) |entries| {
+                obj[i] = .{ .key = "record", .value = try recordToPropsAlloc(a, entries) };
+            }
+            return .{ .object = obj };
+        },
+    }
+}
+
+fn recordToPropsAlloc(a: std.mem.Allocator, entries: []const parser.RecordEntry) error{OutOfMemory}!json.Value {
+    const arr = try a.alloc(json.Value, entries.len);
+    for (entries, 0..) |e, i| arr[i] = try entryToPropsAlloc(a, e);
+    return .{ .array = arr };
+}
+
+fn entryToPropsAlloc(a: std.mem.Allocator, e: parser.RecordEntry) error{OutOfMemory}!json.Value {
+    switch (e) {
+        .assign => |asn| {
+            const obj = try a.alloc(json.Value.Entry, 3);
+            obj[0] = .{ .key = "assign", .value = .{ .string = asn.target } };
+            obj[1] = .{ .key = "op", .value = .{ .string = asn.op } };
+            obj[2] = .{ .key = "value", .value = try valueToPropsAlloc(a, asn.value.*) };
+            return .{ .object = obj };
+        },
+        .inherit => |names| {
+            const obj = try a.alloc(json.Value.Entry, 1);
+            obj[0] = .{ .key = "inherit", .value = try stringArrayAlloc(a, names) };
+            return .{ .object = obj };
+        },
+    }
+}
+
+fn stringArrayAlloc(a: std.mem.Allocator, names: []const []const u8) error{OutOfMemory}!json.Value {
+    const arr = try a.alloc(json.Value, names.len);
+    for (names, 0..) |nm, i| arr[i] = .{ .string = nm };
+    return .{ .array = arr };
+}
 
 /// Build the LPG for one parsed file. `filename` is used as-is for
 /// provenance/diagnostic `file` fields; its basename derives the stable node
