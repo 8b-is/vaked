@@ -60,12 +60,12 @@ runtime "v0p5-demo" {
   mesh testMesh {
     node nodeA {
       role = "producer"
-      capabilities = [fs.repo_ro]
+      capabilities = [fs.repo_rw, process.spawn_sandboxed]
     }
 
     node nodeB {
       role = "processor"
-      capabilities = [fs.repo_rw]
+      capabilities = [fs.repo_ro, process.spawn_sandboxed]
     }
 
     node nodeC {

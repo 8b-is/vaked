@@ -1343,6 +1343,15 @@ def _ref_fields():
     return _DEPENDS_FIELDS | {"fibers", "budget", "runclass"}
 
 
+# v0.5 topology kinds whose refs name runtime-topology entities (mesh nodes /
+# edges / trust policies), not build-time sibling decls.  Like the D1 deferral
+# for `artifacts.*` / `graph.*`, closed-world resolution for these needs a
+# topology registry that does not exist yet — their subtrees are skipped by the
+# depends-ref walk (a probe's `from = nodeA` must not be resolved against the
+# runtime's decl roster).
+_TOPOLOGY_DEFERRED_KINDS = frozenset(("trust", "quorum", "probe"))
+
+
 def _walk_depends_refs(decl, out):
     """Collect ``(ref, field_name, owner_decl)`` for every bare ref appearing in a
     ref-bearing field within ``decl``'s subtree."""
@@ -1352,7 +1361,7 @@ def _walk_depends_refs(decl, out):
         if isinstance(st, P.Assignment) and st.target in fields:
             for r in _refs_in_value(st.value):
                 out.append((r, st.target, decl))
-        if isinstance(st, P.Decl):
+        if isinstance(st, P.Decl) and st.kind not in _TOPOLOGY_DEFERRED_KINDS:
             _walk_depends_refs(st, out)
 
 
