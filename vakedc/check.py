@@ -1011,6 +1011,13 @@ def _conform_decl(decl, schema: SchemaSpec, registry, smap, file, diags):
         # matches (regex) — applies to scalar string/path values
         for r in f.refinements:
             if r[0] == "matches":
+                # 0011 §3.5: a pattern the bounded-dialect validator rejected
+                # was already reported at load time (E-SCHEMA-BAD-REGEX); the
+                # matches-constraint is undefined on it, so do not ALSO
+                # evaluate it (double-reporting E-CONSTRAINT-MATCHES against
+                # an out-of-dialect pattern like /(a)\1/).
+                if _regex_dialect_error(r[1]) is not None:
+                    continue
                 vspan = (smap.field_value_span(ds, de, fname) if smap else None) or decl_span
                 _check_matches(vprop, r[1], f, decl, file, diags, vspan)
 
