@@ -4,12 +4,14 @@ const Args = @import("Args.zig");
 const fmt_mod = @import("Fmt.zig");
 const lex = @import("lexer.zig");
 const parser_mod = @import("parser.zig");
+const check_mod = @import("check.zig");
 
 test {
     _ = @import("lexer_test.zig");
     _ = @import("parser_test.zig");
     _ = @import("fmt_test.zig");
     _ = @import("resolve_test.zig");
+    _ = @import("check_test.zig");
 }
 
 test "fmtSource: check-mode change detection" {
@@ -60,7 +62,8 @@ pub fn main(init: std.process.Init) !void {
     const cmd = Args.parse(allocator, args);
     switch (cmd) {
         .fmt => |f| try runFmt(allocator, io, f),
-        .parse, .check, .lower, .cache => {
+        .check => |c| try runCheck(allocator, io, c),
+        .parse, .lower, .cache => {
             const ls = try io.lockStderr(&.{}, null);
             defer io.unlockStderr();
             try stderrWriter(ls).print("vakedz: {s} not yet implemented\n", .{@tagName(cmd)});
@@ -74,12 +77,17 @@ pub fn main(init: std.process.Init) !void {
                 \\
                 \\commands:
                 \\  fmt       Format Vaked source files
+                \\  check     Type-check Vaked files (0011 stages 3-4)
                 \\  help      Show this help message
                 \\  version   Show version
                 \\
                 \\fmt options:
                 \\  --check    Exit 1 if any file would change (CI gate)
                 \\  --stdout   Print formatted result to stdout
+                \\
+                \\check options:
+                \\  --json            Emit diagnostics as canonical JSON to stdout
+                \\  --builtins PATH   Builtin catalog (default: vaked/schema/builtins.vaked)
                 \\
             );
         },
@@ -193,4 +201,106 @@ fn runFmt(allocator: std.mem.Allocator, io: std.Io, opts: Args.FmtOptions) !void
     // exit 2: lex/parse/IO errors; exit 1: --check found unformatted files
     if (any_error) std.process.exit(2);
     if (opts.check and any_changed) std.process.exit(1);
+}
+
+/// `vakedz check <files...> [--json] [--builtins PATH]` — 0011 checker,
+/// slice-1 rule set (see check.zig module doc). Human-readable diagnostics go
+/// to stderr; `--json` prints one sorted canonical-JSON diagnostics document
+/// (all files merged) to stdout, matching vakedc's field names. Exit codes:
+/// 0 clean, 1 error-severity diagnostics present, 2 usage / read / parse
+/// error (mirrors `python3 -m vakedc check`).
+fn runCheck(allocator: std.mem.Allocator, io: std.Io, opts: Args.CheckOptions) !void {
+    if (opts.paths.len == 0) {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).writeAll("vakedz check: no files specified\n");
+        std.process.exit(2);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Load + parse the builtins catalog once (check.py `load_builtins`).
+    const b_path = opts.builtins orelse "vaked/schema/builtins.vaked";
+    const b_src = readFileAlloc(aa, io, b_path) catch |err| {
+        const ls = try io.lockStderr(&.{}, null);
+        defer io.unlockStderr();
+        try stderrWriter(ls).print("vakedz: cannot read builtins {s}: {}\n", .{ b_path, err });
+        std.process.exit(2);
+    };
+    const b_items = switch (try check_mod.parseSource(aa, b_src, b_path)) {
+        .ok => |items| items,
+        .fail => |msg| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: builtins catalog failed to parse: {s}\n", .{msg});
+            std.process.exit(2);
+        },
+    };
+    const builtins = check_mod.Builtins{ .items = b_items, .src = b_src, .file = b_path };
+
+    var all: std.ArrayList(lib_diag.Diagnostic) = .empty;
+    var hard_fail = false;
+    var any_error_sev = false;
+
+    for (opts.paths) |path| {
+        const source = readFileAlloc(aa, io, path) catch |err| {
+            const ls = try io.lockStderr(&.{}, null);
+            defer io.unlockStderr();
+            try stderrWriter(ls).print("vakedz: cannot read {s}: {}\n", .{ path, err });
+            hard_fail = true;
+            continue;
+        };
+        switch (try check_mod.checkSource(aa, source, path, builtins)) {
+            .fail => |msg| {
+                const ls = try io.lockStderr(&.{}, null);
+                defer io.unlockStderr();
+                try stderrWriter(ls).print("vakedz: {s}\n", .{msg});
+                hard_fail = true;
+            },
+            .ok => |diags| {
+                for (diags) |d| {
+                    if (d.severity == .@"error") any_error_sev = true;
+                }
+                if (opts.json) {
+                    try all.appendSlice(aa, diags);
+                } else {
+                    const ls = try io.lockStderr(&.{}, null);
+                    defer io.unlockStderr();
+                    const w = stderrWriter(ls);
+                    for (diags) |d| {
+                        try w.print("{s}:{d}:{d}: {s}: {s}: {s} [{s}]\n", .{ d.file, d.line, d.col, @tagName(d.severity), d.code, d.message, d.decl });
+                    }
+                    if (diags.len > 0) {
+                        try w.print("vakedz: {d} diagnostic{s} in {s}\n", .{ diags.len, if (diags.len != 1) "s" else "", path });
+                    } else {
+                        try w.print("vakedz: {s} — no diagnostics\n", .{path});
+                    }
+                }
+            },
+        }
+    }
+
+    if (opts.json) {
+        // Merged across files; already per-file sorted, re-sorted stably by
+        // (file, byteStart, byteEnd, code) — single-file output is identical
+        // to vakedc's ordering.
+        std.sort.insertion(lib_diag.Diagnostic, all.items, {}, jsonDiagLess);
+        const doc = try check_mod.diagnosticsToJson(aa, all.items);
+        try std.Io.File.stdout().writeStreamingAll(io, doc);
+    }
+
+    if (hard_fail) std.process.exit(2);
+    if (any_error_sev) std.process.exit(1);
+}
+
+const lib_diag = @import("lib").diagnostic;
+
+fn jsonDiagLess(_: void, x: lib_diag.Diagnostic, y: lib_diag.Diagnostic) bool {
+    const fo = std.mem.order(u8, x.file, y.file);
+    if (fo != .eq) return fo == .lt;
+    if (x.byte_start != y.byte_start) return x.byte_start < y.byte_start;
+    if (x.byte_end != y.byte_end) return x.byte_end < y.byte_end;
+    return std.mem.order(u8, x.code, y.code) == .lt;
 }

@@ -7,10 +7,18 @@ pub const FmtOptions = struct {
     stdout: bool = false,
 };
 
+pub const CheckOptions = struct {
+    paths: []const []const u8,
+    json: bool = false,
+    /// Overrides the builtin catalog path (default:
+    /// vaked/schema/builtins.vaked relative to the CWD).
+    builtins: ?[]const u8 = null,
+};
+
 pub const Command = union(enum) {
     fmt: FmtOptions,
     parse,
-    check,
+    check: CheckOptions,
     lower,
     cache,
     help,
@@ -18,7 +26,6 @@ pub const Command = union(enum) {
 };
 
 pub fn parse(allocator: Allocator, args: []const []const u8) Command {
-    _ = allocator;
     if (args.len == 0) return .help;
 
     const first = args[0];
@@ -54,7 +61,30 @@ pub fn parse(allocator: Allocator, args: []const []const u8) Command {
         } };
     }
     if (std.mem.eql(u8, first, "parse")) return .parse;
-    if (std.mem.eql(u8, first, "check")) return .check;
+    if (std.mem.eql(u8, first, "check")) {
+        var json = false;
+        var builtins: ?[]const u8 = null;
+        var paths = std.ArrayList([]const u8).empty;
+
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const a = args[i];
+            if (std.mem.eql(u8, a, "--json")) {
+                json = true;
+            } else if (std.mem.eql(u8, a, "--builtins") and i + 1 < args.len) {
+                i += 1;
+                builtins = args[i];
+            } else {
+                paths.append(allocator, a) catch return .help;
+            }
+        }
+
+        return .{ .check = .{
+            .paths = paths.toOwnedSlice(allocator) catch return .help,
+            .json = json,
+            .builtins = builtins,
+        } };
+    }
     if (std.mem.eql(u8, first, "lower")) return .lower;
     if (std.mem.eql(u8, first, "cache")) return .cache;
 
