@@ -42,6 +42,22 @@ const graphmod = lib.graph;
 const spanmod = lib.span;
 const parser = @import("parser.zig");
 const resolve_mod = @import("resolve.zig");
+/// `stepsEdges` is a port of lower.py `_workflow_steps_edges`, which LIVES in
+/// lower.py — `passes/pass01_topology.py:16` does `from vakedc.lower import
+/// _workflow_steps_edges`. The Zig port inverted that: it lives in passes.zig,
+/// which already imports lower.zig for `runtimeView`. Importing it back makes
+/// lower <-> passes mutually importing.
+///
+/// Zig resolves file imports lazily, so the cycle compiles and every test
+/// passes; it is nonetheless the WRONG direction, and it is imported rather
+/// than copied because a third copy of this helper is strictly worse (#386
+/// already tracks childrenOf/nodesSorted/getProp/litOf being duplicated across
+/// these two files). See the report's #386 note for the recommended fix:
+/// either move `stepsEdges` + `Edge` down into lower.zig so passes.zig imports
+/// them (mirroring Python exactly, and killing the cycle), or lift all the
+/// shared graph projections into one module. Not done here because passes.zig
+/// has a live owner mid-flight.
+const passes_mod = @import("passes.zig");
 
 const Allocator = std.mem.Allocator;
 const Error = error{OutOfMemory};
@@ -1392,10 +1408,17 @@ const ZigVal = union(enum) {
     boolean: bool,
     none,
     array: []const ZigVal,
+    /// A Python `_Ordered`: rendered MULTI-LINE at a 2-space indent.
     object: []const ZigPair,
+    /// A plain Python `dict` (NOT `_Ordered`). `_emit_zig_value` has no dict
+    /// branch, so it falls through to `json.dumps(val, ensure_ascii=False)` —
+    /// ONE LINE, DEFAULT separators (`{"a": 1}`, not `{"a":1}`), insertion
+    /// order. This is what `emit_trust_config` builds: its trusts/quorums/
+    /// probes are plain dicts inside a list, so `gen/trust.json` renders each
+    /// entry inline. Getting this wrong yields a valid-but-wrong pretty tree.
+    plain_object: []const ZigPair,
     /// A props subtree that `_scalar_prop` returned unchanged (e.g. a nested
-    /// `record`). Python falls through to `json.dumps(val, ensure_ascii=False)`
-    /// with DEFAULT separators — `{"a": 1}`, not `{"a":1}`.
+    /// `record`). Same `json.dumps` default-separator fall-through.
     passthrough: json.Value,
 };
 
@@ -1490,6 +1513,38 @@ fn emitZigValue(a: Allocator, val: ZigVal, level: usize, out: *std.ArrayListUnma
             for (arr, 0..) |x, i| {
                 if (i > 0) try out.appendSlice(a, ", ");
                 try emitZigValue(a, x, level + 1, out);
+            }
+            try out.append(a, ']');
+        },
+        .raw => |s| try out.appendSlice(a, s),
+        .string => |s| try out.appendSlice(a, try jsonScalar(a, .{ .string = s })),
+        .boolean => |b| try out.appendSlice(a, if (b) "true" else "false"),
+        .none => try out.appendSlice(a, "null"),
+        .plain_object => try emitZigValueDumps(a, val, out),
+        .passthrough => |pv| try jsonDumpsDefault(a, pv, out),
+    }
+}
+
+/// `json.dumps(val, ensure_ascii=False)` over a ZigVal: one line, DEFAULT
+/// separators, insertion order. The renderer `_emit_zig_value` falls back to
+/// for any value that is not an `_Ordered` or a list.
+fn emitZigValueDumps(a: Allocator, val: ZigVal, out: *std.ArrayListUnmanaged(u8)) Error!void {
+    switch (val) {
+        .plain_object, .object => |pairs| {
+            try out.append(a, '{');
+            for (pairs, 0..) |p, i| {
+                if (i > 0) try out.appendSlice(a, ", ");
+                try out.appendSlice(a, try jsonScalar(a, .{ .string = p.key }));
+                try out.appendSlice(a, ": ");
+                try emitZigValueDumps(a, p.val, out);
+            }
+            try out.append(a, '}');
+        },
+        .array => |arr| {
+            try out.append(a, '[');
+            for (arr, 0..) |x, i| {
+                if (i > 0) try out.appendSlice(a, ", ");
+                try emitZigValueDumps(a, x, out);
             }
             try out.append(a, ']');
         },
@@ -2468,6 +2523,411 @@ pub fn emitOciContainers(a: Allocator, g: *const graphmod.Graph, source_file: []
 }
 
 // --------------------------------------------------------------------------- //
+// Emitters: the runtime plane (#18/#24/#27) — eventd.config / trust.config /
+// memory.store / workflow.spec. All presence-gated: a runtime declaring no
+// memory/workflow/trust emits none of them, keeping earlier fixture sets
+// byte-identical. JSON layout via emitZigJson (deterministic order).
+//
+// NOTE these DO use `_coerce_number` (unlike the NixOS cohort, which renders
+// numbers verbatim via `_nix_literal`): trust.score is a Float and quorum.min
+// an Int, both coerced then rendered by json.dumps. See the Python-derived
+// table in lower_test.zig — this is the emitter family where the original v0.5
+// number bugs lived.
+// --------------------------------------------------------------------------- //
+
+/// lower.py `_eventd_log_path`: the per-runtime hash-chained log path.
+fn eventdLogPath(a: Allocator, rv: RuntimeView) Error![]const u8 {
+    return std.fmt.allocPrint(a, "var/lib/{s}/eventd/log.jsonl", .{rv.runtime.name});
+}
+
+/// lower.py `emit_eventd_config` (#18): `gen/eventd.json`, the per-runtime log
+/// location + boot contract. Selected when the runtime declares any
+/// memory/workflow (the log's in-language consumers).
+pub fn emitEventdConfig(a: Allocator, g: *const graphmod.Graph, source_file: []const u8) Error!Emitted {
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    const rt = rv.runtime;
+    const rt_decl = try std.fmt.allocPrint(a, "runtime {s}", .{rt.name});
+
+    const pairs = try a.alloc(ZigPair, 5);
+    pairs[0] = .{ .key = "_generated", .val = .{ .string = try header(a, sf, rt_decl) } };
+    pairs[1] = .{ .key = "log", .val = .{ .string = try eventdLogPath(a, rv) } };
+    pairs[2] = .{ .key = "format", .val = .{ .string = "jsonl-hashchain-v1" } };
+    pairs[3] = .{ .key = "verify_on_boot", .val = .{ .boolean = true } };
+    pairs[4] = .{ .key = "writer", .val = .{ .string = "agent-supervisord" } };
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/eventd.json", .content = try emitZigJson(a, .{ .object = pairs }) };
+    const entries = try a.alloc(ProvEntry, 1);
+    entries[0] = .{
+        .artifact = "gen/eventd.json",
+        .region = null,
+        .source_file = sf,
+        .decl = rt_decl,
+        .span = rt.provenance.?.span,
+        .emitter = "eventd.config",
+        .inputs_projection = try nodeProjection(a, rt),
+    };
+    return .{ .files = files, .entries = entries };
+}
+
+/// lower.py `emit_trust_config` (v0.5): `gen/trust.json` — the trust/quorum/
+/// probe topology the runtime supervisor loads to seed the sentinel subsystem,
+/// consensus engine, and compaction guard.
+///
+/// Each entry is a PLAIN dict inside a list, so it renders INLINE with
+/// json.dumps default separators (see `ZigVal.plain_object`).
+pub fn emitTrustConfig(a: Allocator, g: *const graphmod.Graph, source_file: []const u8) Error!Emitted {
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    const rt = rv.runtime;
+    const rt_decl = try std.fmt.allocPrint(a, "runtime {s}", .{rt.name});
+
+    var trusts: std.ArrayListUnmanaged(ZigVal) = .empty;
+    for (rv.trusts) |t| {
+        var e: std.ArrayListUnmanaged(ZigPair) = .empty;
+        try e.append(a, .{ .key = "name", .val = .{ .string = t.name } });
+        // number literals are stored in string form — coerce like fps/min.
+        if (litOf(getProp(t.props, "score"))) |score| {
+            try e.append(a, .{ .key = "score", .val = .{ .raw = try coerceNumberStr(a, score) } });
+        }
+        if (litOf(getProp(t.props, "half_life"))) |hl| {
+            try e.append(a, .{ .key = "half_life", .val = .{ .string = hl } });
+        }
+        if (refOf(getProp(t.props, "delegate"))) |d| {
+            try e.append(a, .{ .key = "delegate", .val = .{ .string = d } });
+        }
+        if (litOf(getProp(t.props, "taint_as"))) |ta| {
+            // Python: `entry["taint_as"] = taint_as == "true"` -> a real bool.
+            try e.append(a, .{ .key = "taint_as", .val = .{ .boolean = std.mem.eql(u8, ta, "true") } });
+        }
+        try trusts.append(a, .{ .plain_object = try e.toOwnedSlice(a) });
+    }
+
+    var quorums: std.ArrayListUnmanaged(ZigVal) = .empty;
+    for (rv.quorums) |q| {
+        var e: std.ArrayListUnmanaged(ZigPair) = .empty;
+        try e.append(a, .{ .key = "name", .val = .{ .string = q.name } });
+        if (litOf(getProp(q.props, "min"))) |m| {
+            try e.append(a, .{ .key = "min", .val = .{ .raw = try coerceNumberStr(a, m) } });
+        }
+        if (getProp(q.props, "over")) |over| {
+            // Python iterates `over` directly: a non-list would raise, and the
+            // grammar only admits a list here.
+            var xs: std.ArrayListUnmanaged(ZigVal) = .empty;
+            switch (over) {
+                .array => |arr| for (arr) |x| {
+                    if (refOf(x)) |r| try xs.append(a, .{ .string = r });
+                },
+                else => {},
+            }
+            try e.append(a, .{ .key = "over", .val = .{ .array = try xs.toOwnedSlice(a) } });
+        }
+        if (getProp(q.props, "timeout")) |t| {
+            // `entry["timeout"] = _lit(timeout)` — a non-literal yields None,
+            // which json.dumps renders as null (the key is still emitted).
+            const lv = litOf(t);
+            try e.append(a, .{ .key = "timeout", .val = if (lv) |s| .{ .string = s } else .none });
+        }
+        // on_failure is ref-valued per the grammar; tolerate a literal on
+        // unchecked graphs (Python: `_ref(...) or _lit(...)`).
+        const on_failure = refOf(getProp(q.props, "on_failure")) orelse litOf(getProp(q.props, "on_failure"));
+        if (on_failure) |of| {
+            try e.append(a, .{ .key = "on_failure", .val = .{ .string = of } });
+        }
+        try quorums.append(a, .{ .plain_object = try e.toOwnedSlice(a) });
+    }
+
+    var probes: std.ArrayListUnmanaged(ZigVal) = .empty;
+    for (rv.probes) |p| {
+        var e: std.ArrayListUnmanaged(ZigPair) = .empty;
+        try e.append(a, .{ .key = "name", .val = .{ .string = p.name } });
+        // `on_result` (an inline record/Block) is deliberately NOT projected:
+        // §5.2 configs carry scalars/refs only.
+        for ([_][]const u8{ "from", "to", "via", "with" }) |fld| {
+            if (refOf(getProp(p.props, fld))) |r| {
+                try e.append(a, .{ .key = fld, .val = .{ .string = r } });
+            }
+        }
+        try probes.append(a, .{ .plain_object = try e.toOwnedSlice(a) });
+    }
+
+    const pairs = try a.alloc(ZigPair, 4);
+    pairs[0] = .{ .key = "_generated", .val = .{ .string = try header(a, sf, rt_decl) } };
+    pairs[1] = .{ .key = "trusts", .val = .{ .array = try trusts.toOwnedSlice(a) } };
+    pairs[2] = .{ .key = "quorums", .val = .{ .array = try quorums.toOwnedSlice(a) } };
+    pairs[3] = .{ .key = "probes", .val = .{ .array = try probes.toOwnedSlice(a) } };
+
+    const files = try a.alloc(File, 1);
+    files[0] = .{ .path = "gen/trust.json", .content = try emitZigJson(a, .{ .object = pairs }) };
+    const entries = try a.alloc(ProvEntry, 1);
+    entries[0] = .{
+        .artifact = "gen/trust.json",
+        .region = null,
+        .source_file = sf,
+        .decl = rt_decl,
+        .span = rt.provenance.?.span,
+        .emitter = "trust.config",
+        .inputs_projection = try nodeProjection(a, rt),
+    };
+    return .{ .files = files, .entries = entries };
+}
+
+/// lower.py `emit_memory_store` (#24, 0014): one `gen/memory/<name>.json` per
+/// memory decl — mined source, distiller, fold partition (scope), retention,
+/// recall artifacts, and the eventd log the entries ride on.
+pub fn emitMemoryStore(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    var files: std.ArrayListUnmanaged(File) = .empty;
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    for (nodes) |mem| {
+        var pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
+        try pairs.append(a, .{
+            .key = "_generated",
+            .val = .{ .string = try header(a, sf, try std.fmt.allocPrint(a, "memory {s}", .{mem.name})) },
+        });
+        // source : Stream<T> | List<Stream<T>> — BOTH forms are schema-legal and
+        // the list form must survive into the config (memoryd mines every named
+        // stream). An empty resolved list emits NO `source` key at all.
+        const src_prop = getProp(mem.props, "source");
+        var handled_list = false;
+        if (src_prop) |sp| switch (sp) {
+            .array => |arr| {
+                handled_list = true;
+                var xs: std.ArrayListUnmanaged(ZigVal) = .empty;
+                for (arr) |x| {
+                    if (refOf(x)) |r| try xs.append(a, .{ .string = r });
+                }
+                if (xs.items.len > 0) {
+                    try pairs.append(a, .{ .key = "source", .val = .{ .array = try xs.toOwnedSlice(a) } });
+                }
+            },
+            else => {},
+        };
+        if (!handled_list) {
+            if (refOf(src_prop)) |src| try pairs.append(a, .{ .key = "source", .val = .{ .string = src } });
+        }
+        if (refOf(getProp(mem.props, "schema"))) |s| {
+            try pairs.append(a, .{ .key = "schema", .val = .{ .string = s } }); // binds entry type T (0014)
+        }
+        if (refOf(getProp(mem.props, "mine"))) |m| {
+            try pairs.append(a, .{ .key = "mine", .val = .{ .string = m } });
+        }
+        // scope defaults to "agent" and is ALWAYS emitted.
+        const scope = litOf(getProp(mem.props, "scope"));
+        try pairs.append(a, .{ .key = "scope", .val = .{ .string = scope orelse "agent" } });
+        if (litOf(getProp(mem.props, "retention"))) |r| {
+            try pairs.append(a, .{ .key = "retention", .val = .{ .string = r } });
+        }
+        if (getProp(mem.props, "emit")) |emit_prop| switch (emit_prop) {
+            .array => |arr| {
+                var xs: std.ArrayListUnmanaged(ZigVal) = .empty;
+                for (arr) |x| {
+                    if (refOf(x)) |r| try xs.append(a, .{ .string = r });
+                }
+                if (xs.items.len > 0) {
+                    try pairs.append(a, .{ .key = "emit", .val = .{ .array = try xs.toOwnedSlice(a) } });
+                }
+            },
+            else => {},
+        };
+        try pairs.append(a, .{ .key = "log", .val = .{ .string = try eventdLogPath(a, rv) } });
+
+        const path = try std.fmt.allocPrint(a, "gen/memory/{s}.json", .{mem.name});
+        try files.append(a, .{ .path = path, .content = try emitZigJson(a, .{ .object = try pairs.toOwnedSlice(a) }) });
+        try entries.append(a, .{
+            .artifact = path,
+            .region = null,
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "memory {s}", .{mem.name}),
+            .span = mem.provenance.?.span,
+            .emitter = "memory.store",
+            .inputs_projection = try nodeProjection(a, mem),
+        });
+    }
+    return .{ .files = try files.toOwnedSlice(a), .entries = try entries.toOwnedSlice(a) };
+}
+
+/// lower.py `_budget_prop`: the Budget auxiliary type admits BOTH a ref to a
+/// `budget` decl (emitted as the ref string) and an inline record (emitted as
+/// an ordered object). Dropping either would boot the supervisor without
+/// declared limits. Null when neither form matches (or the record has no
+/// literal-valued entries).
+fn budgetProp(a: Allocator, prop: ?json.Value) Error!?ZigVal {
+    if (refOf(prop)) |r| return ZigVal{ .string = r };
+    const v = prop orelse return null;
+    const rec = getProp(v, "record") orelse return null;
+    const arr = switch (rec) {
+        .array => |x| x,
+        else => return null,
+    };
+    var pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
+    for (arr) |e| {
+        const assign = getProp(e, "assign") orelse continue;
+        const name = switch (assign) {
+            .string => |s| s,
+            else => continue,
+        };
+        const value = getProp(e, "value");
+        const lit = litOf(value) orelse continue; // `if lit is None: continue`
+        // Only NUMBER literals are coerced; everything else stays a string.
+        const is_number = blk: {
+            const vv = value orelse break :blk false;
+            const k = getProp(vv, "lit") orelse break :blk false;
+            break :blk switch (k) {
+                .string => |s| std.mem.eql(u8, s, "number"),
+                else => false,
+            };
+        };
+        try pairs.append(a, .{
+            .key = name,
+            .val = if (is_number) .{ .raw = try coerceNumberStr(a, lit) } else .{ .string = lit },
+        });
+    }
+    if (pairs.items.len == 0) return null;
+    return ZigVal{ .object = try pairs.toOwnedSlice(a) };
+}
+
+/// lower.py `_workflow_depth`: critical path counted in steps (same semantics
+/// as the 0015 checker). `lower` runs only on a checked graph, so the edge set
+/// is a DAG and the recursion terminates.
+fn workflowDepth(a: Allocator, steps: []const graphmod.GraphNode, edges: []const passes_mod.Edge) Error!i64 {
+    var succ: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
+    for (steps) |s| try succ.put(a, s.name, .empty);
+    for (edges) |e| {
+        // Python `succ[a].append(b)` — a KeyError if `a` is not a step, which
+        // cannot happen: stepsEdges only yields edges between steps.
+        if (succ.getPtr(e.from)) |lst| try lst.append(a, e.to);
+    }
+    var memo: std.StringHashMapUnmanaged(i64) = .empty;
+    var best: i64 = 0;
+    for (steps) |s| {
+        const d = try workflowDepthOf(a, &succ, &memo, s.name);
+        if (d > best) best = d;
+    }
+    return best; // `max(..., default=0)`
+}
+
+fn workflowDepthOf(
+    a: Allocator,
+    succ: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
+    memo: *std.StringHashMapUnmanaged(i64),
+    name: []const u8,
+) Error!i64 {
+    if (memo.get(name)) |m| return m;
+    var best: i64 = 0;
+    if (succ.get(name)) |lst| {
+        for (lst.items) |n| {
+            const d = try workflowDepthOf(a, succ, memo, n);
+            if (d > best) best = d;
+        }
+    }
+    const r = 1 + best;
+    try memo.put(a, name, r);
+    return r;
+}
+
+/// lower.py `_workflow_projection`: the artifact depends on the workflow record
+/// AND its step nodes AND the routes_to edges (they produce steps/edges/depth),
+/// so ALL of them key the inputsHash — editing a step's agent or rewiring the
+/// DAG must change the hash.
+fn workflowProjection(a: Allocator, wf: graphmod.GraphNode, steps: []const graphmod.GraphNode, edges: []const passes_mod.Edge) Error!json.Value {
+    const base = try nodeProjection(a, wf);
+    const base_obj = switch (base) {
+        .object => |o| o,
+        else => &[_]json.Value.Entry{},
+    };
+    const step_vals = try a.alloc(json.Value, steps.len);
+    for (steps, 0..) |s, i| step_vals[i] = try nodeProjection(a, s);
+    const edge_vals = try a.alloc(json.Value, edges.len);
+    for (edges, 0..) |e, i| {
+        const o = try a.alloc(json.Value.Entry, 2);
+        o[0] = .{ .key = "from", .value = .{ .string = e.from } };
+        o[1] = .{ .key = "to", .value = .{ .string = e.to } };
+        edge_vals[i] = .{ .object = o };
+    }
+    const out = try a.alloc(json.Value.Entry, base_obj.len + 2);
+    @memcpy(out[0..base_obj.len], base_obj);
+    out[base_obj.len] = .{ .key = "steps", .value = .{ .array = step_vals } };
+    out[base_obj.len + 1] = .{ .key = "edges", .value = .{ .array = edge_vals } };
+    return .{ .object = out };
+}
+
+/// lower.py `emit_workflow_spec` (#27, 0015): one `gen/workflow/<name>.json`
+/// per workflow decl — the AOT spec agent-supervisord loads at boot.
+pub fn emitWorkflowSpec(a: Allocator, g: *const graphmod.Graph, source_file: []const u8, nodes: []const graphmod.GraphNode) Error!Emitted {
+    const rv = (try runtimeView(a, g)) orelse return .{ .files = &.{}, .entries = &.{} };
+    const sf = source_file;
+    var files: std.ArrayListUnmanaged(File) = .empty;
+    var entries: std.ArrayListUnmanaged(ProvEntry) = .empty;
+    for (nodes) |wf| {
+        const se = try passes_mod.stepsEdges(a, g, wf);
+        var pairs: std.ArrayListUnmanaged(ZigPair) = .empty;
+        try pairs.append(a, .{
+            .key = "_generated",
+            .val = .{ .string = try header(a, sf, try std.fmt.allocPrint(a, "workflow {s}", .{wf.name})) },
+        });
+        if (litOf(getProp(wf.props, "on"))) |on| {
+            try pairs.append(a, .{ .key = "on", .val = .{ .string = on } });
+        }
+        if (try budgetProp(a, getProp(wf.props, "budget"))) |b| {
+            try pairs.append(a, .{ .key = "budget", .val = b });
+        }
+        if (litOf(getProp(wf.props, "maxDepth"))) |md| {
+            try pairs.append(a, .{ .key = "maxDepth", .val = .{ .raw = try coerceNumberStr(a, md) } });
+        }
+        var step_objs: std.ArrayListUnmanaged(ZigVal) = .empty;
+        for (se.steps) |st| {
+            var sp: std.ArrayListUnmanaged(ZigPair) = .empty;
+            try sp.append(a, .{ .key = "name", .val = .{ .string = st.name } });
+            if (refOf(getProp(st.props, "agent"))) |ag| {
+                try sp.append(a, .{ .key = "agent", .val = .{ .string = ag } });
+            }
+            for ([_][]const u8{ "input", "output" }) |fld| {
+                if (refOf(getProp(st.props, fld))) |r| {
+                    try sp.append(a, .{ .key = fld, .val = .{ .string = r } });
+                }
+            }
+            if (litOf(getProp(st.props, "retries"))) |r| {
+                try sp.append(a, .{ .key = "retries", .val = .{ .raw = try coerceNumberStr(a, r) } });
+            }
+            if (try budgetProp(a, getProp(st.props, "budget"))) |b| {
+                try sp.append(a, .{ .key = "budget", .val = b });
+            }
+            step_objs.append(a, .{ .object = try sp.toOwnedSlice(a) }) catch return error.OutOfMemory;
+        }
+        try pairs.append(a, .{ .key = "steps", .val = .{ .array = try step_objs.toOwnedSlice(a) } });
+
+        var edge_objs: std.ArrayListUnmanaged(ZigVal) = .empty;
+        for (se.edges) |e| {
+            const o = try a.alloc(ZigPair, 2);
+            o[0] = .{ .key = "from", .val = .{ .string = e.from } };
+            o[1] = .{ .key = "to", .val = .{ .string = e.to } };
+            try edge_objs.append(a, .{ .object = o });
+        }
+        try pairs.append(a, .{ .key = "edges", .val = .{ .array = try edge_objs.toOwnedSlice(a) } });
+
+        const depth = try workflowDepth(a, se.steps, se.edges);
+        try pairs.append(a, .{ .key = "depth", .val = .{ .raw = try std.fmt.allocPrint(a, "{d}", .{depth}) } });
+        try pairs.append(a, .{ .key = "log", .val = .{ .string = try eventdLogPath(a, rv) } });
+
+        const path = try std.fmt.allocPrint(a, "gen/workflow/{s}.json", .{wf.name});
+        try files.append(a, .{ .path = path, .content = try emitZigJson(a, .{ .object = try pairs.toOwnedSlice(a) }) });
+        try entries.append(a, .{
+            .artifact = path,
+            .region = null,
+            .source_file = sf,
+            .decl = try std.fmt.allocPrint(a, "workflow {s}", .{wf.name}),
+            .span = wf.provenance.?.span,
+            .emitter = "workflow.spec",
+            .inputs_projection = try workflowProjection(a, wf, se.steps, se.edges),
+        });
+    }
+    return .{ .files = try files.toOwnedSlice(a), .entries = try entries.toOwnedSlice(a) };
+}
+
+// --------------------------------------------------------------------------- //
 // enrich_graph — recover load-bearing config sub-blocks the resolver drops.
 // --------------------------------------------------------------------------- //
 
@@ -2712,13 +3172,26 @@ pub fn lower(a: Allocator, g: *graphmod.Graph, source_file: []const u8, items: ?
         try run(a, &files, &all_entries, try emitOciContainers(a, g, source_file, rv.containers));
     }
 
+    // Runtime plane (#18/#24/#27): workflow specs + memory stores, plus the
+    // per-runtime eventd log contract when EITHER consumer is present.
+    if (rv.workflows.len > 0) {
+        try run(a, &files, &all_entries, try emitWorkflowSpec(a, g, source_file, rv.workflows));
+    }
+    if (rv.memories.len > 0) {
+        try run(a, &files, &all_entries, try emitMemoryStore(a, g, source_file, rv.memories));
+    }
+    if (rv.memories.len > 0 or rv.workflows.len > 0) {
+        try run(a, &files, &all_entries, try emitEventdConfig(a, g, source_file));
+    }
+
+    // v0.5 trio: trust/quorum/probe topology, presence-gated like eventd.
+    if (rv.trusts.len > 0 or rv.quorums.len > 0 or rv.probes.len > 0) {
+        try run(a, &files, &all_entries, try emitTrustConfig(a, g, source_file));
+    }
+
     // --- gated targets not yet ported ------------------------------------ //
     // Each condition mirrors lower.py's selection exactly, so a graph that
     // selects none of these lowers to a COMPLETE artifact set today.
-    if (rv.workflows.len > 0) try unported.append(a, "workflow.spec");
-    if (rv.memories.len > 0) try unported.append(a, "memory.store");
-    if (rv.memories.len > 0 or rv.workflows.len > 0) try unported.append(a, "eventd.config");
-    if (rv.trusts.len > 0 or rv.quorums.len > 0 or rv.probes.len > 0) try unported.append(a, "trust.config");
     if (rv.networks.len > 0) try unported.append(a, "ebpf.policy");
     if (rv.hosts.len > 0) try unported.append(a, "colmena.hive");
 

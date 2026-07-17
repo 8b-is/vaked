@@ -598,6 +598,33 @@ test "lower: coerceNumberStr matches Python's _coerce_number + str()" {
         .{ .in = "12345678901234567890.0", .want = "1.2345678901234567e+19" },
         .{ .in = "abc", .want = "abc" },
         .{ .in = "", .want = "" },
+
+        // --- runtime plane: trust.score (Float, lower.py L1698) and
+        // quorum.min (Int, L1714). This is the family where the original v0.5
+        // number bugs lived, and where the coerceNumberStr defect would have
+        // propagated. The differential is BLIND here: no fixture carries a
+        // float other than 0.9/0.7, so these are the gate. Python-derived on
+        // dev-cx53 via vakedc.lower._coerce_number, same as above.
+        .{ .in = "0.9", .want = "0.9" }, // runtime-with-trust.vaked, live
+        .{ .in = "0.7", .want = "0.7" }, // runtime-with-trust.vaked, live
+        .{ .in = "1.0", .want = "1.0" },
+        .{ .in = "0.0", .want = "0.0" },
+        .{ .in = "0.5", .want = "0.5" },
+        .{ .in = "0.1", .want = "0.1" },
+        // the classic binary-float artifact must survive VERBATIM
+        .{ .in = "0.30000000000000004", .want = "0.30000000000000004" },
+        // shortest-round-trip truncates a 30-digit literal to 16 digits
+        .{ .in = "0.333333333333333314829616256247", .want = "0.3333333333333333" },
+        // rounds up to exactly 1.0 -> forced ".0" (would be bare "1" under {d})
+        .{ .in = "0.99999999999999999", .want = "1.0" },
+        // 17 significant digits are required to round-trip this one
+        .{ .in = "1.0000000000000002", .want = "1.0000000000000002" },
+        // quorum.min (Int)
+        .{ .in = "2", .want = "2" },
+        .{ .in = "1", .want = "1" },
+        .{ .in = "0", .want = "0" },
+        .{ .in = "10", .want = "10" },
+        .{ .in = "3", .want = "3" },
     };
     for (cases) |c| {
         const got = try lower.coerceNumberStr(a, c.in);
@@ -1119,4 +1146,356 @@ test "lower: host.resources replicates vakedc's create=false filter bug" {
     };
     // Bug-compatible: it is still provisioned despite create = false.
     try std.testing.expect(std.mem.indexOf(u8, got, "ensureDatabases = [ \"appdb\" ]") != null);
+}
+
+// ==========================================================================
+// Slice 5: the runtime plane (#18/#24/#27) + the v0.5 trio.
+//
+// Goldens DERIVED from LIVE vakedc on dev-cx53 (vaked/examples/lowering/
+// freezes only operator-field, which declares none of these):
+//   python3 -m vakedc lower <fixture> --out ...
+//
+// These pin two layout facts that are easy to get valid-but-wrong:
+//  * gen/trust.json's trusts/quorums/probes are plain Python DICTS inside a
+//    list, so `_emit_zig_value` has no _Ordered branch for them and falls
+//    through to json.dumps -> each entry renders INLINE with DEFAULT
+//    separators ({"a": 1}). A pretty multi-line tree would be wrong.
+//  * gen/workflow/*.json's steps/edges ARE _Ordered inside a list, so they
+//    render MULTI-LINE, indented one level deeper, joined by ", ".
+// ==========================================================================
+
+const runtime_with_trust_src =
+    \\# v0.5 — runtime with trust/quorum/probe integration
+    \\#
+    \\# Full example showing trust, quorum, and probe declarations inside a
+    \\# runtime alongside their consumer (mesh, stream, etc.).
+    \\
+    \\use "../engines/zig.vaked"
+    \\
+    \\runtime "v0p5-demo" {
+    \\  systems = ["x86_64-linux"]
+    \\
+    \\  # ---- v0.5 declarations ------------------------------------------------
+    \\
+    \\  trust primaryScore {
+    \\    score = 0.9
+    \\    half_life = 12h
+    \\  }
+    \\
+    \\  trust delegateScore {
+    \\    score = 0.7
+    \\    half_life = 24h
+    \\    delegate = primaryScore
+    \\    taint_as = false
+    \\  }
+    \\
+    \\  quorum consensus {
+    \\    min = 2
+    \\    over = [nodeA, nodeB, nodeC]
+    \\    timeout = 15s
+    \\    on_failure = retry
+    \\  }
+    \\
+    \\  quorum compactionGuard {
+    \\    min = 1
+    \\    over = [nodeA]
+    \\    timeout = 5s
+    \\    on_failure = abort
+    \\  }
+    \\
+    \\  probe readinessProbe {
+    \\    from = nodeA
+    \\    to = nodeB
+    \\    via = edgeMain
+    \\  }
+    \\
+    \\  probe preUpgradeProbe {
+    \\    from = nodeA
+    \\    to = nodeC
+    \\    via = edgeMain
+    \\    with = capability.process
+    \\    on_result = { status = "ok" }
+    \\  }
+    \\
+    \\  # ---- Existing constructs for context ----------------------------------
+    \\
+    \\  index testCorpus {
+    \\    source = github("example/example-repo")
+    \\    emit = [catalog.jsonl]
+    \\  }
+    \\
+    \\  mesh testMesh {
+    \\    node nodeA {
+    \\      role = "producer"
+    \\      capabilities = [fs.repo_rw, process.spawn_sandboxed]
+    \\    }
+    \\
+    \\    node nodeB {
+    \\      role = "processor"
+    \\      capabilities = [fs.repo_ro, process.spawn_sandboxed]
+    \\    }
+    \\
+    \\    node nodeC {
+    \\      role = "consumer"
+    \\      capabilities = [process.spawn_sandboxed]
+    \\    }
+    \\
+    \\    nodeA -> nodeB : "pipeline"
+    \\    nodeB -> nodeC : "delivery"
+    \\  }
+    \\}
+++ "\n";
+
+const sdd_src =
+    \\# sdd.vaked — Subagent-Driven Development as a Vaked capability graph.
+    \\#
+    \\# The companion `.claude/skills/subagent-driven-development` skill is the human/agent
+    \\# entrypoint; this file is its FORMAL shape — the SDD mesh (roles + attenuated
+    \\# capabilities) and the wave DAG (research → spec → implement → test → integrate),
+    \\# expressed the same way agentfield-swe.vaked expresses the swe_af mesh + workflow.
+    \\#
+    \\#   mesh     — the subagent field: orchestrator DELEGATES attenuated authority (§4.4)
+    \\#   workflow — the SDD waves as a checked DAG (0015); each node names its agent
+    \\#   budget   — the run bound the supervision plane enforces
+    \\
+    \\use "./engines/zig.vaked"
+    \\
+    \\runtime "sdd-field" {
+    \\  systems = ["x86_64-linux"]
+    \\
+    \\  # Ground the agents against the repo corpus (same index swe_af uses).
+    \\  index repoCorpus {
+    \\    source = [github("peterlodri-sec/vaked-base")]
+    \\    normalize = crabcc.markdown
+    \\    emit = [catalog.jsonl, catalog.sqlite]
+    \\  }
+    \\
+    \\  # The subagent field. Mesh edges are capability DELEGATIONS: the orchestrator holds
+    \\  # the strongest grants; every subagent receives an attenuated subset (POLA). Only the
+    \\  # broker may write to GitHub; only the orchestrator may merge.
+    \\  mesh field {
+    \\    node orchestrator {
+    \\      role = "control-plane"
+    \\      capabilities = [fs.repo_rw, process.spawn, mcp.github_write, mem.admin]
+    \\    }
+    \\    node researcher {
+    \\      role = "research"
+    \\      # one instance per core/adjacent topic (fan-out)
+    \\      capabilities = [fs.repo_ro, mem.recall]
+    \\      # web access is via the deep-research skill (no `net` cap domain in the schema yet)
+    \\    }
+    \\    node specAuthor {
+    \\      role = "spec"
+    \\      capabilities = [fs.repo_rw, mem.recall]
+    \\    }
+    \\    node coherenceCritic {
+    \\      role = "critic"
+    \\      capabilities = [fs.repo_ro, mem.recall]
+    \\    }
+    \\    node coder {
+    \\      role = "implement"
+    \\      # one instance per component, isolated worktree (fan-out)
+    \\      capabilities = [fs.repo_rw, process.spawn_sandboxed, mem.recall]
+    \\    }
+    \\    node testAuthor {
+    \\      role = "test"
+    \\      # spec-only; never sees the coder's code (fan-out)
+    \\      capabilities = [fs.repo_ro, process.spawn_sandboxed]
+    \\    }
+    \\    node reviewer {
+    \\      role = "review"
+    \\      capabilities = [fs.repo_ro, mem.recall]
+    \\    }
+    \\    node broker {
+    \\      role = "mcp-broker"
+    \\      capabilities = [mcp.github_write]
+    \\    }
+    \\    orchestrator -> researcher
+    \\    orchestrator -> specAuthor
+    \\    orchestrator -> coherenceCritic
+    \\    orchestrator -> coder
+    \\    orchestrator -> testAuthor
+    \\    orchestrator -> reviewer
+    \\    orchestrator -> broker
+    \\  }
+    \\
+    \\  budget sddRun {
+    \\    tokens = 8000000
+    \\    wallClock = 8h
+    \\    toolCalls = 2000
+    \\    approvals = "destructive"
+    \\    # human approves the destructive integration step; never self-merge
+    \\    fuel = 20000000000
+    \\  }
+    \\
+    \\  # The SDD waves. Workflow edges are step ORDERING (a checked DAG); research /
+    \\  # implement / test are fan-out stages (N agents of that role run in parallel within
+    \\  # the stage), each gated before the next stage starts.
+    \\  workflow sdd_waves {
+    \\    on = "operator.invoke:subagent-driven-development"
+    \\    budget = budget.sddRun
+    \\    maxDepth = 6
+    \\
+    \\    node frame {
+    \\      agent = field.orchestrator
+    \\      output = artifacts.waveDag
+    \\      # P0: decompose + acceptance gates
+    \\    }
+    \\    node research {
+    \\      agent = field.researcher
+    \\      # fan-out: one per core/adjacent topic
+    \\      input = artifacts.waveDag
+    \\      output = artifacts.dossier
+    \\      # P1: cited, adversarially verified
+    \\    }
+    \\    node spec {
+    \\      agent = field.specAuthor
+    \\      input = artifacts.dossier
+    \\      output = artifacts.spec
+    \\      # P2: RFC/EBNF/tables (gated by the critic)
+    \\    }
+    \\    node implement {
+    \\      agent = field.coder
+    \\      # fan-out: one per component, own worktree
+    \\      input = artifacts.spec
+    \\      output = artifacts.components
+    \\      # P3: builds on dev-cx53/GHA, never local
+    \\      retries = 2
+    \\    }
+    \\    node test {
+    \\      agent = field.testAuthor
+    \\      # fan-out: spec-only, independent of impl
+    \\      input = artifacts.spec
+    \\      output = artifacts.verdict
+    \\      # P4: per-component + integration, ci-gate green
+    \\    }
+    \\    node integrate {
+    \\      agent = field.broker
+    \\      input = artifacts.verdict
+    \\      # P5: stacked PRs, ready-for-review
+    \\    }
+    \\
+    \\    frame -> research -> spec -> implement -> test -> integrate
+    \\  }
+    \\}
+++ "\n";
+
+const golden_trust_json =
+    \\{
+    \\  "_generated": "generated by Vaked from runtime-with-trust.vaked:runtime v0p5-demo — do not edit",
+    \\  "trusts": [{"name": "primaryScore", "score": 0.9, "half_life": "12h"}, {"name": "delegateScore", "score": 0.7, "half_life": "24h", "delegate": "primaryScore", "taint_as": false}],
+    \\  "quorums": [{"name": "consensus", "min": 2, "over": ["nodeA", "nodeB", "nodeC"], "timeout": "15s", "on_failure": "retry"}, {"name": "compactionGuard", "min": 1, "over": ["nodeA"], "timeout": "5s", "on_failure": "abort"}],
+    \\  "probes": [{"name": "readinessProbe", "from": "nodeA", "to": "nodeB", "via": "edgeMain"}, {"name": "preUpgradeProbe", "from": "nodeA", "to": "nodeC", "via": "edgeMain", "with": "capability.process"}]
+    \\}
+++ "\n";
+
+const golden_eventd_json =
+    \\{
+    \\  "_generated": "generated by Vaked from sdd.vaked:runtime sdd-field — do not edit",
+    \\  "log": "var/lib/sdd-field/eventd/log.jsonl",
+    \\  "format": "jsonl-hashchain-v1",
+    \\  "verify_on_boot": true,
+    \\  "writer": "agent-supervisord"
+    \\}
+++ "\n";
+
+const golden_sdd_waves_json =
+    \\{
+    \\  "_generated": "generated by Vaked from sdd.vaked:workflow sdd_waves — do not edit",
+    \\  "on": "operator.invoke:subagent-driven-development",
+    \\  "budget": "budget.sddRun",
+    \\  "maxDepth": 6,
+    \\  "steps": [{
+    \\      "name": "frame",
+    \\      "agent": "field.orchestrator",
+    \\      "output": "artifacts.waveDag"
+    \\    }, {
+    \\      "name": "research",
+    \\      "agent": "field.researcher",
+    \\      "input": "artifacts.waveDag",
+    \\      "output": "artifacts.dossier"
+    \\    }, {
+    \\      "name": "spec",
+    \\      "agent": "field.specAuthor",
+    \\      "input": "artifacts.dossier",
+    \\      "output": "artifacts.spec"
+    \\    }, {
+    \\      "name": "implement",
+    \\      "agent": "field.coder",
+    \\      "input": "artifacts.spec",
+    \\      "output": "artifacts.components",
+    \\      "retries": 2
+    \\    }, {
+    \\      "name": "test",
+    \\      "agent": "field.testAuthor",
+    \\      "input": "artifacts.spec",
+    \\      "output": "artifacts.verdict"
+    \\    }, {
+    \\      "name": "integrate",
+    \\      "agent": "field.broker",
+    \\      "input": "artifacts.verdict"
+    \\    }],
+    \\  "edges": [{
+    \\      "from": "frame",
+    \\      "to": "research"
+    \\    }, {
+    \\      "from": "research",
+    \\      "to": "spec"
+    \\    }, {
+    \\      "from": "spec",
+    \\      "to": "implement"
+    \\    }, {
+    \\      "from": "implement",
+    \\      "to": "test"
+    \\    }, {
+    \\      "from": "test",
+    \\      "to": "integrate"
+    \\    }],
+    \\  "depth": 6,
+    \\  "log": "var/lib/sdd-field/eventd/log.jsonl"
+    \\}
+++ "\n";
+
+test "lower: trust.config reproduces live vakedc byte-for-byte (floats included)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 1534), runtime_with_trust_src.len);
+    try testing.expectEqual(@as(usize, 714), golden_trust_json.len);
+
+    const result = try lowerSource(a, runtime_with_trust_src, "vaked/examples/v0.5/runtime-with-trust.vaked");
+    // score = 0.9 / 0.7 are the only floats ANY fixture carries -- the
+    // differential is otherwise blind to the float path.
+    try expectFile(result, "gen/trust.json", golden_trust_json);
+    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
+}
+
+test "lower: workflow.spec + eventd.config reproduce live vakedc byte-for-byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 4241), sdd_src.len);
+    try testing.expectEqual(@as(usize, 1330), golden_sdd_waves_json.len);
+    try testing.expectEqual(@as(usize, 230), golden_eventd_json.len);
+
+    const result = try lowerSource(a, sdd_src, "vaked/examples/sdd.vaked");
+    try expectFile(result, "gen/workflow/sdd_waves.json", golden_sdd_waves_json);
+    try expectFile(result, "gen/eventd.json", golden_eventd_json);
+    try std.testing.expectEqual(@as(usize, 0), result.unported_targets.len);
+}
+
+// _workflow_depth: the critical path in steps. sdd_waves is a 6-step chain
+// (frame -> research -> spec -> implement -> test -> integrate), and its
+// maxDepth = 6 -- so depth must be 6. Pinned separately from the golden so a
+// depth regression names itself instead of surfacing as a byte diff.
+test "lower: workflow.spec depth is the critical path in steps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const result = try lowerSource(a, sdd_src, "vaked/examples/sdd.vaked");
+    const got = fileContent(result, "gen/workflow/sdd_waves.json") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"depth\": 6") != null);
 }
