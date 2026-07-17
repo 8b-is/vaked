@@ -14,6 +14,26 @@
 //!   eligible to serve a hit.
 //! * Any parse failure, short read, or unexpected shape degrades to a miss.
 //!
+//! # What decides a phase's output
+//!
+//! There are two kinds of input, and both must be in the key:
+//!
+//! 1. **Data** — the source bytes, the file path, and (for check/lower) the
+//!    builtins catalog and lowering options.
+//! 2. **The compiler itself.** A parser bugfix changes output with every byte
+//!    of data unchanged. This is not hypothetical: four parser fixes landed in
+//!    a single session (inline comments/`pending_newline`, comment round-trip,
+//!    comment loss/blank lines, union types in generic args) — every one of
+//!    them changes emitted output, and none of them touched the language
+//!    version. A cache that keys only data serves the pre-fix result to the
+//!    post-fix compiler, which is exactly the wrong hit this module exists to
+//!    make impossible. So `build_id` is a required, keyed input.
+//!
+//! `GRAMMAR_VERSION` does NOT stand in for the compiler. It tracks the language
+//! *spec*, is hand-maintained, and has already drifted from the implementation
+//! in practice. It is keyed because a spec bump *should* invalidate, but it is
+//! not load-bearing for soundness and must never be treated as such.
+//!
 //! # Key derivation
 //!
 //! The cache key is `sha256(K)` where `K` is the canonical JSON document
@@ -21,51 +41,68 @@
 //! canonicality is produced here deliberately):
 //!
 //! ```text
-//! {"deps":[{"name":<name>,"sha256":<hex>},...],
+//! {"build":<sha256(build_id) hex>,
+//!  "deps":[{"name":<name>,"sha256":<hex>},...],
 //!  "file":<path>,
 //!  "grammar":<grammar version>,
 //!  "phase":"parse"|"check"|"lower",
-//!  "schema":"vakedz-cache-1",
+//!  "schema":"vakedz-cache-2",
 //!  "source":<sha256(source bytes) hex>}
 //! ```
 //!
 //! Field-by-field rationale:
 //!
+//! * `build` — the identity of the compiler that produces the output. See the
+//!   `build_id` contract below.
 //! * `source` — the source bytes decide the output. Hashed, not embedded, so
 //!   the key stays fixed-size.
 //! * `file` — the path is *not* incidental: diagnostics and provenance embed
 //!   the filename, so two identical sources at different paths legitimately
 //!   produce different output. The path is used verbatim, so `./a.vaked` and
 //!   `a.vaked` key differently — that costs an extra miss, never a wrong hit.
-//! * `grammar` — a grammar bump changes parse/check/lower semantics, so it
-//!   must invalidate. Defaults to `GRAMMAR_VERSION`; a field on `Cache` so a
-//!   bump is expressible (and testable) without recompiling constants.
+//! * `grammar` — a language-spec bump invalidates. Not a compiler identity.
 //! * `phase` — hard isolation: a `parse` entry can never serve a `check`
 //!   lookup even at an identical source.
 //! * `schema` — this file's on-disk/keying contract. Bumping it invalidates
 //!   every key, which is what a layout or derivation change requires.
-//! * `deps` — every *other* input the caller knows affects output, hashed by
-//!   content. Sorted by (name, hash) here, so caller ordering cannot change a
-//!   key. See the contract below.
+//! * `deps` — the per-phase inputs, derived from `Inputs` (never supplied as
+//!   caller-computed hashes; see below) and sorted by (name, hash) so ordering
+//!   cannot change a key.
 //!
-//! # The `deps` contract — read this before caching a new phase
+//! # The `build_id` contract — the one thing this module must be told
 //!
-//! `parse` is self-contained: source + file + grammar + phase is the complete
-//! input set, and this module can see all of it. It is sound with no deps.
+//! This module cannot observe the compiler that links it: Zig 0.16 has no
+//! `selfExePath`, and reaching into `vakedz/src/` from `lib/` would invert the
+//! layering. Only the build system knows. So `open` takes `build_id` as a
+//! **required** parameter — there is no default and no way to omit it, because
+//! a forgettable build id is the same wrong-hit bug with extra steps. An empty
+//! `build_id` is rejected (`error.BuildIdRequired`): it is indistinguishable
+//! from "nobody wired this up".
 //!
-//! `check` and `lower` are **not** self-contained — they additionally depend on
-//! the builtins catalog (`vaked/schema/builtins.vaked`), and `lower` further
-//! depends on its lowering options. This module cannot read those; only the
-//! caller knows them. So the contract is inverted: the caller MUST pass every
-//! such input as a `Dep`, and `lookup`/`put` **reject** `.check`/`.lower` with
-//! an empty dep set (`error.DepsRequired`) rather than silently computing an
-//! unsound key.
+//! `build_id` must be the raw identity bytes (this module hashes them itself,
+//! and never accepts a pre-computed hash). It MUST change whenever compiler
+//! behaviour can change. Supply it from the build system, e.g. `git describe
+//! --always --dirty` plus a hash of the compiler sources — never a hand-edited
+//! constant, which is precisely how `GRAMMAR_VERSION` drifted. `--dirty`
+//! matters: an uncommitted parser edit changes output.
 //!
-//! That enforcement is a guardrail, not a proof: this module can verify that
-//! deps were supplied, but it cannot verify they are the *right* ones. A caller
-//! that passes a stale or wrong dep gets a wrong hit. Soundness for
-//! `check`/`lower` therefore rests with the caller — keep the dep set in the
-//! same function that reads the inputs, so the two cannot drift.
+//! # Per-phase inputs: `Inputs`, not caller-supplied hashes
+//!
+//! `parse` is decided by (build, source, file). `check` additionally reads the
+//! builtins catalog; `lower` reads builtins plus its lowering options. This
+//! module cannot read those files, so the caller must provide them — but it
+//! provides the **bytes**, not a hash or a name/hash pair.
+//!
+//! That distinction is the whole guardrail. An API taking a list of
+//! caller-hashed deps can only check that the list is non-empty, so
+//! `{ .name = "builtins", .bytes = "" }` type-checks, keys cleanly, and
+//! poisons that key permanently. `Inputs` is an enum-backed union, so
+//! `.check` cannot be constructed without builtins bytes at all: forgetting
+//! them is a compile error, and this module does the hashing.
+//!
+//! This does not make the caller irrelevant — passing the *wrong* builtins
+//! still mis-keys. Keep the `Inputs` construction in the same function that
+//! reads the inputs, so the two cannot drift.
 //!
 //! # On-disk layout
 //!
@@ -80,7 +117,7 @@
 //! could disagree with the log; one file cannot.
 //!
 //! ```text
-//! vakedz-cache-1 <count> <head_link>
+//! vakedz-cache-2 <count> <head_link>
 //! <key_hex> <content_hex> <len> <link_hex>
 //! ...
 //! ```
@@ -118,16 +155,27 @@
 //! * `put` refuses to append to a chain that fails verification
 //!   (`error.ChainBroken`) rather than building on a corrupt base. Remediation
 //!   is to delete `.vakedz-cache/`.
+//!
+//! # Known scaling limit (correctness first; no callers yet)
+//!
+//! Every `put` rewrites the whole chain and every `lookup` recomputes every
+//! link: O(n) per op, O(n^2) cumulative. Acceptable at today's zero callers,
+//! not at 10k entries. Fixing it needs an epoch/compaction story, tracked
+//! separately — deliberately not traded against correctness here.
 const std = @import("std");
 const json = @import("json.zig");
 
 pub const GENESIS: [64]u8 = [_]u8{'0'} ** 64;
+
+/// The language *spec* version. Keyed so a spec bump invalidates — but this is
+/// NOT the compiler's identity and carries no soundness weight. See `build_id`.
 pub const GRAMMAR_VERSION: []const u8 = "v0.5";
 pub const CACHE_DIR: []const u8 = ".vakedz-cache";
 
 /// On-disk + key-derivation contract version. Bump on any change to the
 /// layout, the chain format, or the key document: it invalidates every key.
-pub const SCHEMA: []const u8 = "vakedz-cache-1";
+/// Bumped to -2 when `build` entered the key document.
+pub const SCHEMA: []const u8 = "vakedz-cache-2";
 
 pub const Phase = enum {
     parse,
@@ -141,22 +189,34 @@ pub const Phase = enum {
             .lower => "lower",
         };
     }
-
-    /// Whether this phase reads inputs beyond (source, file, grammar) that
-    /// only the caller can supply. See the deps contract in the module doc.
-    pub fn requiresDeps(self: Phase) bool {
-        return switch (self) {
-            .parse => false,
-            .check, .lower => true,
-        };
-    }
 };
 
-/// A named, content-hashed input that affects a phase's output but that this
-/// module cannot read for itself (e.g. `.{ .name = "builtins", .bytes = src }`).
-pub const Dep = struct {
-    name: []const u8,
-    bytes: []const u8,
+/// The inputs a phase reads, beyond source/file/build. Enum-backed union so a
+/// phase cannot be named without supplying its inputs: `.check` is
+/// unconstructible without builtins bytes, making "forgot the builtins" a
+/// compile error instead of a silent wrong hit.
+///
+/// Always pass the raw bytes. This module hashes them; it never takes a hash
+/// on trust, because a caller-computed hash can be forged or defaulted.
+pub const Inputs = union(Phase) {
+    parse: void,
+    check: Check,
+    lower: Lower,
+
+    pub const Check = struct {
+        /// Contents of the builtins catalog (`vaked/schema/builtins.vaked`).
+        builtins: []const u8,
+    };
+
+    pub const Lower = struct {
+        builtins: []const u8,
+        /// Canonical serialization of the lowering options that affect output.
+        options: []const u8,
+    };
+
+    pub fn phase(self: Inputs) Phase {
+        return std.meta.activeTag(self);
+    }
 };
 
 pub const VerifyResult = struct {
@@ -171,10 +231,12 @@ pub const VerifyResult = struct {
 };
 
 pub const Error = error{
-    /// `.check`/`.lower` were used with an empty dep set. See the deps contract.
-    DepsRequired,
     /// Refusing to append to a chain that does not verify.
     ChainBroken,
+    /// `build_id` was empty — indistinguishable from "nobody wired this up",
+    /// which is the state that produces wrong hits across compiler upgrades.
+    /// Fail closed.
+    BuildIdRequired,
 };
 
 const Entry = struct {
@@ -203,6 +265,14 @@ const ChainState = union(enum) {
     present: Chain,
 };
 
+/// A `name`/`bytes` pair contributing to the key. Internal by design: deps are
+/// derived from `Inputs` and hashed here, never accepted from the caller
+/// pre-hashed.
+const Dep = struct {
+    name: []const u8,
+    bytes: []const u8,
+};
+
 pub const Cache = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -210,10 +280,23 @@ pub const Cache = struct {
     /// Grammar version mixed into every key. Split out from the constant so a
     /// bump is expressible without recompiling — and so it is testable.
     grammar: []const u8,
+    /// sha256 of the caller-supplied `build_id` bytes, hashed at `open`.
+    build: [64]u8,
 
     /// Open (creating if absent) the cache under `<root>/.vakedz-cache`.
     /// `root` is resolved against the process cwd, mirroring vakedz/src/main.zig.
-    pub fn open(allocator: std.mem.Allocator, io: std.Io, root: []const u8) !Cache {
+    ///
+    /// `build_id` identifies the compiler build and is REQUIRED — see the
+    /// contract in the module doc. Pass raw identity bytes (e.g. `git describe
+    /// --always --dirty` output plus a compiler-source hash), not a digest.
+    pub fn open(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        root: []const u8,
+        build_id: []const u8,
+    ) !Cache {
+        if (build_id.len == 0) return Error.BuildIdRequired;
+
         const cache_root = try std.fs.path.join(allocator, &.{ root, CACHE_DIR });
         errdefer allocator.free(cache_root);
 
@@ -226,11 +309,15 @@ pub const Cache = struct {
         defer allocator.free(cas_dir);
         try cwd.createDirPath(io, cas_dir);
 
+        var build: [64]u8 = undefined;
+        sha256Hex(build_id, &build);
+
         return Cache{
             .allocator = allocator,
             .io = io,
             .root = cache_root,
             .grammar = GRAMMAR_VERSION,
+            .build = build,
         };
     }
 
@@ -243,15 +330,28 @@ pub const Cache = struct {
         self: *Cache,
         file: []const u8,
         source: []const u8,
-        phase: Phase,
-        deps: []const Dep,
+        inputs: Inputs,
         out: *[64]u8,
     ) !void {
-        if (phase.requiresDeps() and deps.len == 0) return Error.DepsRequired;
-
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const a = arena.allocator();
+
+        // Deps are derived from `Inputs`, so the set is decided by the phase —
+        // a caller cannot omit, rename, or blank one.
+        var dep_buf: [2]Dep = undefined;
+        const deps: []const Dep = switch (inputs) {
+            .parse => dep_buf[0..0],
+            .check => |c| blk: {
+                dep_buf[0] = .{ .name = "builtins", .bytes = c.builtins };
+                break :blk dep_buf[0..1];
+            },
+            .lower => |l| blk: {
+                dep_buf[0] = .{ .name = "builtins", .bytes = l.builtins };
+                dep_buf[1] = .{ .name = "options", .bytes = l.options };
+                break :blk dep_buf[0..2];
+            },
+        };
 
         var src_hex: [64]u8 = undefined;
         sha256Hex(source, &src_hex);
@@ -265,16 +365,17 @@ pub const Cache = struct {
             obj[1] = .{ .key = "sha256", .value = .{ .string = try a.dupe(u8, &dep_hex) } };
             dep_vals[i] = .{ .object = obj };
         }
-        // Sort so caller ordering cannot change the key.
+        // Sort so dep ordering cannot change the key.
         std.mem.sort(json.Value, dep_vals, {}, depLess);
 
-        const top = try a.alloc(json.Value.Entry, 6);
-        top[0] = .{ .key = "deps", .value = .{ .array = dep_vals } };
-        top[1] = .{ .key = "file", .value = .{ .string = file } };
-        top[2] = .{ .key = "grammar", .value = .{ .string = self.grammar } };
-        top[3] = .{ .key = "phase", .value = .{ .string = phase.str() } };
-        top[4] = .{ .key = "schema", .value = .{ .string = SCHEMA } };
-        top[5] = .{ .key = "source", .value = .{ .string = &src_hex } };
+        const top = try a.alloc(json.Value.Entry, 7);
+        top[0] = .{ .key = "build", .value = .{ .string = &self.build } };
+        top[1] = .{ .key = "deps", .value = .{ .array = dep_vals } };
+        top[2] = .{ .key = "file", .value = .{ .string = file } };
+        top[3] = .{ .key = "grammar", .value = .{ .string = self.grammar } };
+        top[4] = .{ .key = "phase", .value = .{ .string = inputs.phase().str() } };
+        top[5] = .{ .key = "schema", .value = .{ .string = SCHEMA } };
+        top[6] = .{ .key = "source", .value = .{ .string = &src_hex } };
 
         const canonical = try (json.Value{ .object = top }).toOwned(a);
         sha256Hex(canonical, out);
@@ -286,11 +387,10 @@ pub const Cache = struct {
         self: *Cache,
         file: []const u8,
         source: []const u8,
-        phase: Phase,
-        deps: []const Dep,
+        inputs: Inputs,
     ) !?[]u8 {
         var key: [64]u8 = undefined;
-        try self.deriveKey(file, source, phase, deps, &key);
+        try self.deriveKey(file, source, inputs, &key);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -302,7 +402,11 @@ pub const Cache = struct {
         };
         const vr = verifyChain(chain);
 
-        // Only the cryptographically intact prefix may serve a hit.
+        // Scan backwards so the newest entry for a key wins. Keys are meant to
+        // be functional (same key => same output), so a duplicate key should be
+        // unreachable; if a nondeterministic phase ever produced one anyway,
+        // newest-wins matches `put`'s append order and the freshest compile.
+        // Only the cryptographically intact prefix is eligible.
         var i = vr.valid_prefix;
         while (i > 0) {
             i -= 1;
@@ -310,6 +414,8 @@ pub const Cache = struct {
             if (!std.mem.eql(u8, &e.key, &key)) continue;
 
             const blob = (try self.readBlob(self.allocator, e.content)) orelse return null;
+            // Intentionally inert: nothing between here and the returns below
+            // can fail today. Kept so a future fallible step cannot leak.
             errdefer self.allocator.free(blob);
 
             // The blob must be exactly what the chain committed to. This is the
@@ -334,12 +440,11 @@ pub const Cache = struct {
         self: *Cache,
         file: []const u8,
         source: []const u8,
-        phase: Phase,
-        deps: []const Dep,
+        inputs: Inputs,
         output: []const u8,
     ) !void {
         var key: [64]u8 = undefined;
-        try self.deriveKey(file, source, phase, deps, &key);
+        try self.deriveKey(file, source, inputs, &key);
 
         var content: [64]u8 = undefined;
         sha256Hex(output, &content);

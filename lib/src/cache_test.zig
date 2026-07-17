@@ -31,6 +31,9 @@ test "chainHex from GENESIS" {
 
 // --- harness ---------------------------------------------------------------
 
+const BUILD_A = "vakedz-git-aaaaaaa";
+const BUILD_B = "vakedz-git-bbbbbbb"; // a later compiler build
+
 /// A cache rooted in a per-test temp dir under `.zig-cache/tmp` (Zig's own
 /// testing temp location — cleaned up, gitignored, never the source tree).
 const Fixture = struct {
@@ -39,6 +42,10 @@ const Fixture = struct {
     c: cache.Cache,
 
     fn init() !Fixture {
+        return initBuild(BUILD_A);
+    }
+
+    fn initBuild(build_id: []const u8) !Fixture {
         var tmp = testing.tmpDir(.{});
         errdefer tmp.cleanup();
         const root = try std.fmt.allocPrint(
@@ -47,8 +54,15 @@ const Fixture = struct {
             .{tmp.sub_path},
         );
         errdefer testing.allocator.free(root);
-        const c = try cache.Cache.open(testing.allocator, testing.io, root);
+        const c = try cache.Cache.open(testing.allocator, testing.io, root, build_id);
         return Fixture{ .tmp = tmp, .root = root, .c = c };
+    }
+
+    /// Reopen the same on-disk cache as a different compiler build, exactly as
+    /// a developer upgrading the compiler would.
+    fn reopenAs(self: *Fixture, build_id: []const u8) !void {
+        self.c.deinit();
+        self.c = try cache.Cache.open(testing.allocator, testing.io, self.root, build_id);
     }
 
     fn deinit(self: *Fixture) void {
@@ -81,7 +95,7 @@ const Fixture = struct {
     }
 };
 
-const builtins = [_]cache.Dep{.{ .name = "builtins", .bytes = "builtin fiber" }};
+const check_inputs: cache.Inputs = .{ .check = .{ .builtins = "builtin fiber" } };
 
 // --- open ------------------------------------------------------------------
 
@@ -93,17 +107,28 @@ test "open joins the cache dir under root" {
     try testing.expectEqualStrings(want, f.c.root);
 }
 
+test "open rejects an empty build id" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer testing.allocator.free(root);
+    try testing.expectError(
+        error.BuildIdRequired,
+        cache.Cache.open(testing.allocator, testing.io, root, ""),
+    );
+}
+
 // --- round trip ------------------------------------------------------------
 
 test "miss then put then hit" {
     var f = try Fixture.init();
     defer f.deinit();
 
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse, &.{}));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
 
-    try f.c.put("a.vaked", "src", .parse, &.{}, "OUT");
+    try f.c.put("a.vaked", "src", .parse, "OUT");
 
-    const hit = try f.c.lookup("a.vaked", "src", .parse, &.{});
+    const hit = try f.c.lookup("a.vaked", "src", .parse);
     try testing.expect(hit != null);
     defer testing.allocator.free(hit.?);
     try testing.expectEqualStrings("OUT", hit.?);
@@ -112,8 +137,8 @@ test "miss then put then hit" {
 test "empty output round-trips (not confused with a miss)" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "");
-    const hit = try f.c.lookup("a.vaked", "src", .parse, &.{});
+    try f.c.put("a.vaked", "src", .parse, "");
+    const hit = try f.c.lookup("a.vaked", "src", .parse);
     try testing.expect(hit != null);
     defer testing.allocator.free(hit.?);
     try testing.expectEqualStrings("", hit.?);
@@ -124,40 +149,81 @@ test "empty output round-trips (not confused with a miss)" {
 test "source change misses" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "OUT");
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src2", .parse, &.{}));
+    try f.c.put("a.vaked", "src", .parse, "OUT");
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src2", .parse));
 }
 
 test "file identity change misses" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "OUT");
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("b.vaked", "src", .parse, &.{}));
+    try f.c.put("a.vaked", "src", .parse, "OUT");
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("b.vaked", "src", .parse));
 }
 
-test "builtins (dep) change misses" {
+// The regression this module exists to prevent: a parser bugfix changes output
+// with every byte of data identical. Keying only data serves the pre-fix AST to
+// the post-fix compiler.
+test "build identity change misses (compiler upgrade)" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .check, &builtins, "OUT");
+    try f.c.put("a.vaked", "src", .parse, "AST-FROM-BUGGY-PARSER");
 
-    const hit = try f.c.lookup("a.vaked", "src", .check, &builtins);
+    // Same source, same file, same grammar — only the compiler changed.
+    try f.reopenAs(BUILD_B);
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
+
+    // And the original build still hits: the entry was invalidated, not lost.
+    try f.reopenAs(BUILD_A);
+    const hit = try f.c.lookup("a.vaked", "src", .parse);
+    try testing.expect(hit != null);
+    defer testing.allocator.free(hit.?);
+    try testing.expectEqualStrings("AST-FROM-BUGGY-PARSER", hit.?);
+}
+
+test "build identity change misses for check and lower too" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const lower_inputs: cache.Inputs = .{ .lower = .{ .builtins = "B", .options = "O" } };
+    try f.c.put("a.vaked", "src", check_inputs, "CHECK_OUT");
+    try f.c.put("a.vaked", "src", lower_inputs, "LOWER_OUT");
+
+    try f.reopenAs(BUILD_B);
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", check_inputs));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", lower_inputs));
+}
+
+test "builtins change misses" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.c.put("a.vaked", "src", check_inputs, "OUT");
+
+    const hit = try f.c.lookup("a.vaked", "src", check_inputs);
     try testing.expect(hit != null);
     testing.allocator.free(hit.?);
 
-    const changed = [_]cache.Dep{.{ .name = "builtins", .bytes = "builtin fiber + engine" }};
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .check, &changed));
+    const changed: cache.Inputs = .{ .check = .{ .builtins = "builtin fiber + engine" } };
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", changed));
+}
+
+test "lower options change misses" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    const a: cache.Inputs = .{ .lower = .{ .builtins = "B", .options = "{\"out\":\"x\"}" } };
+    const b: cache.Inputs = .{ .lower = .{ .builtins = "B", .options = "{\"out\":\"y\"}" } };
+    try f.c.put("a.vaked", "src", a, "OUT");
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", b));
 }
 
 test "GRAMMAR_VERSION change misses" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "OUT");
+    try f.c.put("a.vaked", "src", .parse, "OUT");
 
-    f.c.grammar = "v0.6"; // simulate a grammar bump
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse, &.{}));
+    f.c.grammar = "v0.6"; // simulate a language-spec bump
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
 
     f.c.grammar = cache.GRAMMAR_VERSION;
-    const hit = try f.c.lookup("a.vaked", "src", .parse, &.{});
+    const hit = try f.c.lookup("a.vaked", "src", .parse);
     try testing.expect(hit != null);
     testing.allocator.free(hit.?);
 }
@@ -165,38 +231,31 @@ test "GRAMMAR_VERSION change misses" {
 test "phase isolation: a parse entry never serves a check lookup" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "PARSE_OUT");
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .check, &builtins));
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .lower, &builtins));
+    try f.c.put("a.vaked", "src", .parse, "PARSE_OUT");
+    const lower_inputs: cache.Inputs = .{ .lower = .{ .builtins = "builtin fiber", .options = "" } };
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", check_inputs));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", lower_inputs));
 }
 
-test "dep order does not change the key" {
+// check and lower can carry an identical builtins dep; only `phase` separates
+// their keys.
+test "check and lower with identical inputs key differently" {
     var f = try Fixture.init();
     defer f.deinit();
-    const ab = [_]cache.Dep{
-        .{ .name = "builtins", .bytes = "B" },
-        .{ .name = "opts", .bytes = "O" },
-    };
-    const ba = [_]cache.Dep{
-        .{ .name = "opts", .bytes = "O" },
-        .{ .name = "builtins", .bytes = "B" },
-    };
-    var k1: [64]u8 = undefined;
-    var k2: [64]u8 = undefined;
-    try f.c.deriveKey("a.vaked", "src", .check, &ab, &k1);
-    try f.c.deriveKey("a.vaked", "src", .check, &ba, &k2);
-    try testing.expectEqualStrings(&k1, &k2);
+    var k_check: [64]u8 = undefined;
+    var k_lower: [64]u8 = undefined;
+    try f.c.deriveKey("a.vaked", "src", .{ .check = .{ .builtins = "B" } }, &k_check);
+    try f.c.deriveKey("a.vaked", "src", .{ .lower = .{ .builtins = "B", .options = "" } }, &k_lower);
+    try testing.expect(!std.mem.eql(u8, &k_check, &k_lower));
 }
 
-test "check and lower reject an empty dep set" {
-    var f = try Fixture.init();
-    defer f.deinit();
-    try testing.expectError(error.DepsRequired, f.c.lookup("a.vaked", "src", .check, &.{}));
-    try testing.expectError(error.DepsRequired, f.c.lookup("a.vaked", "src", .lower, &.{}));
-    try testing.expectError(error.DepsRequired, f.c.put("a.vaked", "src", .check, &.{}, "OUT"));
-    try testing.expect(!cache.Phase.parse.requiresDeps());
-    try testing.expect(cache.Phase.check.requiresDeps());
-    try testing.expect(cache.Phase.lower.requiresDeps());
+test "Inputs.phase reports the active tag" {
+    try testing.expectEqual(cache.Phase.parse, (cache.Inputs{ .parse = {} }).phase());
+    try testing.expectEqual(cache.Phase.check, check_inputs.phase());
+    try testing.expectEqual(
+        cache.Phase.lower,
+        (cache.Inputs{ .lower = .{ .builtins = "B", .options = "O" } }).phase(),
+    );
 }
 
 // --- verify ----------------------------------------------------------------
@@ -213,9 +272,9 @@ test "verify on a fresh cache is ok and empty" {
 test "verify on a clean chain reports every entry valid" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.c.put("b.vaked", "s2", .parse, &.{}, "O2");
-    try f.c.put("c.vaked", "s3", .parse, &.{}, "O3");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.c.put("b.vaked", "s2", .parse, "O2");
+    try f.c.put("c.vaked", "s3", .parse, "O3");
 
     const vr = try f.c.verify();
     try testing.expect(vr.ok);
@@ -226,8 +285,8 @@ test "verify on a clean chain reports every entry valid" {
 test "repeated identical put does not grow the chain" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
     const vr = try f.c.verify();
     try testing.expect(vr.ok);
     try testing.expectEqual(@as(usize, 1), vr.entries);
@@ -236,9 +295,9 @@ test "repeated identical put does not grow the chain" {
 test "truncated chain: valid prefix intact but ok is false" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.c.put("b.vaked", "s2", .parse, &.{}, "O2");
-    try f.c.put("c.vaked", "s3", .parse, &.{}, "O3");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.c.put("b.vaked", "s2", .parse, "O2");
+    try f.c.put("c.vaked", "s3", .parse, "O3");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -269,8 +328,8 @@ test "truncated chain: valid prefix intact but ok is false" {
 test "header count disagreeing with the body is not ok" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.c.put("b.vaked", "s2", .parse, &.{}, "O2");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.c.put("b.vaked", "s2", .parse, "O2");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -288,7 +347,7 @@ test "header count disagreeing with the body is not ok" {
     _ = h.next().?; // schema
     _ = h.next().?; // count
     const head = h.next().?;
-    lines.items[0] = try std.fmt.allocPrint(a, "vakedz-cache-1 5 {s}", .{head});
+    lines.items[0] = try std.fmt.allocPrint(a, "{s} 5 {s}", .{ cache.SCHEMA, head });
 
     const joined = try std.mem.join(a, "\n", lines.items);
     try f.writeChainText(try std.fmt.allocPrint(a, "{s}\n", .{joined}));
@@ -302,9 +361,9 @@ test "header count disagreeing with the body is not ok" {
 test "tampered payload mid-chain is detected at its index" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.c.put("b.vaked", "s2", .parse, &.{}, "O2");
-    try f.c.put("c.vaked", "s3", .parse, &.{}, "O3");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.c.put("b.vaked", "s2", .parse, "O2");
+    try f.c.put("c.vaked", "s3", .parse, "O3");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -339,8 +398,8 @@ test "tampered payload mid-chain is detected at its index" {
 test "tampered chain never serves a hit past the tamper" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.c.put("b.vaked", "s2", .parse, &.{}, "O2");
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.c.put("b.vaked", "s2", .parse, "O2");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -362,16 +421,16 @@ test "tampered chain never serves a hit past the tamper" {
     const joined = try std.mem.join(a, "\n", lines.items);
     try f.writeChainText(try std.fmt.allocPrint(a, "{s}\n", .{joined}));
 
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "s1", .parse, &.{}));
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("b.vaked", "s2", .parse, &.{}));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "s1", .parse));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("b.vaked", "s2", .parse));
 }
 
 test "put refuses to append to a broken chain" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "s1", .parse, &.{}, "O1");
-    try f.writeChainText("vakedz-cache-1 9 " ++ "c" ** 64 ++ "\n");
-    try testing.expectError(error.ChainBroken, f.c.put("b.vaked", "s2", .parse, &.{}, "O2"));
+    try f.c.put("a.vaked", "s1", .parse, "O1");
+    try f.writeChainText(cache.SCHEMA ++ " 9 " ++ "c" ** 64 ++ "\n");
+    try testing.expectError(error.ChainBroken, f.c.put("b.vaked", "s2", .parse, "O2"));
 }
 
 // --- corruption tolerance --------------------------------------------------
@@ -381,7 +440,7 @@ test "garbage chain file reads as a miss and verify reports not-ok" {
     defer f.deinit();
     try f.writeChainText("this is not a chain\n\x00\xff garbage");
 
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse, &.{}));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
     const vr = try f.c.verify();
     try testing.expect(!vr.ok);
     try testing.expectEqual(@as(usize, 0), vr.entries);
@@ -391,7 +450,7 @@ test "empty chain file reads as a miss, not a crash" {
     var f = try Fixture.init();
     defer f.deinit();
     try f.writeChainText("");
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse, &.{}));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
     const vr = try f.c.verify();
     try testing.expect(!vr.ok);
 }
@@ -399,7 +458,7 @@ test "empty chain file reads as a miss, not a crash" {
 test "missing CAS blob reads as a miss, not a crash" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "OUT");
+    try f.c.put("a.vaked", "src", .parse, "OUT");
 
     // Delete the blob out from under an otherwise valid chain entry.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -412,13 +471,13 @@ test "missing CAS blob reads as a miss, not a crash" {
     });
     try std.Io.Dir.cwd().deleteFile(testing.io, blob);
 
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse, &.{}));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
 }
 
 test "corrupted CAS blob reads as a miss, never a wrong hit" {
     var f = try Fixture.init();
     defer f.deinit();
-    try f.c.put("a.vaked", "src", .parse, &.{}, "OUT");
+    try f.c.put("a.vaked", "src", .parse, "OUT");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -431,5 +490,5 @@ test "corrupted CAS blob reads as a miss, never a wrong hit" {
     // Same length, different bytes: only the content hash catches this.
     try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = blob, .data = "EVL" });
 
-    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse, &.{}));
+    try testing.expectEqual(@as(?[]u8, null), try f.c.lookup("a.vaked", "src", .parse));
 }
