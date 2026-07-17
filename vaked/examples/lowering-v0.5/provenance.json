@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "source": "vaked/examples/v0.5/runtime-with-trust.vaked",
+  "artifacts": {
+    "flake.nix": [
+      {
+        "region": "nixosModules.v0p5-demo",
+        "sourceFile": "vaked/examples/v0.5/runtime-with-trust.vaked",
+        "decl": "runtime v0p5-demo",
+        "span": { "file": "vaked/examples/v0.5/runtime-with-trust.vaked", "byteStart": 213, "byteEnd": 1533, "line": 8, "col": 1 },
+        "emitter": "nix.spine",
+        "inputsHash": "sha256-d56fb4dcf59fd4ba56fb62a98ca75000811618923aaae091379e76401983905f"
+      }
+    ],
+    "gen/RUNTIME.md": [
+      {
+        "region": "header",
+        "sourceFile": "vaked/examples/v0.5/runtime-with-trust.vaked",
+        "decl": "runtime v0p5-demo",
+        "span": { "file": "vaked/examples/v0.5/runtime-with-trust.vaked", "byteStart": 213, "byteEnd": 1533, "line": 8, "col": 1 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-d56fb4dcf59fd4ba56fb62a98ca75000811618923aaae091379e76401983905f"
+      },
+      {
+        "region": "indexes/testCorpus",
+        "sourceFile": "vaked/examples/v0.5/runtime-with-trust.vaked",
+        "decl": "index testCorpus",
+        "span": { "file": "vaked/examples/v0.5/runtime-with-trust.vaked", "byteStart": 1041, "byteEnd": 1134, "line": 55, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-853e7fda6333682bef8f9cd2412f1d26daa9a276be2e7a53e4647baa924cf4f0"
+      },
+      {
+        "region": "meshes/testMesh",
+        "sourceFile": "vaked/examples/v0.5/runtime-with-trust.vaked",
+        "decl": "mesh testMesh",
+        "span": { "file": "vaked/examples/v0.5/runtime-with-trust.vaked", "byteStart": 1138, "byteEnd": 1531, "line": 60, "col": 3 },
+        "emitter": "docs.runtime",
+        "inputsHash": "sha256-72f888aafa1fbe5d7d31cfe5c6b29fe17efd033f058518a4e8eb9c3d875c9796"
+      }
+    ],
+    "gen/catalog/testCorpus.jsonl": [
+      {
+        "sourceFile": "vaked/examples/v0.5/runtime-with-trust.vaked",
+        "decl": "index testCorpus",
+        "span": { "file": "vaked/examples/v0.5/runtime-with-trust.vaked", "byteStart": 1041, "byteEnd": 1134, "line": 55, "col": 3 },
+        "emitter": "catalog.jsonl",
+        "inputsHash": "sha256-853e7fda6333682bef8f9cd2412f1d26daa9a276be2e7a53e4647baa924cf4f0"
+      }
+    ],
+    "gen/trust.json": [
+      {
+        "sourceFile": "vaked/examples/v0.5/runtime-with-trust.vaked",
+        "decl": "runtime v0p5-demo",
+        "span": { "file": "vaked/examples/v0.5/runtime-with-trust.vaked", "byteStart": 213, "byteEnd": 1533, "line": 8, "col": 1 },
+        "emitter": "trust.config",
+        "inputsHash": "sha256-d56fb4dcf59fd4ba56fb62a98ca75000811618923aaae091379e76401983905f"
+      }
+    ]
+  }
+}

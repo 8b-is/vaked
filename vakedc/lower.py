@@ -88,7 +88,8 @@ import hashlib
 import ipaddress
 import json
 import posixpath
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 
 from . import parser as P
 from .graph import Graph, GraphNode
@@ -1691,12 +1692,13 @@ def emit_trust_config(graph, nodes):
     trusts = []
     for t in rv.trusts:
         entry = {"name": t.name}
-        score = t.props.get("score")
+        score = _lit(t.props.get("score"))
         if score is not None:
-            entry["score"] = _lit(score)
-        half_life = t.props.get("half_life")
+            # number literals are stored in string form — coerce like fps/min.
+            entry["score"] = _coerce_number(score)
+        half_life = _lit(t.props.get("half_life"))
         if half_life is not None:
-            entry["half_life"] = _lit(half_life)
+            entry["half_life"] = half_life
         delegate = _ref(t.props.get("delegate"))
         if delegate is not None:
             entry["delegate"] = delegate
@@ -1707,16 +1709,20 @@ def emit_trust_config(graph, nodes):
     quorums = []
     for q in rv.quorums:
         entry = {"name": q.name}
-        min_v = q.props.get("min")
+        min_v = _lit(q.props.get("min"))
         if min_v is not None:
-            entry["min"] = int(_lit(min_v) or 0)
+            entry["min"] = _coerce_number(min_v)
         over = q.props.get("over")
         if over is not None:
             entry["over"] = [_ref(x) for x in over if _ref(x) is not None]
         timeout = q.props.get("timeout")
         if timeout is not None:
             entry["timeout"] = _lit(timeout)
-        on_failure = _lit(q.props.get("on_failure"))
+        # on_failure is ref-valued per grammar quorum_decl (`on_failure` ident:
+        # `on_failure = retry`) — the checker's FailurePolicy type accepts only
+        # refs, so project the ref name; tolerate a literal on unchecked graphs.
+        on_failure = (_ref(q.props.get("on_failure"))
+                      or _lit(q.props.get("on_failure")))
         if on_failure is not None:
             entry["on_failure"] = on_failure
         quorums.append(entry)
@@ -1735,6 +1741,9 @@ def emit_trust_config(graph, nodes):
         with_ref = _ref(p.props.get("with"))
         if with_ref is not None:
             entry["with"] = with_ref
+        # `on_result` (an inline record/Block) is deliberately not projected:
+        # 0012 §5.2 configs carry scalars/refs only, and a nested record has no
+        # stable JSON projection yet — the runtime reads it from the graph.
         probes.append(entry)
     cfg = _Ordered([
         ("_generated", _header(sf, "runtime " + rt.name)),
