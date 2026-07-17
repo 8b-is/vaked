@@ -53,9 +53,20 @@ def _analyse_one(graph: Graph, wf: GraphNode) -> WorkflowIR:
 
     # --- Cycle detection: iterative DFS with colour map (check.py:1727-1759) ---
     WHITE, GREY, BLACK = 0, 1, 2
-    colour = {s: WHITE for s in step_names}
+    colour = {s.name: WHITE for s in steps}
     cycle = None
-    for root in step_names:
+    # DFS roots are iterated in `steps` DECLARATION order, NOT over the
+    # `step_names` SET. Set iteration order for strings depends on
+    # PYTHONHASHSEED, and the root the DFS happens to start from decides WHICH
+    # ROTATION of a cycle gets reported — so iterating the set made this
+    # diagnostic's message disagree with itself run-to-run (all three rotations
+    # of cyclic.vaked are reachable across seeds 0/1/3). The reported cycle is
+    # part of the output contract (0024 §2.2 reproducibility; tests/corpus/
+    # 0024-differential exists to discharge the §11 Determinism box), so the
+    # root order must be deterministic. `steps` is a list in declaration order.
+    # Regression-locked by tests/spec/test_vakedc_passes.py, which asserts the
+    # exact message under several PYTHONHASHSEEDs.
+    for root in (s.name for s in steps):
         if cycle is not None or colour[root] != WHITE:
             continue
         stack = [(root, iter(succ[root]))]

@@ -54,28 +54,28 @@
 //! `depth` / `walFrames[].step` are computed `usize`s emitted as `.int` — never
 //! round-tripped through the string props. See `maxDepthBound`.
 //!
-//! ## KNOWN DIVERGENCE — cycle-message rotation (vakedc bug)
+//! ## Cycle-root order (a vakedc bug this port surfaced, now FIXED in Python)
 //!
-//! `pass01_topology.py:58` iterates cycle-detection DFS roots with
+//! `pass01_topology.py` used to iterate the cycle-detection DFS roots with
 //! `for root in step_names`, where `step_names` is a **`set`**. Python's set
-//! iteration order for strings depends on PYTHONHASHSEED, so the reported cycle
-//! is an arbitrary ROTATION of the true cycle and vakedc's own output is not
-//! reproducible run-to-run. Measured on
-//! `tests/corpus/0024-differential/fixtures/cyclic.vaked`, all three rotations
-//! occur across 12 seeds:
+//! iteration order for strings depends on PYTHONHASHSEED, and the root the DFS
+//! starts from decides WHICH ROTATION of a cycle is reported — so vakedc's own
+//! output was not reproducible run-to-run. All three rotations of
+//! `tests/corpus/0024-differential/fixtures/cyclic.vaked` were reachable:
 //!
 //!     PYTHONHASHSEED=3  ->  "cycle: A -> B -> C -> A"
 //!     PYTHONHASHSEED=0  ->  "cycle: B -> C -> A -> B"
 //!     PYTHONHASHSEED=1  ->  "cycle: C -> A -> B -> C"
 //!
-//! Only the `message` rotates: the `code` (E-WORKFLOW-CYCLE), the diagnostic
-//! COUNT, and every other field of the document are stable, which is why the
-//! corpus harness (which asserts on `code`) never caught it. There is no single
-//! Python behaviour to be bug-compatible WITH, so this port iterates roots in
-//! `steps` DECLARATION order — deterministic, and equal to the Python output
-//! whenever the seed happens to yield the declaration-order rotation. The
-//! differential harness compares the cycle message modulo rotation for this
-//! reason (`tools/passes-diff/run.sh`, CYCLE_ROTATION_TOLERANT).
+//! Only the `message` rotated — the `code`, the diagnostic COUNT and every other
+//! field were stable, which is why the corpus harness (which asserts on `code`)
+//! never caught it. Bug-compatibility was impossible in principle: there was no
+//! single Python behaviour to match, only three rotations. Python has since been
+//! fixed to iterate `steps` (declaration order), which is what `detectCycle`
+//! below has always done — so the two now agree byte-for-byte under any seed.
+//! Regression-locked on both sides: `tests/spec/test_vakedc_passes.py` asserts
+//! the exact message under several PYTHONHASHSEEDs, and `tools/passes-diff/run.sh`
+//! byte-compares under the ambient seed with no pin and no tolerance.
 //!
 //! ## Pass 3 scope
 //!
@@ -140,11 +140,25 @@ pub const PassResult = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Graph helpers — local ports of the `lower.py` helpers that `lower.zig` keeps
-// private. Deliberately duplicated rather than exported from lower.zig: this
-// slice owns passes.zig only, and these are the two smallest, most stable
-// helpers in the file. TODO(passes-followup): collapse into lower.zig's
-// `childrenOf`/`nodesSorted` if they are ever made `pub`.
+// Graph helpers.
+//
+// FOUR of these are re-implementations of helpers `lower.zig` keeps private:
+// `nodesSorted` (lower.zig L178), `childrenOf` (L195), `getProp` (L215) and
+// `litOf` (L247) — line numbers as of this commit; lower.zig is moving, so
+// match on name, not line. They are duplicated deliberately, not by oversight: this
+// slice owns passes.zig, and lower.zig is 2000+ lines under active concurrent
+// edit — exporting from it here would collide. All four are small, pure and
+// stable ports of the same `lower.py` helpers, so the drift risk is low and the
+// merge risk of touching lower.zig is not.
+//
+// TODO(passes-followup): extract `childrenOf`, `nodesSorted`, `getProp` and
+// `litOf` into a shared graph-helper module and have BOTH lower.zig and
+// passes.zig use it. Tracked as a follow-up — do not do it piecemeal from one
+// side.
+//
+// `stepsEdges` below is NOT one of these: lower.zig has no steps/edges logic at
+// all (lower.py's `_workflow_steps_edges` is unported there), so it is the sole
+// implementation in the Zig tree and is already `pub` for reuse.
 // ---------------------------------------------------------------------------
 
 /// lower.py `_children_of`: direct `contains` children in source order.
