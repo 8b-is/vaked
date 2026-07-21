@@ -46,6 +46,15 @@ nix build .#vakedz
 
 Scale-tested to 100k workers @ 273ms avg, deterministic (1M projected).
 
+## Known limitations
+
+Some `docs/language/*.md` RFCs link to sibling subsystems (`protocol/`,
+`superpowers/`, `runtime/`) that live in the parent monorepo this language was
+extracted from and aren't included here — `tests/spec/test_doc_links.py`
+flags these as unresolved; they're expected until those docs are ported or
+the links are rewritten. `hcplang` (a separate protocol grammar previously
+tested alongside vaked's) was also dropped from the test suite as unrelated.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

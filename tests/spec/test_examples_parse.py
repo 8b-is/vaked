@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """test_examples_parse.py — every example derives from its grammar.
 
-(a) All 17 `.vaked` example files parse against vaked/grammar/vaked-v0-plus.ebnf.
-(b) protocol/hcplang/examples/hcp-core.hcplang parses against the hcplang grammar.
-(c) v0.2-compat regression probes (inline snippets) verify the v0.3 soft-keyword
+(a) All `.vaked` example files parse against vaked/grammar/vaked-v0-plus.ebnf.
+(b) v0.2-compat regression probes (inline snippets) verify the v0.3 soft-keyword
     disambiguation did not change how any previously-legal v0.2 program parses:
       * `open = true`  parses as an ASSIGNMENT (open_decl is ordered AFTER assignment)
       * `order = 3`, `grant = "x"`, `field = 1`, `engine = 1` likewise parse as
@@ -37,8 +36,6 @@ VAKED_EXAMPLE_GLOBS = [
     "vaked/examples/ebpf/*.vaked",          # 1 (#225: observe/enforce hook typing)
 ]
 EXPECTED_VAKED_COUNT = 36
-
-HCP_EXAMPLE = "protocol/hcplang/examples/hcp-core.hcplang"
 
 
 def _vaked_files():
@@ -90,16 +87,7 @@ def run():
             ok = False
             lines.append(f"  FAIL  {rel}: {out.location()}")
 
-    # (b) hcp-core.hcplang
-    hcp = os.path.join(REPO, HCP_EXAMPLE)
-    out = ps.parse_hcplang(open(hcp, encoding="utf-8").read(), HCP_EXAMPLE)
-    if out.ok:
-        lines.append(f"  PASS  {HCP_EXAMPLE}")
-    else:
-        ok = False
-        lines.append(f"  FAIL  {HCP_EXAMPLE}: {out.location()}")
-
-    # (c) v0.2-compat regression probes
+    # (b) v0.2-compat regression probes
     lines.append("v0.2-compat regression probes:")
     for label, src, parser, expect_pass in _regression_probes():
         out = parser(src)

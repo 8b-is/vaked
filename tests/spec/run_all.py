@@ -26,15 +26,7 @@ import test_vakedc as t_vakedc  # noqa: E402
 import test_vakedc_check as t_vakedc_check  # noqa: E402
 import test_vakedc_lower as t_vakedc_lower  # noqa: E402
 import test_vakedc_passes as t_vakedc_passes  # noqa: E402
-import test_agentfield_load as t_af_load  # noqa: E402
-import test_eventd as t_eventd  # noqa: E402
-import test_otp_lowering as t_otp  # noqa: E402
-import test_agentfield_lowering as t_af_lower  # noqa: E402
 import test_v05_lowering as t_v05_lower  # noqa: E402
-import test_agent_guardd as t_guardd  # noqa: E402
-import test_yardmaster as t_yardmaster  # noqa: E402
-import test_telebot as t_telebot  # noqa: E402
-import test_swe_af_workflow as t_swe_af_wf  # noqa: E402
 
 ALL_MODULES = [
     ("grammar_selfcontained", t_grammar),
@@ -45,23 +37,15 @@ ALL_MODULES = [
     ("vakedc_check",          t_vakedc_check),
     ("vakedc_lower",          t_vakedc_lower),
     ("vakedc_passes",         t_vakedc_passes),
-    ("agentfield_load",       t_af_load),
-    ("eventd",                t_eventd),
-    ("otp_lowering",          t_otp),
-    ("agentfield_lowering",   t_af_lower),
     ("v05_lowering",          t_v05_lower),
-    ("agent_guardd",          t_guardd),
-    ("yardmaster",            t_yardmaster),
-    ("telebot",               t_telebot),
-    ("swe_af_workflow",       t_swe_af_wf),
 ]
 
 # Tier subsets used by ci-gate:
 #   smoke    – grammar + examples + doc_links (always runs, <60s)
-#   standard – smoke + lowering + vakedc parse/check + eventd (~3 min)
+#   standard – smoke + lowering + vakedc parse/check (~3 min)
 #   full     – every module in ALL_MODULES (~8 min, default)
 SMOKE_NAMES = {"grammar_selfcontained", "examples_parse", "doc_links"}
-STANDARD_NAMES = SMOKE_NAMES | {"lowering_fixtures", "vakedc", "vakedc_check", "eventd"}
+STANDARD_NAMES = SMOKE_NAMES | {"lowering_fixtures", "vakedc", "vakedc_check"}
 
 TIER_MODULES = {
     "smoke":    [m for m in ALL_MODULES if m[0] in SMOKE_NAMES],

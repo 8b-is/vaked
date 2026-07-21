@@ -11,11 +11,6 @@ Allowlists (documented dead rules):
                                     "for completeness" (grammar §Lexical terminals);
                                     `any`/`eol` are referenced only by `comment`, so
                                     they are transitively dead too.
-  hcplang  : (none)              — every rule is reachable from `schema`, including
-                                    `string_char` (reached via `string`). The
-                                    allowlist is intentionally empty; the check below
-                                    also fails if an allowlist entry is in fact live,
-                                    so the allowlists cannot silently rot.
 """
 
 import os
@@ -24,15 +19,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ebnf  # noqa: E402
 import lex_vaked  # noqa: E402
-import lex_hcplang  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 VAKED_GRAMMAR = os.path.join(REPO, "vaked", "grammar", "vaked-v0-plus.ebnf")
-HCP_GRAMMAR = os.path.join(REPO, "protocol", "hcplang", "grammar.ebnf")
 
-# Allowlisted dead rules per grammar (see module docstring).
+# Allowlisted dead rules (see module docstring).
 VAKED_DEAD_ALLOW = {"comment", "any", "eol", "probe_decl", "quorum_decl", "trust_decl", "signed_decimal"}
-HCP_DEAD_ALLOW = set()  # hcplang has no unreachable rules
 
 
 def _check_grammar(path, start, terminal_names, dead_allow):
@@ -80,15 +72,6 @@ def run():
     lines.append(f"vaked grammar: {len(g_v.rules)} rules, "
                  f"dead={sorted(dead_v)} (allowed)")
     for f in fv:
-        ok = False
-        lines.append(f"  FAIL: {f}")
-
-    g_h, dead_h, fh = _check_grammar(
-        HCP_GRAMMAR, "schema", set(lex_hcplang.TERMINAL_MAP), HCP_DEAD_ALLOW
-    )
-    lines.append(f"hcplang grammar: {len(g_h.rules)} rules, "
-                 f"dead={sorted(dead_h)} (allowed)")
-    for f in fh:
         ok = False
         lines.append(f"  FAIL: {f}")
 
