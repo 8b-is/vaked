@@ -60,7 +60,7 @@ No dependencies beyond a Python 3.9+ stdlib for the reference compiler
 (`vakedc`); the Zig port (`vakedz`) needs Zig 0.16+.
 
 ```sh
-git clone https://github.com/peterlodri-sec/vaked
+git clone https://github.com/8b-is/vaked
 cd vaked
 export PATH="$PWD/bin:$PATH"
 vaked env
