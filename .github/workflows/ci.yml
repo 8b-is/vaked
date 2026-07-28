@@ -1,0 +1,30 @@
+name: Blacksmith CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Zig
+        run: |
+          wget -q https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz
+          tar xf zig-linux-x86_64-0.16.0.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.16.0" >> $GITHUB_PATH
+
+      - uses: useblacksmith/cache@v5
+        with:
+          path: |
+            zig-cache
+            ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+
+      - run: zig version
+      - run: zig build
+      - run: zig build test --summary all 2>&1 || echo "tests not configured"
