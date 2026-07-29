@@ -14,9 +14,9 @@ jobs:
 
       - name: Install Zig
         run: |
-          wget -q https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz
-          tar xf zig-linux-x86_64-0.16.0.tar.xz
-          echo "$PWD/zig-linux-x86_64-0.16.0" >> $GITHUB_PATH
+          wget -q https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz
+          tar xf zig-linux-x86_64-0.14.0.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.14.0" >> $GITHUB_PATH
 
       - uses: useblacksmith/cache@v5
         with:
