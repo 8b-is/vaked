@@ -464,3 +464,17 @@ The normative design track lives in [`docs/language/`](docs/language/):
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## Honorary
+
+For the constants that never change:
+
+- **π** — the circle, the wave, the recursion that folds back
+- **e** — the base of natural growth, the limit of compounding
+- **i** — the imaginary unit, the axis of rotation
+- **φ** — the golden ratio, the proportion that pleases the eye
+- **∞** — there is no bottom. It folds back.
+- **Paul Erdős** — eternal love. The old dog. 1913–1996.
+- **all** — every honest node in the capability graph
