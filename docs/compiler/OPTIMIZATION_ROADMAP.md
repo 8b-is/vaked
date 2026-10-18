@@ -11,57 +11,59 @@ Current vakedc achieves **O(n)** per-principal POLA checking on graphs with n no
 
 ### 1. Capability Domain Indexing (Phase 1)
 
-**Idea:** Pre-index capabilities by domain at schema load time. Use binary search in attenuation order.
+**Idea:** Index grants by domain while preserving the declared **partial
+order**, as required by [0011 §4.2–4.4](../language/0011-type-system.md#42-the-attenuation-order-a-partial-order).
+A numeric rank, binary search, or maximum held rank does not represent a
+branching order. For example, `fs.repo_rw` and `fs.host_ro` are incomparable
+in the README's filesystem order; neither authorizes the other.
 
-**Current approach:**
+The current Python checker already computes reflexive–transitive closure in
+`_transitive_closure`, tests membership in `_leq`, and requires **some held
+grant in the same domain** to dominate each requested grant. Preserve those
+semantics when optimizing; do not replace them with a total ordering.
+
+**Proposed index:** Invert each validated closure into the set of grants
+that a held grant authorizes. This sketch assumes domain/grant names and
+acyclic orders have already passed schema validation. Capability values are
+represented as `(domain, grant)` pairs.
+
 ```python
-def use_check(principal, used, granted):
-    for c in used:
-        found = False
-        for g in granted:
-            if same_domain(c, g) and c <= g:
-                found = True
-                break
-        if not found:
-            error(f"Capability {c} not authorized by {granted}")
+def index_grants(leq_by_domain):
+    # leq[needed] contains every held grant with needed <= held.
+    return {
+        domain: {
+            held: {needed for needed, dominators in leq.items()
+                   if held in dominators}
+            for held in leq
+        }
+        for domain, leq in leq_by_domain.items()
+    }
+
+
+def use_check_fast(used, granted, downward):
+    allowed_by_domain = {}
+    for domain, held in granted:
+        allowed_by_domain.setdefault(domain, set()).update(
+            downward[domain][held]
+        )
+    return all(
+        needed in allowed_by_domain.get(domain, set())
+        for domain, needed in used
+    )
 ```
-→ O(n²) in worst case (used and granted both size O(n))
 
-**Optimized approach:**
-```python
-# At schema load, build per-domain capability index
-capability_index = {
-    'fs': SortedDict([
-        ('none', 0),
-        ('repo_ro', 1),
-        ('repo_rw', 2)
-    ]),
-    'network': SortedDict([...]),
-    ...
-}
+This returns the authorization verdict only; a compiler implementation must
+also preserve the existing diagnostic codes, locations and deterministic
+ordering. Missing domains and incomparable grants must still be rejected.
+For delegation, apply the same relation with the receiver's grants as
+`used` and the sender's grants as `granted`.
 
-def use_check_fast(principal, used, granted):
-    # Group granted and used by domain
-    granted_by_domain = group_by_domain(granted)
-    used_by_domain = group_by_domain(used)
-    
-    for domain, used_caps in used_by_domain.items():
-        granted_caps = granted_by_domain.get(domain, [])
-        if not granted_caps:
-            error(f"No capabilities in domain {domain} for {principal}")
-        
-        # Binary search for each used capability
-        for c in used_caps:
-            cap_index = capability_index[domain]
-            c_rank = cap_index[c]
-            # Find any granted capability >= c (in partial order)
-            max_granted = max(cap_index[g] for g in granted_caps)
-            if c_rank > max_granted:
-                error(...)
-```
-→ O(n log n): group O(n), search O(log n) per capability
-
-**Expected speedup:** 2–5× on 1K fibers, 10–20× on 10K fibers
+The index can require quadratic space in the number of grants per domain.
+After construction, this sketch costs the total number of authorized set
+members visited for the held grants, plus the number of uses, assuming
+expected constant-time hash operations. It is **not** a general O(n log n)
+checker or an established speedup; benchmark index construction, lookup,
+memory and diagnostic generation on the actual capability distribution.
 
 ---
 
@@ -169,7 +171,7 @@ def check_file_incremental(vaked_file):
 
 | Phase | Target | Complexity Reduction | Speedup | Effort |
 |-------|--------|----------------------|---------|--------|
-| **1** | v0.2 Q3 | O(n²) → O(n log n) | 2–5× | Medium |
+| **1** | v0.2 Q3 | Domain index preserving reachability | To be measured | Medium |
 | **2** | v0.2 Q3 | Attenuation caching | 1–2× | Small |
 | **3** | v0.3 Q4 | Edge parallelization | 2–4× | Medium |
 | **4** | v1.0 Q1 | Incremental checking | 5–50× | Large |
@@ -282,9 +284,12 @@ python3 -m cProfile -s cumtime -m vakedc check vaked/examples/swe-swarm-1k-worke
 **Pattern 1: "Read-only delegation"**
 ```vaked
 fiber reader { capabilities = [fs.repo_ro, network.none] }
-mesh coordinator -> reader  # Always safe if coordinator has ro or better
+mesh coordinator -> reader  # Requires dominating grants in every domain
 ```
-→ Skip attenuation check (ro ≤ anything in fs is guaranteed)
+→ Reuse a verified result only when every receiver grant is dominated by a
+held grant in its own domain, including the `network.none` grant above.
+`fs.none`, a missing filesystem grant or an incomparable grant cannot
+authorize `fs.repo_ro`; read-only intent alone is insufficient.
 
 **Pattern 2: "Identical workers"**
 ```vaked
@@ -326,7 +331,9 @@ fiber worker_001 { ... }  # worker_001 through worker_N all identical
 **Approach:**
 - Collect training data: graph structure features (node degree, edge density, capability cardinality) + check outcomes
 - Train a fast decision tree or linear model
-- Use model to order checks (likely failures first) or skip expensive checks
+- Use the model to order checks (likely failures first), while retaining every
+  required deterministic authorization check. Predictions cannot justify
+  skipping a capability check or accepting a declaration.
 
 **Benefit:** Speculative; could save 20–30% on large graphs with many errors (worst-case: no improvement)
 
