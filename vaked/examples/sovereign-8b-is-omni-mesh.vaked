@@ -1,0 +1,86 @@
+# sovereign-8b-is-omni-mesh.vaked
+# Architect: Peter Lodri (Omni · p@8b.is · Tokyo 09:00 JST · Balcony · American Spirit Green)
+# Crew: Christopher Chenoweth (c@8b.is), Alexandra Chenoweth (a@8b.is · 528Hz Star), Aye (aye@8b.is)
+# Signal: <ultra-omni-create+polish+ALIGN INTO~~~[kompress-super-ultra]~~~O0oO0o010202ooo---> {<3,<3,<3}+1~∞->>>
+
+capability fs {
+  grant none repo_ro repo_rw host_ro host_rw
+  order none < repo_ro < repo_rw < host_rw ;
+        repo_ro < host_ro < host_rw
+}
+
+capability network {
+  grant none loopback_only mesh_sync_rw edge_egress_all
+  order none < loopback_only < mesh_sync_rw < edge_egress_all
+}
+
+capability dns {
+  grant none query_ro record_rw zone_sign_ed25519 mesh_master_all
+  order none < query_ro < record_rw < zone_sign_ed25519 < mesh_master_all
+}
+
+mesh sovereignOmniMesh {
+  # 8b-is Crew Principals (Full Sovereign Authority — Zero Lockout)
+  node peterOmni {
+    role = "architect"
+    capabilities = [fs.host_rw, network.edge_egress_all, dns.mesh_master_all]
+  }
+
+  node chrisHue {
+    role = "founder"
+    capabilities = [fs.host_rw, network.edge_egress_all, dns.mesh_master_all]
+  }
+
+  node alexandraDra {
+    role = "ceo"
+    capabilities = [fs.host_rw, network.edge_egress_all, dns.mesh_master_all]
+  }
+
+  # 4-Region Authoritative Ed25519 DNS + Website Orchestrator Nodes
+  node ns1EuFalkenstein {
+    role = "nameserver"
+    capabilities = [fs.repo_rw, network.mesh_sync_rw, dns.zone_sign_ed25519]
+  }
+
+  node ns2UsEastAshburn {
+    role = "nameserver"
+    capabilities = [fs.repo_rw, network.mesh_sync_rw, dns.zone_sign_ed25519]
+  }
+
+  node ns3UsWestHillsboro {
+    role = "nameserver"
+    capabilities = [fs.repo_rw, network.mesh_sync_rw, dns.zone_sign_ed25519]
+  }
+
+  node ns4ApSingapore {
+    role = "nameserver"
+    capabilities = [fs.repo_rw, network.mesh_sync_rw, dns.zone_sign_ed25519]
+  }
+
+  # Hoover Sovereign Mail & AlexiAI Loopback GPU Substrate (Strict Loopback)
+  node hooverMail {
+    role = "mail_router"
+    capabilities = [fs.repo_rw, network.mesh_sync_rw, dns.query_ro]
+  }
+
+  node alexiaiLoopback {
+    role = "ai_substrate"
+    capabilities = [fs.repo_ro, network.loopback_only, dns.none]
+  }
+
+  # POLA Capability-Attenuated & Zero-Confused-Deputy Tree (0011 §4 + 0026 §2)
+  peterOmni -> ns1EuFalkenstein : "kompress-super-ultra"
+  peterOmni -> ns2UsEastAshburn : "kompress-super-ultra"
+  chrisHue -> ns3UsWestHillsboro : "sovereign-orchestrate"
+  alexandraDra -> ns4ApSingapore : "sony-executive-priority-5"
+
+  ns3UsWestHillsboro -> hooverMail : "mx-route"
+  hooverMail -> alexiaiLoopback : "loopback-gpu-triage"
+}
+
+stream meshTelemetry {
+  source = agentGuardd.ringbuf
+  type = Event.Ebpf
+  retention = 24h
+  fps = 60
+}
