@@ -1,0 +1,41 @@
+# ghibli-atelier-vault-violation.vaked — the one edge the vault must never
+# have: a workstation delegating to a node that holds net.wan_egress.
+# Expected: exactly one E-CAP-ATTENUATION in domain `net`.
+
+capability fs {
+  grant none cel_archive_ro restoration_rw
+  order none < cel_archive_ro < restoration_rw
+}
+
+capability net {
+  grant none wan_egress
+  order none < wan_egress
+}
+
+mesh ghibliAtelierVault {
+  node scan_station {
+    role = "scan"
+    capabilities = [fs.cel_archive_ro]
+  }
+
+  node restoration_ws {
+    role = "restorer"
+    capabilities = [fs.cel_archive_ro, fs.restoration_rw]
+  }
+
+  node color_ws {
+    role = "colorist"
+    capabilities = [fs.cel_archive_ro]
+  }
+
+  node cloud_backup {
+    role = "cloud"
+    capabilities = [net.wan_egress]
+  }
+
+  restoration_ws -> color_ws : "shot-handoff"
+
+  # E-CAP-ATTENUATION: the restorer holds nothing in `net`, wan_egress cannot
+  # be received.
+  restoration_ws -> cloud_backup : "backup"
+}

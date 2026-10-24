@@ -1,0 +1,47 @@
+# panasonic-cell-provenance.vaked — cell-level provenance ledger for the
+# energy lane (batteries) + the Technics audio lane. Formation-line cells are
+# sealed at birth; a vehicle BMS may read, a service tool may diagnose — but
+# nothing else crosses a boundary.
+
+schema cellTelemetry {
+  field cell_voltage_mv : Int { required in 2000 .. 4200 }
+  field temp_c          : Int { required in -40 .. 85 }
+  field soc_pct         : Int { required in 0 .. 100 }
+  field seal            : String { required nonempty }
+}
+
+capability fab {
+  grant none cell_ro cell_rw
+  order none < cell_ro < cell_rw
+}
+
+capability svc {
+  grant none diagnostic_ro
+  order none < diagnostic_ro
+}
+
+stream cellTelemetryStream {
+  source = pipe.formationLine
+  type = cellTelemetry
+  fps = 10
+}
+
+mesh panasonicCellField {
+  node formation_line {
+    role = "fab"
+    capabilities = [fab.cell_rw]
+  }
+
+  node vehicle_bms {
+    role = "bms"
+    capabilities = [fab.cell_ro]
+  }
+
+  node service_tool {
+    role = "service"
+    capabilities = [svc.diagnostic_ro]
+  }
+
+  # attenuation-safe: pack release passes only the read grant the fab holds.
+  formation_line -> vehicle_bms : "pack-release"
+}

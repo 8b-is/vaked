@@ -1,0 +1,41 @@
+# panasonic-cell-provenance-violation.vaked — two independent rejections:
+#   1. E-CAP-ATTENUATION: the service tool (svc.diagnostic_ro only) tries to
+#      delegate into the vehicle BMS (fab.cell_ro) — nothing in `fab` dominates.
+#   2. E-CONSTRAINT-RANGE: fps = 0 violates the stream's `> 0` refinement.
+
+capability fab {
+  grant none cell_ro cell_rw
+  order none < cell_ro < cell_rw
+}
+
+capability svc {
+  grant none diagnostic_ro
+  order none < diagnostic_ro
+}
+
+stream cellTelemetryStream {
+  source = pipe.formationLine
+  type = cellTelemetry
+  fps = 0
+}
+
+mesh panasonicCellField {
+  node formation_line {
+    role = "fab"
+    capabilities = [fab.cell_rw]
+  }
+
+  node vehicle_bms {
+    role = "bms"
+    capabilities = [fab.cell_ro]
+  }
+
+  node service_tool {
+    role = "service"
+    capabilities = [svc.diagnostic_ro]
+  }
+
+  formation_line -> vehicle_bms : "pack-release"
+
+  service_tool -> vehicle_bms : "diagnostic-handoff"
+}

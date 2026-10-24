@@ -1,0 +1,51 @@
+# namco-netcode-field.vaked — deterministic 60 Hz netcode field with a sandboxed
+# AI director. Closed `tickState` schema pins the tick budget; capability
+# attenuation keeps third-party mods inside their slice.
+
+schema tickState {
+  field tick_hz          : Int { required in 60 .. 60 }
+  field memory_budget_kb : Int { required in 0 .. 512 }
+  field frame_hash       : String { required nonempty }
+}
+
+capability player {
+  grant none tokens_ro tokens_rw memory_ro memory_rw
+  order none < tokens_ro < tokens_rw < memory_rw ;
+        tokens_ro < memory_ro < memory_rw
+}
+
+capability mods {
+  grant none sandbox_a sandbox_b
+  order none < sandbox_a < sandbox_b
+}
+
+stream netcodeFrames {
+  source = pipe.matchmaker
+  type = tickState
+  fps = 60
+}
+
+mesh namcoNetcodeField {
+  node matchmaker {
+    role = "matchmaker"
+    capabilities = [player.tokens_ro, player.memory_ro]
+  }
+
+  node arena_host {
+    role = "host"
+    capabilities = [player.memory_rw]
+  }
+
+  node observer {
+    role = "observer"
+    capabilities = [player.tokens_ro]
+  }
+
+  node ai_director {
+    role = "director"
+    capabilities = [mods.sandbox_a]
+  }
+
+  # attenuation-safe: observer's tokens_ro is dominated by matchmaker's own.
+  matchmaker -> observer : "status"
+}

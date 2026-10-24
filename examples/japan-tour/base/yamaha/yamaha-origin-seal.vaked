@@ -1,0 +1,33 @@
+# yamaha-origin-seal.vaked — polymorphic resonance engine: every creative
+# asset and hardware handshake verifies its lineage against a cryptographic
+# origin seal, fully local, zero cloud dependency.
+
+capability id {
+  grant none origin_seal_ro origin_seal_rw
+  order none < origin_seal_ro < origin_seal_rw
+}
+
+capability audio {
+  grant none dsp_ro dsp_rw
+  order none < dsp_ro < dsp_rw
+}
+
+mesh yamahaOriginField {
+  node asset_ledger {
+    role = "ledger"
+    capabilities = [id.origin_seal_rw]
+  }
+
+  node synth_engine {
+    role = "engine"
+    capabilities = [audio.dsp_rw, id.origin_seal_ro]
+  }
+
+  node instrument_fw {
+    role = "firmware"
+    capabilities = [audio.dsp_ro, id.origin_seal_ro]
+  }
+
+  # attenuation-safe: voice programs carry read-only lineage seals.
+  synth_engine -> instrument_fw : "voice-program"
+}

@@ -1,0 +1,37 @@
+# namco-netcode-field-violation.vaked — a third-party mod reaching for player
+# account tokens. Expected: exactly one E-CAP-USE (0011 §4.3): the mod holds
+# only mods.sandbox_a but exercises player.tokens_ro.
+
+capability player {
+  grant none tokens_ro tokens_rw memory_ro memory_rw
+  order none < tokens_ro < tokens_rw < memory_rw ;
+        tokens_ro < memory_ro < memory_rw
+}
+
+capability mods {
+  grant none sandbox_a sandbox_b
+  order none < sandbox_a < sandbox_b
+}
+
+mesh namcoNetcodeField {
+  node matchmaker {
+    role = "matchmaker"
+    capabilities = [player.tokens_ro, player.memory_ro]
+  }
+
+  node arena_host {
+    role = "host"
+    capabilities = [player.memory_rw]
+  }
+
+  node ai_director {
+    role = "director"
+    capabilities = [mods.sandbox_a]
+  }
+
+  node mod_plugin {
+    role = "mod"
+    capabilities = [mods.sandbox_a]
+    needs = [player.tokens_ro]
+  }
+}

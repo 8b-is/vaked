@@ -1,0 +1,38 @@
+# toyota-ecu-mesh.vaked — ISO-26262 capability attenuation for a 3-node ECU mesh.
+# Positive fixture: only the vehicle_controller (which holds actuator authority)
+# may hand off to the brake actuator. `vaked check` proves the graph.
+
+capability can {
+  grant none telemetry_ro actuator_rw
+  order none < telemetry_ro < actuator_rw
+}
+
+capability sensor {
+  grant none lidar_ro
+  order none < lidar_ro
+}
+
+mesh toyotaEcuMesh {
+  node infotainment_hud {
+    role = "hud"
+    capabilities = [can.telemetry_ro]
+  }
+
+  node adas_planner {
+    role = "planner"
+    capabilities = [can.telemetry_ro, sensor.lidar_ro]
+  }
+
+  node vehicle_controller {
+    role = "controller"
+    capabilities = [can.telemetry_ro, can.actuator_rw]
+  }
+
+  node brake_actuator {
+    role = "actuator"
+    capabilities = [can.actuator_rw]
+  }
+
+  # the only legal handoff: actuator authority, delegated to an actuator.
+  vehicle_controller -> brake_actuator : "brake-command"
+}

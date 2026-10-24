@@ -1,0 +1,34 @@
+# ghibli-atelier-vault.vaked — the air-gapped restoration atelier.
+# Workstations may read high-resolution cel scans; no node holds, and no edge
+# may ever reach, net.wan_egress. The compiler keeps the network out of the
+# graph itself, so the archive stays un-scrapable by construction.
+
+capability fs {
+  grant none cel_archive_ro restoration_rw
+  order none < cel_archive_ro < restoration_rw
+}
+
+capability net {
+  grant none wan_egress
+  order none < wan_egress
+}
+
+mesh ghibliAtelierVault {
+  node scan_station {
+    role = "scan"
+    capabilities = [fs.cel_archive_ro]
+  }
+
+  node restoration_ws {
+    role = "restorer"
+    capabilities = [fs.cel_archive_ro, fs.restoration_rw]
+  }
+
+  node color_ws {
+    role = "colorist"
+    capabilities = [fs.cel_archive_ro]
+  }
+
+  # attenuation-safe: the colorist receives only the read grant the restorer holds.
+  restoration_ws -> color_ws : "shot-handoff"
+}

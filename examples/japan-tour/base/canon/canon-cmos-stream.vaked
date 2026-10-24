@@ -1,0 +1,18 @@
+# canon-cmos-stream.vaked — zero-allocation sensor-frame notarization stream.
+# Every raw frame is hash-chained at capture (frame hash covers frame_id +
+# exposure + alignment + the previous frame's seal). The closed schema rejects
+# anything not declared here.
+
+schema cmosFrame {
+  field frame_id    : Int { required in 0 .. 4294967295 }
+  field exposure_us : Int { required in 10 .. 4000000 }
+  field align_um    : Int { required in -1000 .. 1000 }
+  field hash_prev   : String { required nonempty }
+  field seal        : String { required nonempty }
+}
+
+stream cmosTelemetry {
+  source = pipe.cmosFrontend
+  type = cmosFrame
+  fps = 60
+}

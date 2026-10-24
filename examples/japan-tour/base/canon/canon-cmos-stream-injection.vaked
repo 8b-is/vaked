@@ -1,0 +1,10 @@
+# canon-cmos-stream-injection.vaked — malformed / injected telemetry, rejected
+# before lowering. Expected: one E-CONSTRAINT-RANGE (fps = 0 violates `> 0`)
+# and one E-CONFORM-UNKNOWN-FIELD (`injected` is not a declared stream field).
+
+stream cmosTelemetry {
+  source = pipe.cmosFrontend
+  type = cmosFrame
+  fps = 0
+  injected = true
+}

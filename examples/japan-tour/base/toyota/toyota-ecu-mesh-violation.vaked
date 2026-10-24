@@ -1,0 +1,40 @@
+# toyota-ecu-mesh-violation.vaked — the illegal escalation, caught at compile time.
+# An untrusted node (the head unit) tries to hand off to brake_actuator.
+# Expected: exactly one E-CAP-ATTENUATION (0011 §4.4), zero runtime overhead.
+
+capability can {
+  grant none telemetry_ro actuator_rw
+  order none < telemetry_ro < actuator_rw
+}
+
+capability sensor {
+  grant none lidar_ro
+  order none < lidar_ro
+}
+
+mesh toyotaEcuMesh {
+  node infotainment_hud {
+    role = "hud"
+    capabilities = [can.telemetry_ro]
+  }
+
+  node adas_planner {
+    role = "planner"
+    capabilities = [can.telemetry_ro, sensor.lidar_ro]
+  }
+
+  node vehicle_controller {
+    role = "controller"
+    capabilities = [can.telemetry_ro, can.actuator_rw]
+  }
+
+  node brake_actuator {
+    role = "actuator"
+    capabilities = [can.actuator_rw]
+  }
+
+  vehicle_controller -> brake_actuator : "brake-command"
+
+  # E-CAP-ATTENUATION: telemetry_ro does not dominate actuator_rw.
+  infotainment_hud -> brake_actuator : "handoff"
+}

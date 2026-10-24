@@ -1,0 +1,35 @@
+# yamaha-origin-seal-violation.vaked — an unsigned clone firmware reaching for
+# the origin seal writer. Expected: exactly one E-CAP-USE.
+
+capability id {
+  grant none origin_seal_ro origin_seal_rw
+  order none < origin_seal_ro < origin_seal_rw
+}
+
+capability audio {
+  grant none dsp_ro dsp_rw
+  order none < dsp_ro < dsp_rw
+}
+
+mesh yamahaOriginField {
+  node asset_ledger {
+    role = "ledger"
+    capabilities = [id.origin_seal_rw]
+  }
+
+  node synth_engine {
+    role = "engine"
+    capabilities = [audio.dsp_rw, id.origin_seal_ro]
+  }
+
+  node instrument_fw {
+    role = "firmware"
+    capabilities = [audio.dsp_ro, id.origin_seal_ro]
+  }
+
+  node pirate_clone {
+    role = "clone"
+    capabilities = [audio.dsp_ro]
+    needs = [id.origin_seal_rw]
+  }
+}
