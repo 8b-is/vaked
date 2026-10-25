@@ -1,0 +1,172 @@
+# wip-catalog.vaked — the catalog of named fires, drawn as a capability mesh.
+#
+# Source of truth: 8b-is/raw_research/wip-catalog-100.md (223 rows, nine lanes,
+# contributed by Nate / standardgalactic 2026-09-06, closed season one).
+#
+# The point of this file is not decoration: every row of the catalog is a fire
+# that has been *named*. Naming is not verification. This mesh encodes that
+# difference as a capability order — `named < verified` — so the compiler, not
+# the prose, decides which lanes may claim a verified bound.
+#
+# The distributed-compute roster below is the fleet this lap actually measured
+# (2026-10-25, from the M1 on the tailnet): 17 of 18 probed edge workers
+# answered 200; api.kompress.vaked.dev did not resolve; the AgentField control
+# plane on dev-cx53 (100.105.72.88:8085) timed out. Those two are held at
+# `probe_ro` because a probe that failed cannot be upgraded to a dispatch.
+#
+#   python3 -m vakedc check --json examples/wip-catalog/wip-catalog.vaked
+#
+# Expected: {"diagnostics": []}
+
+capability evidence {
+  grant none named verified
+  order none < named < verified
+}
+
+capability compute {
+  grant none probe_ro dispatch_rw
+  order none < probe_ro < dispatch_rw
+}
+
+# One entry of the catalog, in the house shape. `status` is the closed status
+# vocabulary of the catalog's own status ledger (`mapped`, `applied`, `specd`,
+# `open`); `evidence` is the honesty contract — a row may be *ranked* while
+# planned, only a verified row may be *bound*.
+schema catalogEntry {
+  field row      : Int    { required in 1 .. 223 }
+  field lane     : String { required oneof ["A", "B", "C", "D", "E", "F", "G", "H", "I"] }
+  field status   : String { required oneof ["mapped", "applied", "specd", "open"] }
+  field evidence : String { required oneof ["named", "verified"] }
+  field surface  : String { required nonempty }
+}
+
+# The catalog as an event lane: the status ledger is append-only, so the stream
+# is ordered and never rewound.
+stream namedFiresLedger {
+  source = pipe.wipCatalogLedger
+  type = catalogEntry
+  fps = 1
+}
+
+mesh wipCatalogFleet {
+  # The catalog itself. Holds the union of every lane's evidence and the right
+  # to dispatch work onto the fleet — everything downstream is a subset.
+  node namedFires {
+    role = "catalog"
+    capabilities = [evidence.verified, compute.dispatch_rw]
+    rows = 223
+  }
+
+  # --- the nine lanes (A..I) ------------------------------------------------
+  # `applied` lanes hold `verified`: their rows run somewhere with a passing
+  # selftest. `specd` and `open` lanes hold `named` only.
+
+  node laneCognition {
+    role = "lane_A"
+    capabilities = [evidence.verified]
+    rows = 32
+  }
+
+  node lanePhysics {
+    role = "lane_B"
+    capabilities = [evidence.verified]
+    rows = 17
+  }
+
+  node laneEnvironment {
+    role = "lane_C"
+    capabilities = [evidence.verified]
+    rows = 11
+  }
+
+  node laneCivilization {
+    role = "lane_D"
+    capabilities = [evidence.named]
+    rows = 8
+  }
+
+  node lanePhilosophy {
+    role = "lane_E"
+    capabilities = [evidence.verified]
+    rows = 14
+  }
+
+  node laneHardware {
+    role = "lane_F"
+    capabilities = [evidence.named]
+    rows = 11
+  }
+
+  node laneSociety {
+    role = "lane_G"
+    capabilities = [evidence.named]
+    rows = 5
+  }
+
+  node laneInterface {
+    role = "lane_H"
+    capabilities = [evidence.named]
+    rows = 2
+  }
+
+  node laneArtifact {
+    role = "lane_I"
+    capabilities = [evidence.verified]
+    rows = 2
+  }
+
+  # --- the distributed compute roster (measured, this lap) ------------------
+
+  # 17/18 edge workers answered HTTP 200 (median 1574 ms, cold TLS, from the
+  # M1). Holds probe rights only: probing a worker is not dispatching onto it.
+  node osarusEdgeFleet {
+    role = "compute_edge"
+    capabilities = [compute.probe_ro]
+    alive = 17
+    probed = 18
+  }
+
+  # The AgentField control plane on dev-cx53. Timed out from here this lap, so
+  # it is held at `probe_ro` — a failed probe cannot be upgraded to a dispatch.
+  node entheaiPlane {
+    role = "compute_reasoner"
+    capabilities = [compute.probe_ro]
+    reachable = 0
+  }
+
+  # The M1 itself: Ollama on :8080 (answering) and nats-server, the only node
+  # that actually holds dispatch rights, because it is the only one that ran.
+  node localM1 {
+    role = "compute_local"
+    capabilities = [compute.dispatch_rw]
+  }
+
+  # The record. An inscription surface: it holds strictly less than the
+  # catalog that writes it, and it has exactly one writer — the catalog run.
+  # A shared writing surface across nine lanes would be a confused deputy
+  # (0026 §2); a lane is a read-only view of rows, not a writer of them.
+  node statusLedger {
+    role = "ledger"
+    capabilities = [evidence.named]
+  }
+
+  # --- edges ---------------------------------------------------------------
+  # Law of capability attenuation: Cap(receiver) subset-of Cap(sender).
+  # Every lane is handed evidence it already holds no more of than the root.
+
+  namedFires -> laneCognition    : "A_rows_1_32"
+  namedFires -> lanePhysics      : "B_rows_33_49"
+  namedFires -> laneEnvironment  : "C_rows_50_60"
+  namedFires -> laneCivilization : "D_rows_61_68"
+  namedFires -> lanePhilosophy   : "E_rows_69_82"
+  namedFires -> laneHardware     : "F_rows_83_93"
+  namedFires -> laneSociety      : "G_rows_94_98"
+  namedFires -> laneInterface    : "H_rows_99_100"
+  namedFires -> laneArtifact     : "I_first_artifact_ALEXANDRA"
+
+  namedFires -> localM1      : "dispatch_roster_refresh"
+  namedFires -> statusLedger : "status_ledger_append"
+
+  localM1 -> osarusEdgeFleet : "http_200_probe"
+  localM1 -> entheaiPlane    : "http_timeout_probe"
+}

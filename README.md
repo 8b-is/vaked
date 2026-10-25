@@ -430,6 +430,16 @@ zig build test                                        # Zig lib + vakedz tests
 Scale-tested to 100k workers @ 273ms average, deterministic (1M projected) —
 see [`vaked/examples/swe-swarm-100k-workers-scalability.vaked`](vaked/examples/swe-swarm-100k-workers-scalability.vaked).
 
+Worked example: [`vaked/examples/wip-catalog/`](vaked/examples/wip-catalog/)
+draws the 8b-is work-in-progress catalog (223 rows, nine lanes) as a mesh where
+`named < verified` is a *capability order*. Naming a research substrate is not
+evidence that it was verified, so the compiler — not the prose — decides which
+lane may claim a verified bound. It checks clean, and it is also the smallest
+honest demonstration of `W-CONFUSED-DEPUTY`: the first draft had nine lanes
+writing through one shared ledger, which is the routing/adjudication collapse in
+graph form. See
+[`WIP-CATALOG.md`](vaked/examples/wip-catalog/WIP-CATALOG.md).
+
 ## Design docs
 
 New language constructs always go grammar-first (EBNF + example) before code.
