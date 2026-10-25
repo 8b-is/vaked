@@ -1,0 +1,60 @@
+# teamlab-borderless-field.vaked — the borderless wave-field at
+# https://teamlab.vaked.dev/ (Chuo-ku / Toyosu × sovereign library).
+#
+# FOLD(spherePop) as a capability mesh: the Toss RECIPE's 9 steps reduce to
+# three principals — sphere_pop (katsuramuki), fold_laminate (crossWeave +
+# Onime nuts + double die-press), and wave_knock (koguchi edge polish) — with
+# attenuation-safe edges only. `vaked check` proves no step ever gains a
+# capability the previous step did not hold.
+
+capability wave {
+  grant none unfold_ro
+  order none < unfold_ro
+}
+
+capability mem8 {
+  grant none capsule_ro capsule_rw
+  order none < capsule_ro < capsule_rw
+}
+
+capability spark {
+  grant none layers_7
+  order none < layers_7
+}
+
+# Closed wave-packet schema: the zenebuddhizmus tri-state and the air-gap are
+# schema constraints, not comments. trit_state ∈ {-1, 0, +1}; ingress_net == 0
+# (Backyard Sanctuary is air-gapped by construction); tick_hz == 60.
+schema wavePacket {
+  field trit_state  : Int { required in -1 .. 1 }
+  field ingress_net : Int { required in 0 .. 0 }
+  field tick_hz     : Int { required in 60 .. 60 }
+  field seal        : String { required nonempty }
+}
+
+stream zenebuddhizmusWave {
+  source = pipe.teamlabWaveField
+  type = wavePacket
+  fps = 60
+}
+
+mesh teamlabBorderlessField {
+  node katsuramukiPop {
+    role = "sphere_pop"
+    capabilities = [wave.unfold_ro, mem8.capsule_rw, spark.layers_7]
+  }
+
+  node crossWeaveMold {
+    role = "fold_laminate"
+    capabilities = [wave.unfold_ro, mem8.capsule_rw]
+  }
+
+  node koguchiBoundary {
+    role = "wave_knock"
+    capabilities = [wave.unfold_ro]
+  }
+
+  # Law of capability attenuation: Cap(receiver) ⊆ Cap(sender).
+  katsuramukiPop  -> crossWeaveMold  : "7_veneers_plus_2_melamine_skins_4_onime_nuts"
+  crossWeaveMold  -> koguchiBoundary : "chamfered_edge_coherent_wave_packet"
+}
