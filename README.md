@@ -440,6 +440,17 @@ writing through one shared ledger, which is the routing/adjudication collapse in
 graph form. See
 [`WIP-CATALOG.md`](vaked/examples/wip-catalog/WIP-CATALOG.md).
 
+Second worked example: [`vaked/examples/first-spark/`](vaked/examples/first-spark/)
+turns a rule from the First Spark framework — a karmic debt names the *domain*
+the work lives in, never the archetype — into a checked constraint. The pair is
+the claim: `first-spark.vaked` checks clean, and `first-spark-debt-leak.vaked`
+produces exactly one `E-CAP-ATTENUATION` when a seated figure is handed to
+something that speaks in domains. It also documents the two lessons the checker
+taught while it was being written: attenuation is enforced per domain, so the
+only node that can fill a multi-domain node is one that dominates it in all of
+them; and a node with two callers trips `W-CONFUSED-DEPUTY`, which forced the
+truer shape (the room is handed to the name, and the name seats the figure).
+
 ## Design docs
 
 New language constructs always go grammar-first (EBNF + example) before code.
