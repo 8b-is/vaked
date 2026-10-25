@@ -1,0 +1,138 @@
+# first-spark.vaked — the Echo Loom's narrowing law, as a checked mesh.
+#
+# The framework says: birth opens one of four Selector domains, the name seats
+# one of that domain's three figures, and the light dresses the seat. It also
+# says something stricter, in DL-010: a karmic debt names the *domain* the work
+# lives in, and never the figure. That sentence is an attenuation constraint, so
+# it belongs in the type checker rather than in a footnote.
+#
+#   python3 -m vakedc check --json examples/first-spark/first-spark.vaked
+#
+# Expected: {"diagnostics": []}
+#
+# The companion fixture first-spark-debt-leak.vaked hands a seated figure to the
+# debt node and expects exactly one E-CAP-ATTENUATION. That pair is the claim:
+# the rule is enforced, not described.
+#
+# Shape note, learned from the checker: attenuation is per *domain*, so a node
+# may only receive from a sender that dominates it in every domain it holds.
+# That forces the honest architecture. Each stage is a projection that hands
+# down inside its own domain, and the single assembly point is the thesis, the
+# only node holding the union.
+
+capability light {
+  grant none one_tier all_nine
+  order none < one_tier < all_nine
+}
+
+# The wheel widens as the claim narrows: a seat is one figure of three in one
+# domain, a domain is four times wider, the whole wheel is twelve.
+capability wheel {
+  grant none one_seat one_domain twelve_domains
+  order none < one_seat < one_domain < twelve_domains
+}
+
+capability mark {
+  grant none shade domain_only
+  order none < shade < domain_only
+}
+
+# A pattern, in the house shape. The constraints are the framework's own: nine
+# lights, four domains, and a debt that may not resolve to anything finer than
+# a domain.
+schema soulPattern {
+  field life_path : Int    { required in 1 .. 33 }
+  field expression : Int   { required in 1 .. 33 }
+  field radiant    : Int   { required in 1 .. 9 }
+  field tier       : String { required oneof ["Ember", "Dawn", "Gold Vein", "Verdant Gate", "Tide Glass", "Still Water", "Violet Hour", "Rose Ash", "Pearl Gate"] }
+  field domain     : String { required oneof ["Physics", "Metaphysical", "Relational", "Temporal"] }
+  field seed       : String { required nonempty }
+}
+
+stream inscription {
+  source = pipe.echoLoomInscription
+  type = soulPattern
+  fps = 1
+}
+
+mesh echoLoom {
+  # L0 — the thesis, and the only node holding the union: nine lights, the
+  # twelve-seat wheel, and the shade a debt is allowed to reach.
+  node thesis {
+    role = "L0_spark"
+    capabilities = [light.all_nine, wheel.twelve_domains, mark.domain_only]
+  }
+
+  # L5 — the Color Codex. All nine lights, because the palette is chosen by the
+  # Radiant Number and that number does not exist until name and date are both
+  # in hand.
+  node codex {
+    role = "L5_color"
+    capabilities = [light.all_nine]
+  }
+
+  # L1 — the Selector model: four gates, one per quadrant of the wheel.
+  node selector {
+    role = "L1_gates"
+    capabilities = [wheel.twelve_domains]
+  }
+
+  # The projection that actually draws: one tier.
+  node palette {
+    role = "L5_projection"
+    capabilities = [light.one_tier]
+  }
+
+  # The projection that actually seats: one figure of three, in the opened domain.
+  node archetype {
+    role = "L3_projection"
+    capabilities = [wheel.one_seat]
+  }
+
+  # L6 — the Vessel: the name, holding the one domain the birth opened and the
+  # one seat the Soul Urge chose inside it.
+  node vessel {
+    role = "L6_name"
+    capabilities = [wheel.one_seat]
+  }
+
+  # Karmic conditions. Holds a domain and a shade, and deliberately holds
+  # nothing finer: DL-010 says a debt names a domain, never an archetype.
+  node debt {
+    role = "L6_karma"
+    capabilities = [wheel.one_domain, mark.domain_only]
+  }
+
+  # The assembled surface. Fed by the thesis alone, because a two-domain node
+  # can only be filled by a sender dominating it in both.
+  node pattern {
+    role = "surface"
+    capabilities = [light.one_tier, wheel.one_seat]
+  }
+
+  # L0 again, from the other side: the gold at the centre is identical on every
+  # tier, so the spark takes the light and adds nothing to it.
+  node spark {
+    role = "L0_center"
+    capabilities = [light.one_tier]
+  }
+
+  # --- edges: Cap(receiver) subset-of Cap(sender), in every domain ----------
+  thesis -> codex    : "the_nine_lights"
+  thesis -> selector : "the_four_gates"
+  thesis -> debt     : "road_and_vessel_debts"
+  thesis -> pattern  : "assemble"
+
+  codex -> palette : "one_tier_dresses"
+
+  # Birth picks the room, the name picks the chair: the opened domain is handed
+  # to the Vessel, and the Vessel is the single actor that seats a figure.
+  selector -> vessel    : "the_opened_domain"
+  vessel   -> archetype : "the_soul_urge_seats_one_of_three"
+
+  palette -> spark : "the_center_adds_nothing"
+
+  # The debt has no outgoing edge on purpose. DL-010: the mark sits in a domain
+  # sector and stops there. A debt that could push into the pattern would be a
+  # debt that names a figure, which is the one thing the framework forbids.
+}

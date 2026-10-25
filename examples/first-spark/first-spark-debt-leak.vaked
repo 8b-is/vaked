@@ -1,0 +1,52 @@
+# first-spark-debt-leak.vaked — the illegal seating, caught at compile time.
+#
+# DL-010 says a karmic debt names the domain the work lives in, and stops there.
+# Here the debt is handed the *seated figure* instead of the domain, which is the
+# exact mistake the rule forbids: it would let a debt speak in an archetype's
+# name.
+#
+#   python3 -m vakedc check --json examples/first-spark/first-spark-debt-leak.vaked
+#
+# Expected: exactly one E-CAP-ATTENUATION on the `vessel -> debt` edge, because
+# `wheel.one_domain` is not dominated by `wheel.one_seat` in the same domain.
+
+capability light {
+  grant none one_tier all_nine
+  order none < one_tier < all_nine
+}
+
+capability wheel {
+  grant none one_seat one_domain twelve_domains
+  order none < one_seat < one_domain < twelve_domains
+}
+
+mesh echoLoomLeak {
+  node thesis {
+    role = "L0_spark"
+    capabilities = [light.all_nine, wheel.twelve_domains]
+  }
+
+  node selector {
+    role = "L1_gates"
+    capabilities = [wheel.twelve_domains]
+  }
+
+  node vessel {
+    role = "L6_name"
+    capabilities = [wheel.one_seat]
+  }
+
+  # The debt holds a domain only. Holding `mark` here as well would trip the
+  # same edge twice (once per domain) and bury the one error worth reading.
+  node debt {
+    role = "L6_karma"
+    capabilities = [wheel.one_domain]
+  }
+
+  thesis   -> selector : "the_four_gates"
+  selector -> vessel   : "the_opened_domain"
+
+  # E-CAP-ATTENUATION: a seat cannot be handed to something that speaks in
+  # domains. The debt would gain an archetype it was never allowed to name.
+  vessel -> debt : "the_seat_leaks"
+}
