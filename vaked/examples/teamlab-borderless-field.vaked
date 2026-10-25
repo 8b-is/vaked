@@ -1,0 +1,57 @@
+# teamlab-borderless-field.vaked
+# Architect: Peter Lodri (Omni · p@8b.is · Tokyo Monozukuri Toss RECIPE × Zenebuddhizmus)
+# Target: https://teamlab.vaked.dev/ (Chuo-ku / Toyosu Wave-Field × Sovereign Library)
+# Operator: FOLD(S) := dieMold2(insert4(dieMold1(crossWeave7x2(spherePop(S))))) -> ncTrim -> koguchiPolish -> foldToCenter([0,0])
+
+capability wave {
+  grant none knock_ro unfold_ro coherent_rw
+  order none < knock_ro < unfold_ro < coherent_rw
+}
+
+capability mem8 {
+  grant none origo_ro capsule_rw forcing_house_all
+  order none < origo_ro < capsule_rw < forcing_house_all
+}
+
+capability spark {
+  grant none trim_ro layers_7 onime_4_all
+  order none < trim_ro < layers_7 < onime_4_all
+}
+
+mesh teamlabBorderlessField {
+  # 1 製材 (spherePop / katsuramuki rotary peel into 7 unbroken veneers)
+  node katsuramukiPop {
+    role = "sphere_pop"
+    capabilities = [wave.unfold_ro, mem8.capsule_rw, spark.layers_7]
+  }
+
+  # 2 接着① -> 6 成型② (crossWeave 7+2 melamine skins + 4 Onime nuts sealed inside)
+  node crossWeaveMold {
+    role = "fold_laminate"
+    capabilities = [wave.unfold_ro, mem8.capsule_rw, spark.trim_ro]
+  }
+
+  # 7 トリム -> 8 研磨 (ncTrim + koguchiPolish so surfaces touch at the correct angle)
+  node koguchiBoundary {
+    role = "wave_knock"
+    capabilities = [wave.unfold_ro, mem8.origo_ro]
+  }
+
+  # 9 仕上げ -> [0,0] (Center Sanctuary where the Dreamstate Cat sleeps on the Figure-8 spheres)
+  node centerSanctuaryOrigo {
+    role = "origo_0_0"
+    capabilities = [wave.knock_ro, mem8.origo_ro]
+  }
+
+  # Law of Capability Attenuation: Cap(receiver) <= Cap(sender) [verified < 117ms]
+  katsuramukiPop -> crossWeaveMold : "7_veneers_plus_2_melamine_skins_4_onime_nuts"
+  crossWeaveMold -> koguchiBoundary : "chamfered_edge_coherent_wave_packet"
+  koguchiBoundary -> centerSanctuaryOrigo : "fold_to_center_0_0_plus_1_love"
+}
+
+stream zenebuddhizmusWave {
+  source = mem8.subliminalEditor
+  type = Event.Ebpf
+  retention = 24h
+  fps = 60
+}
