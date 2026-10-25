@@ -1,0 +1,174 @@
+# teamlab-toss-recipe.vaked — the nine-step Toss RECIPE as a checked pipeline.
+#
+# Source: the qMARKDOWN oneshot for teamlab.vaked.dev, which pairs each of the
+# nine monozukuri steps (かつら剥き → 仕上げ) with a stage of FOLD(spherePop).
+#
+# The invariant that makes this a mesh rather than a list: **every step holds
+# strictly less freedom than the step before it.** A raw cylinder can be
+# reshaped; a laminated stack can be pressed but not split; a pressed stack can
+# be drilled; a sealed stack can be trimmed; a trimmed piece can only be
+# polished; a polished piece can only be placed. Commitment is attenuation.
+#
+#   python3 -m vakedc check --json examples/teamlab/teamlab-toss-recipe.vaked
+#
+# Expected: {"diagnostics": []}
+#
+# Note on the companion fixture: the executable snippet inside the source
+# document writes each node body on one line with `;` separators, which this
+# grammar does not accept (`expected a statement, got OP ';'`). The shape below
+# is the same shape, expressed in the language that actually parses.
+
+capability dof {
+  grant none place_ro polish_ro trim_rw seal_rw drill_rw press_rw layer_rw reshape_rw
+  order none < place_ro < polish_ro < trim_rw < seal_rw < drill_rw < press_rw < layer_rw < reshape_rw
+}
+
+# The eight frets are independent voices: each holds the same tribute grant, and
+# none of them can hand anything to another, because none of them is wider.
+capability voice {
+  grant none tribute_ro
+  order none < tribute_ro
+}
+
+mesh teamlabTossRecipe {
+  # The field itself. Widest freedom in both domains, and the only node that can
+  # seed a two-domain child.
+  node spherePopField {
+    role = "kernel"
+    capabilities = [dof.reshape_rw, voice.tribute_ro]
+  }
+
+  # 1 製材 — pop the closed sphere and rotary-peel one unbroken ribbon.
+  node katsuramukiPop {
+    role = "step_1_milling"
+    capabilities = [dof.reshape_rw]
+    veneers = 7
+  }
+
+  # 2 接着① — cross-weave seven veneers at ninety degrees under two skins.
+  node crossWeaveMold {
+    role = "step_2_gluing"
+    capabilities = [dof.layer_rw]
+    skins = 2
+  }
+
+  # 3 成型① — first thermal press in the single deterministic mould.
+  node diePress1 {
+    role = "step_3_moulding"
+    capabilities = [dof.press_rw]
+    moulds = 1
+  }
+
+  # 4 インサート — four Onime nuts, the four surplus vectors.
+  node insertAnchors {
+    role = "step_4_insert"
+    capabilities = [dof.drill_rw]
+    anchors = 4
+  }
+
+  # 5 接着② — laminate the rest over the hardware.
+  node diePress2 {
+    role = "step_5_gluing"
+    capabilities = [dof.seal_rw]
+  }
+
+  # 6 成型② — the hidden hardware seal: no exposed screws on the face.
+  node hiddenHardwareSeal {
+    role = "step_6_moulding"
+    capabilities = [dof.seal_rw]
+    exposed = 0
+  }
+
+  # 7 トリム — subtraction as focus: cut to the contour, nothing outside it.
+  node ncTrim {
+    role = "step_7_trim"
+    capabilities = [dof.trim_rw]
+  }
+
+  # 8 研磨 — chamfer the cross-grain edge so surfaces meet at the right angle.
+  node koguchiPolish {
+    role = "step_8_polish"
+    capabilities = [dof.polish_ro]
+  }
+
+  # 9 仕上げ — oil, legs, and fold the eight outer steps into the centre.
+  node foldToCenter {
+    role = "step_9_finish"
+    capabilities = [dof.place_ro]
+    centre = "0,0"
+  }
+
+  # --- the eight frets -----------------------------------------------------
+  # 弦 theory: one string, every fret a life. Each is a leaf: a voice is heard,
+  # not delegated onward.
+  node fret01Porch {
+    role = "fret_1"
+    capabilities = [voice.tribute_ro]
+    register = "father_wave_knock"
+  }
+
+  node fret02Roof {
+    role = "fret_2"
+    capabilities = [voice.tribute_ro]
+    register = "mother_rain_roof"
+  }
+
+  node fret03River {
+    role = "fret_3"
+    capabilities = [voice.tribute_ro]
+    register = "brother_straight_river"
+  }
+
+  node fret04Line {
+    role = "fret_4"
+    capabilities = [voice.tribute_ro]
+    register = "angel_straightest_line"
+  }
+
+  node fret05Yarn {
+    role = "fret_5"
+    capabilities = [voice.tribute_ro]
+    register = "figure8_untangled_yarn"
+  }
+
+  node fret06Guitar {
+    role = "fret_6"
+    capabilities = [voice.tribute_ro]
+    register = "siddhartha_string_theory"
+  }
+
+  node fret07House {
+    role = "fret_7"
+    capabilities = [voice.tribute_ro]
+    register = "forcing_house_clean_isolated"
+  }
+
+  node fret08District {
+    role = "fret_8"
+    capabilities = [voice.tribute_ro]
+    register = "district_viii_bodhisattva"
+  }
+
+  # --- edges: Cap(receiver) subset-of Cap(sender), in every domain ----------
+  spherePopField -> katsuramukiPop      : "raw_cylinder"
+  katsuramukiPop -> crossWeaveMold      : "one_unbroken_ribbon"
+  crossWeaveMold -> diePress1           : "7_veneers_plus_2_skins"
+  diePress1      -> insertAnchors       : "cooled_laminate"
+  insertAnchors  -> diePress2           : "4_onime_nuts_seated"
+  diePress2      -> hiddenHardwareSeal  : "second_press"
+  hiddenHardwareSeal -> ncTrim          : "sealed_stack"
+  ncTrim         -> koguchiPolish       : "trimmed_contour"
+  koguchiPolish  -> foldToCenter        : "chamfered_edge"
+
+  spherePopField -> fret01Porch  : "apamnak"
+  spherePopField -> fret02Roof   : "anyamnak"
+  spherePopField -> fret03River  : "testveremnek"
+  spherePopField -> fret04Line   : "brigittanak"
+  spherePopField -> fret05Yarn   : "jeeves_plus_one"
+  spherePopField -> fret06Guitar : "saiid_stanza_1"
+  spherePopField -> fret07House  : "saiid_stanza_2"
+  spherePopField -> fret08District : "ujonc_stanza_3"
+
+  # The fold closes here, and the voice does not enter the fold: the centre is
+  # geometry, and the frets are leaves. One line, because one line is the graph.
+}
