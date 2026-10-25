@@ -1,0 +1,214 @@
+{
+ "captured": "2026-10-25",
+ "source": "tailscale status --json on dev-main (M1)",
+ "online": 1,
+ "total": 23,
+ "peers": [
+  {
+   "host": "ultrawhale-pi",
+   "ip": "100.109.84.91",
+   "os": "linux",
+   "online": true,
+   "last_seen": "0001-01-01T00:00:00Z",
+   "tags": []
+  },
+  {
+   "host": "HFK99M239G",
+   "ip": "100.123.33.67",
+   "os": "macOS",
+   "online": false,
+   "last_seen": "2026-07-27T09:41:27.1Z",
+   "tags": []
+  },
+  {
+   "host": "Lodri\u2019s MacBook Pro",
+   "ip": "100.117.70.42",
+   "os": "macOS",
+   "online": false,
+   "last_seen": "2026-10-20T22:22:22.1Z",
+   "tags": []
+  },
+  {
+   "host": "agent-node-01",
+   "ip": "100.100.160.88",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-25T10:48:17.1Z",
+   "tags": []
+  },
+  {
+   "host": "b3-16-2026-06-27-11-23",
+   "ip": "100.109.83.55",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-11T19:27:16.1Z",
+   "tags": [
+    "tag:server"
+   ]
+  },
+  {
+   "host": "bench-node",
+   "ip": "100.66.205.85",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-25T10:48:19.1Z",
+   "tags": [
+    "tag:agents"
+   ]
+  },
+  {
+   "host": "crabcc-ccx33-nbg1",
+   "ip": "100.95.56.108",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-25T10:48:16.1Z",
+   "tags": [
+    "tag:agents",
+    "tag:exit",
+    "tag:homelab",
+    "tag:server"
+   ]
+  },
+  {
+   "host": "crabcc-nats",
+   "ip": "100.73.72.35",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-11T19:27:19.1Z",
+   "tags": [
+    "tag:agents",
+    "tag:exit",
+    "tag:homelab",
+    "tag:server"
+   ]
+  },
+  {
+   "host": "dev-cx53",
+   "ip": "100.105.72.88",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-25T10:48:03.1Z",
+   "tags": [
+    "tag:agents",
+    "tag:exit",
+    "tag:homelab",
+    "tag:proxy-node",
+    "tag:server"
+   ]
+  },
+  {
+   "host": "do-fleet",
+   "ip": "100.97.66.53",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-09-14T10:00:27.1Z",
+   "tags": []
+  },
+  {
+   "host": "do-openclaw",
+   "ip": "100.66.185.13",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-09-14T10:00:27.1Z",
+   "tags": []
+  },
+  {
+   "host": "edge-par-01",
+   "ip": "100.64.251.44",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-06-27T09:32:57.1Z",
+   "tags": []
+  },
+  {
+   "host": "edge-sin-01",
+   "ip": "100.117.253.12",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-06-29T21:05:10.1Z",
+   "tags": []
+  },
+  {
+   "host": "edge-us-west-01",
+   "ip": "100.104.181.26",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-06-29T21:05:16.1Z",
+   "tags": []
+  },
+  {
+   "host": "entheai-nats",
+   "ip": "100.103.159.94",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-25T10:48:29.1Z",
+   "tags": []
+  },
+  {
+   "host": "hetzner-cax31",
+   "ip": "100.124.142.75",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-25T10:48:26.1Z",
+   "tags": []
+  },
+  {
+   "host": "localhost",
+   "ip": "100.127.224.29",
+   "os": "iOS",
+   "online": false,
+   "last_seen": "2026-09-13T06:14:19.1Z",
+   "tags": []
+  },
+  {
+   "host": "localhost",
+   "ip": "100.110.29.29",
+   "os": "iOS",
+   "online": false,
+   "last_seen": "2026-10-16T20:46:37.1Z",
+   "tags": []
+  },
+  {
+   "host": "localhost",
+   "ip": "100.97.49.22",
+   "os": "iOS",
+   "online": false,
+   "last_seen": "2026-09-03T13:02:52.1Z",
+   "tags": []
+  },
+  {
+   "host": "nixai-base",
+   "ip": "100.65.183.126",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-09-22T01:13:11.1Z",
+   "tags": []
+  },
+  {
+   "host": "phone.personal",
+   "ip": "100.82.157.70",
+   "os": "iOS",
+   "online": false,
+   "last_seen": "2026-07-31T12:08:14.1Z",
+   "tags": []
+  },
+  {
+   "host": "rpi3b-recon",
+   "ip": "100.95.247.98",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-06-11T05:29:14.1Z",
+   "tags": []
+  },
+  {
+   "host": "rpi4",
+   "ip": "100.116.156.114",
+   "os": "linux",
+   "online": false,
+   "last_seen": "2026-08-08T07:55:12.1Z",
+   "tags": [
+    "tag:homelab"
+   ]
+  }
+ ]
+}

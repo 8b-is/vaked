@@ -72,8 +72,17 @@ Observed this lap (2026-10-25, from the M1, `python3 -m vakedc check`):
 | median edge response, cold TLS | 1574 ms | **observed** |
 | `api.kompress.vaked.dev` | `URLError` at 219 ms (fast fail, no resolve) | **observed** |
 | AgentField control plane `100.105.72.88:8085` | connect timeout | **observed** |
+| tailnet peers reachable (`tailnet-roster.json`) | **1 of 23** | **observed** |
+| `dev-cx53` (carries the AgentField plane) | offline, last seen **61 days** | **observed** |
 | Ollama on `localhost:8080` | `200 Ollama is running` | **observed** |
 | nats-server on the M1 | running since 2026-10-17 | **observed** |
+| edge fleet vs tailnet, alive | 17/18 vs 1/23 | **observed** |
+
+### What that gap means
+
+The distributed compute this lap could actually reach is **the edge fleet, not the tailnet**. Seventeen Cloudflare Workers answered; one tailnet peer (`ultrawhale-pi`) is up, and `dev-cx53`, which carries the AgentField control plane and the reasoners behind it, has been offline for 61 days. So the AgentField timeout is not a flaky network path and not a client bug: the host is down. Every node in this mesh that names a reasoner is therefore held at `probe_ro`, and the only node with `dispatch_rw` is the machine that ran the probes.
+
+That is the honest shape of a fan-out: availability is the constraint, and an unreachable worker is not a slower worker. It is a worker that cannot be given work at all. `tailnet-roster.json` is captured beside `fleet-probe.json` so the next lap can compare instead of re-guessing.
 
 `fleet-probe.json` is the raw probe record — host, status, milliseconds,
 content-type — kept beside the mesh so the roster above can be re-derived
