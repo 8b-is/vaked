@@ -1,0 +1,45 @@
+# spherepop-refusal-leak.vaked — the refusal that tries to become a claim.
+#
+# POP's sharpest rule is that nothing follows a refusal. Structurally that means a
+# refused subject holds `record.closed`, and a claim needs `record.claimable`,
+# which is strictly wider. So the edge below escalates, and the compiler refuses
+# it with the same code it uses for a leaked crypto key.
+#
+#   python3 -m vakedc check --json examples/spherepop/spherepop-refusal-leak.vaked
+#
+# Expected: exactly one E-CAP-ATTENUATION on `refuse -> bind`.
+
+capability record {
+  grant none closed warranted claimable open
+  order none < closed < warranted < claimable < open
+}
+
+mesh spherePopRefusalLeak {
+  node pop {
+    role = "open"
+    capabilities = [record.open]
+  }
+
+  node bind {
+    role = "claim"
+    capabilities = [record.claimable]
+  }
+
+  node refuse {
+    role = "stop"
+    capabilities = [record.closed]
+  }
+
+  pop -> bind   : "the_subject_is_open"
+  pop -> refuse : "the_offcut_is_stopped"
+
+  # A second claiming surface, so that the only diagnostic is the escalation
+  # itself and not a confused-deputy warning about `bind` having two callers.
+  node reopened {
+    role = "claim_after_stop"
+    capabilities = [record.claimable]
+  }
+
+  # E-CAP-ATTENUATION: a refused subject cannot be re-opened into a claim.
+  refuse -> reopened : "bind_the_refused"
+}

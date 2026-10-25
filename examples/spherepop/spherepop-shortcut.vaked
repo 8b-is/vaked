@@ -1,0 +1,39 @@
+# spherepop-shortcut.vaked — the honest limit of a capability graph.
+#
+# This file checks CLEAN, and the protocol still forbids what it draws: a claim
+# that closes without ever being warranted. Attenuation forbids escalation, not
+# skipping: a closed subject holds *less* than a bound one, so `bind -> collapse`
+# is a narrowing edge and the checker has nothing to object to.
+#
+#   python3 -m vakedc check --json examples/spherepop/spherepop-shortcut.vaked
+#
+# Expected: {"diagnostics": []}
+#
+# It is kept as a fixture precisely because it passes. A graph that refuses the
+# bad shape is the one thing a mesh cannot promise on its own; order is a rule,
+# and rules live in the kernel (spherepop-toss/pop.py, E-COLLAPSE-UNWARRANTED).
+
+capability record {
+  grant none closed warranted claimable open
+  order none < closed < warranted < claimable < open
+}
+
+mesh spherePopShortcut {
+  node pop {
+    role = "open"
+    capabilities = [record.open]
+  }
+
+  node bind {
+    role = "claim"
+    capabilities = [record.claimable]
+  }
+
+  node collapse {
+    role = "close"
+    capabilities = [record.closed]
+  }
+
+  pop  -> bind     : "the_subject_is_open"
+  bind -> collapse : "skip_the_warrant_and_close_anyway"
+}

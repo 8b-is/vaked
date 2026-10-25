@@ -17,14 +17,48 @@ edge receiver holds a subset of the sender's grants, so no step ever escalates.
 
 - `teamlab-borderless-field.vaked` → **0 diagnostics** (clean)
 - pure check: **12.7 ms** (Python reference, 20-run avg) · compiled front-end target **< 117 ms**
-- K=8 fret fan-out collapsed by geometric-mean consensus → trit vector:
+- K=8 fret fan-out collapsed → trit vector:
 
 ```
 + + + + + + + + + + + +
 ```
 
 - hex seal: `0x5445414D4C41422D56414B45442D3842` = `TEAMLAB-VAKED-8B`
-- SHA-256 digest: `c0fffb6e811581160cea2309dbff9db927cccf3cf6922ff0397ebf91ae30adda`
+
+### recomputed 2026-10-25 (values kept as published, one exception named below)
+
+**The seal is exact.** Decoded byte for byte: `TEAMLAB-VAKED-8B`, 16 bytes.
+
+**The trit row reproduces — under the arithmetic mean, not the geometric one.**
+Every one of the twelve column sums is positive (+3 … +8), so
+`softmax((1/K) Σ z_k / T)` gives `+` in all twelve columns. But this line used to
+say *geometric-mean*, and a geometric mean of signed trits is the sign of their
+product: five columns contain a `-1` and any `0` annihilates a product, so under
+the operation actually named nine of the twelve columns collapse to `0`:
+
+```
+0 0 0 0 0 + 0 0 0 + 0 +
+```
+
+The row is right, the operation was misnamed. Recorded here rather than edited out.
+
+**The SHA-256 line is gone, and its absence is the finding.** It read
+`c0fffb6e…30adda`. That value matches none of the four files in this directory
+(raw, CRLF, stripped), nor the seal bytes, nor the trit row — fifteen plausible
+constructions, zero hits. A digest with no artifact behind it cannot be checked,
+and an uncheckable digest is worse than none because it looks like a check.
+
+The rule this leaves behind: publish the digest *of something*, and name the
+something. Every hash in this repo now points at a file you can open.
+
+## See also
+
+- [`teamlab-toss-recipe.vaked`](teamlab-toss-recipe.vaked) — the nine steps as one
+  attenuation chain: `{"diagnostics": []}`. Freedom runs 8 → 1 and never rises.
+- [`../spherepop/`](../spherepop/) — the POP record lifecycle that the fold drives:
+  `pop → bind → verify → collapse`, with the refusal branch leaving the chain.
+- `../../work/spherepop-toss` (external) — the executable half: 27 tests, the five
+  event kinds, and the two limitations measured rather than mentioned.
 
 ## The graph key
 

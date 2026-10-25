@@ -1,0 +1,64 @@
+# spherepop-lifecycle.vaked — the POP record lifecycle, as a checked chain.
+#
+# Companion to ../../work/spherepop-toss/pop.py, which runs the same five kinds
+# with the same rules. Two things this file states that the prose cannot:
+#
+#   1. Authority only ever narrows. An open subject can bind; a bound subject can
+#      be warranted; a warranted subject can close. Nobody hands up.
+#   2. A refusal consumes. The refused branch has no way back into the chain,
+#      because `closed` is below `claimable` and nothing can lift it.
+#
+#   python3 -m vakedc check --json examples/spherepop/spherepop-lifecycle.vaked
+#
+# Expected: {"diagnostics": []}
+#
+# What attenuation cannot do, and this is worth knowing before trusting a graph:
+# it forbids escalation, not skipping. `bind -> collapse` would pass the checker
+# even though the protocol forbids it, because a closed subject is *less* than a
+# bound one. Order is a rule, not a lattice. That is why pop.py enforces the
+# sequence and this file only enforces the shape.
+
+capability record {
+  grant none closed warranted claimable open
+  order none < closed < warranted < claimable < open
+}
+
+mesh spherePopLifecycle {
+  # POP — open the subject. Widest authority: anything may follow.
+  node pop {
+    role = "open"
+    capabilities = [record.open]
+  }
+
+  # BIND — attach a claim. Narrower: it may still be warranted or refused.
+  node bind {
+    role = "claim"
+    capabilities = [record.claimable]
+  }
+
+  # VERIFY — warrant the claim. Narrower still: the only remaining move is to close.
+  node verify {
+    role = "warrant"
+    capabilities = [record.warranted]
+  }
+
+  # COLLAPSE — close over warranted claims.
+  node collapse {
+    role = "close"
+    capabilities = [record.closed]
+  }
+
+  # REFUSE — stop the subject. Terminal: it holds the narrowest grant and has no
+  # outgoing edge, which is the graph form of "nothing follows a refusal".
+  node refuse {
+    role = "stop"
+    capabilities = [record.closed]
+  }
+
+  pop    -> bind     : "the_subject_is_open"
+  bind   -> verify   : "a_claim_worth_warranting"
+  verify -> collapse : "every_bind_warranted"
+
+  # The refusal branch leaves the chain. It is reached, and it ends.
+  pop -> refuse : "an_offcut_exists_only_to_be_removed"
+}
